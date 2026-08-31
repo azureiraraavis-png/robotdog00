@@ -1,0 +1,16 @@
+# Go2 제어 (앱과 동일한 WebRTC 프로토콜, 펌웨어 개조 없음)
+# 주의: 예전 이름은 go2-webrtc-connect 였습니다. 지금은 아래 이름이 맞습니다.
+unitree_webrtc_connect>=2.2.0
+
+# 한국어 음성 합성 (Microsoft Edge 음성, 무료, 인터넷 필요)
+edge-tts>=6.1.0
+
+# 오프라인 대안이 필요할 때 (Windows SAPI 한국어 음성 사용, 인터넷 불필요)
+# pyttsx3>=2.90
+
+# 한국어 음성 인식 (로컬 실행, 인터넷·API 키 불필요)
+# 첫 실행 때 모델을 한 번 내려받고, 그 뒤로는 오프라인으로 동작합니다.
+faster-whisper>=1.0.0
+
+# 자유 질의응답 (선택) — ANTHROPIC_API_KEY 가 있을 때만 쓰입니다
+anthropic>=0.40.0
