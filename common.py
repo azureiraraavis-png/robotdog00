@@ -246,6 +246,30 @@ def enable_audio(conn, on=True, verbose=True):
     return False
 
 
+async def reconnect(conn, wait=12.0, tries=3, verbose=True):
+    """연결을 끊고 다시 맺습니다. 새 연결 객체를 돌려줍니다.
+
+    ★ 곧바로 다시 붙으면 실패합니다 ★
+    끊은 직후에는 로봇 쪽에 이전 세션이 남아 있어, 2초 뒤에 붙으려 하면
+    `DataChannelTimeoutError` 로 죽습니다. 충분히 기다렸다가 붙고,
+    실패하면 더 기다렸다 다시 시도합니다.
+    """
+    await disconnect(conn, verbose=verbose)
+
+    for n in range(1, tries + 1):
+        if verbose:
+            print(f"[연결] 로봇이 이전 세션을 놓을 때까지 {wait:.0f}초 기다립니다...")
+        await asyncio.sleep(wait)
+        try:
+            return await connect()
+        except Exception as e:
+            if n == tries:
+                raise
+            if verbose:
+                print(f"[연결] 다시 붙지 못했습니다 ({type(e).__name__}) — {n}/{tries}")
+            wait = min(wait * 1.5, 30.0)
+
+
 async def disconnect(conn, verbose=True):
     """연결을 확실히 닫습니다.
 
@@ -333,7 +357,7 @@ def command_id(name):
     )
 
 
-async def prepare_motion(conn, verbose=True):
+async def prepare_motion(conn, verbose=True, joystick_input=True):
     """모션 모드를 감지하고, 필요할 때만 전환합니다.
 
     mcf 는 펌웨어 1.1.7 이후의 기본 모드입니다. 기본 동작
@@ -346,6 +370,11 @@ async def prepare_motion(conn, verbose=True):
 
     if verbose:
         print(f"[모드] 현재 모션 모드: {mode}")
+
+    # 이동을 조이스틱 통로로 보내는 설정이면, 로봇이 그 신호를 받아들이도록
+    # 켜 둡니다. 꺼져 있어도 아무 오류가 나지 않기 때문에 무조건 켭니다.
+    if joystick_input and getattr(config, "MOVE_CHANNEL", "joystick") == "joystick":
+        await enable_joystick(conn, True, verbose=verbose)
 
     if mode == "mcf":
         if verbose:
@@ -433,6 +462,37 @@ def sport_no_reply(conn, api_id, parameter=None):
 SPORT_TIMEOUT = 8.0     # 응답을 이만큼 기다립니다 (초)
 
 
+# 이미 알린 거부는 다시 알리지 않습니다 (50Hz 로 도배되지 않도록)
+_REPORTED_REJECT = set()
+
+
+def status_code(reply):
+    """로봇의 응답에서 상태 코드를 꺼냅니다. 0 이면 정상.
+
+    ★ 지금까지 이 값을 그냥 버리고 있었습니다 ★
+    명령이 거부돼도 예외가 나지 않습니다. 응답 안에 코드로만 들어옵니다.
+    그래서 '보냈는데 아무 일도 안 일어나는' 상황의 원인을 못 봤습니다.
+
+    응답 구조가 펌웨어마다 조금씩 달라 재귀로 찾습니다.
+    """
+    def dig(node, depth=0):
+        if depth > 6 or not isinstance(node, dict):
+            return None
+        status = node.get("status")
+        if isinstance(status, dict) and isinstance(status.get("code"), int):
+            return status["code"]
+        if isinstance(node.get("code"), int):
+            return node["code"]
+        for value in node.values():
+            if isinstance(value, dict):
+                found = dig(value, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    return dig(reply)
+
+
 async def sport(conn, name, parameter=None, timeout=SPORT_TIMEOUT):
     """이름으로 sport 명령을 보냅니다. 예: await sport(conn, "StandUp")
 
@@ -447,63 +507,214 @@ async def sport(conn, name, parameter=None, timeout=SPORT_TIMEOUT):
     if parameter is not None:
         options["parameter"] = parameter
     try:
-        return await asyncio.wait_for(
+        reply = await asyncio.wait_for(
             conn.datachannel.pub_sub.publish_request_new(
                 RTC_TOPIC["SPORT_MOD"], options),
             timeout=timeout,
         )
+        code = status_code(reply)
+        if code not in (0, None) and name not in _REPORTED_REJECT:
+            _REPORTED_REJECT.add(name)
+            print(f"[명령] ★ 로봇이 '{name}' 을 거부했습니다 (code={code}) ★")
+            print("       명령은 보냈지만 실행되지 않았습니다.")
+        return reply
     except asyncio.TimeoutError:
         print(f"\n[명령] '{name}' 응답이 {timeout:.0f}초 안에 오지 않았습니다.")
         print("       연결이 끊겼을 가능성이 큽니다. 로봇 상태를 눈으로 확인하세요.")
-        print("       필요하면 리모컨의 L2+B 로 힘을 빼세요.\n")
+        print("       필요하면 리모컨의 P 버튼을 두 번 눌러 힘을 빼세요.\n")
         return None
+
+
+# ★ 회전 부호 ★
+#   로봇의 rx 는 **+ 가 우회전**입니다. 사람이 쓰는 좌표(좌회전 +)와 반대입니다.
+#   실측: rx=+0.8 을 보냈더니 yaw_speed 가 -1.30 rad/s (시계 방향) 였습니다.
+#
+#   부호를 뒤집는 곳은 **여기 한 군데뿐**이어야 합니다. drive.py, move(),
+#   음성 명령이 각자 뒤집으면 어디선가 반드시 어긋납니다.
+YAW_SIGN = -1
+
+
+def stick_from_intent(x=0.0, y=0.0, z=0.0):
+    """사람 기준 방향 → 로봇 스틱 값.
+
+    x: 전진(+)/후진(-)   y: 오른쪽(+)/왼쪽(-) 게걸음   z: 좌회전(+)/우회전(-)
+    """
+    return {"ly": x, "lx": y, "rx": YAW_SIGN * z}
+
+
+def joystick(conn, ly=0.0, lx=0.0, rx=0.0, ry=0.0):
+    """조이스틱 신호를 보냅니다. (앱의 조종 화면이 쓰는 통로)
+
+    ly: 전진(+)/후진(-)   lx: 좌우 게걸음   rx: 회전
+    값의 범위는 -1.0 ~ +1.0 입니다. 속도(m/s)가 아니라 스틱을 기울인 정도입니다.
+    """
+    conn.datachannel.pub_sub.publish_without_callback(
+        RTC_TOPIC["WIRELESS_CONTROLLER"],
+        {"lx": lx, "ly": ly, "rx": rx, "ry": ry, "keys": 0},
+    )
 
 
 async def move(conn, x=0.0, y=0.0, z=0.0, duration=1.0):
     """안전 한계 안에서 이동합니다. 끝나면 반드시 정지합니다.
 
-    x: 전진(+)/후진(-) m/s
-    y: 좌우 게걸음 m/s
-    z: 좌회전(+)/우회전(-) rad/s
+    x: 전진(+)/후진(-)      y: 좌우 게걸음      z: 좌회전(+)/우회전(-)
+    값은 **스틱을 기울인 정도(-1.0 ~ +1.0)** 입니다. m/s 가 아닙니다.
+
+    ★ 왜 조이스틱 통로인가 ★
+    sport 의 Move(1008) 명령을 보내면 MCF 모드에서는 걸음을 떼지 않고
+    **몸통만 기울입니다.** 자세 조정으로 해석되는 것으로 보입니다.
+    앱의 조종 화면이 쓰는 조이스틱 신호 통로로 보내야 실제로 걷습니다.
+    (두 통로를 나란히 시험해 확인했습니다 — gait_test.py)
     """
-    lim = config.MAX_FORWARD_SPEED
-    yaw = config.MAX_YAW_SPEED
+    if config.MOVE_CHANNEL == "sport":
+        return await _move_by_sport(conn, x, y, z, duration)
+
+    lim = config.MAX_FORWARD_STICK
+    yaw = config.MAX_YAW_STICK
     x = max(-lim, min(lim, x))
     y = max(-lim, min(lim, y))
     z = max(-yaw, min(yaw, z))
     duration = min(duration, config.MAX_MOVE_DURATION)
 
-    print(f"[이동] x={x} y={y} z={z} / {duration}초")
+    print(f"[이동] 전진={x} 게걸음={y} 회전={z} / {duration}초")
+    deadline = time.time() + duration
+    try:
+        while time.time() < deadline:
+            joystick(conn, **stick_from_intent(x, y, z))
+            await asyncio.sleep(0.02)         # 50Hz — 조이스틱은 촘촘히 보내야 합니다
+    finally:
+        # 반드시 0 을 여러 번 보내 확실히 멈춥니다
+        for _ in range(5):
+            joystick(conn, 0.0, 0.0, 0.0)
+            await asyncio.sleep(0.02)
+        await stop(conn)
+
+
+async def _move_by_sport(conn, x, y, z, duration):
+    """예전 방식 — sport Move 명령. MCF 모드에서는 걷지 않습니다.
+
+    config.MOVE_CHANNEL 을 "sport" 로 두었을 때만 쓰입니다.
+    비교나 문제 추적용으로 남겨둡니다.
+    """
+    lim = config.MAX_FORWARD_STICK
+    yaw = config.MAX_YAW_STICK
+    x = max(-lim, min(lim, x))
+    y = max(-lim, min(lim, y))
+    z = max(-yaw, min(yaw, z))
+    duration = min(duration, config.MAX_MOVE_DURATION)
+
+    print(f"[이동] (sport 통로) x={x} y={y} z={z} / {duration}초")
     move_id = command_id("Move")
     deadline = time.time() + duration
     try:
         while time.time() < deadline:
             sport_no_reply(conn, move_id, {"x": x, "y": y, "z": z})
-            await asyncio.sleep(0.1)          # 10Hz 로 계속 갱신
+            await asyncio.sleep(0.1)
     finally:
-        await stop(conn)                       # 예외가 나도 반드시 멈춤
+        await stop(conn)
 
 
 async def stop(conn):
-    """즉시 정지."""
+    """즉시 정지. 두 통로 모두에 정지 신호를 보냅니다."""
+    try:
+        joystick(conn, 0.0, 0.0, 0.0)
+    except Exception:
+        pass
     sport_no_reply(conn, command_id("StopMove"))
     await asyncio.sleep(0.2)
 
 
 class StateProbe:
-    """로봇 상태를 지켜봅니다. 몸높이로 서 있는지 엎드렸는지 알 수 있습니다."""
+    """로봇 상태를 지켜봅니다.
 
-    STANDING = 0.15        # 이보다 높으면 서 있는 것으로 봅니다 (m)
+    ★ 몸높이만 보면 안 됩니다 ★
+    로봇이 "서 있다"와 "걸을 수 있다"는 다른 이야기입니다.
+    StandUp 으로 세운 뒤 BalanceStand 를 받지 못하면 관절이 굳은 채로 서 있고,
+    이때 조이스틱 신호는 **조용히 무시됩니다.** 화면에는 명령이 나간 것처럼
+    보이는데 로봇만 가만히 있습니다.
+
+    그래서 상태 메시지의 mode(로봇이 스스로 보고하는 동작 상태) 와
+    velocity(실제 측정 속도) 를 같이 봅니다.
+      · mode      — 지금 어떤 동작 상태인지. 숫자의 의미는 펌웨어마다 달라
+                    MODE_NAMES 는 참고용입니다. 확정은 mode_test.py 로 합니다.
+      · velocity  — 실제로 움직였는지. **명령이 먹혔는지 눈이 아니라
+                    숫자로 확인할 수 있는 유일한 값입니다.**
+    """
+
+    # 이보다 높으면 서 있는 것으로 봅니다 (m)
+    #   실측: 완전히 선 상태 0.31, 엎드림 0.08.
+    #   0.15 로 뒀더니 아직 일어서는 중인 0.153 에서 통과해버려 올렸습니다.
+    STANDING = 0.24
+
+    # 참고용 이름표. 이 로봇에서 실제로 어떤 숫자가 나오는지는
+    #   .\run mode_test.py  로 직접 확인하세요.
+    MODE_NAMES = {
+        0: "idle",
+        1: "balanceStand",
+        2: "pose",
+        3: "locomotion",
+        5: "lieDown",
+        6: "jointLock",
+        7: "damp",
+        8: "recoveryStand",
+        10: "sit",
+    }
+
+    # 이 상태들에서는 이동 명령이 먹습니다.
+    MOVING_MODES = (1, 3)
 
     def __init__(self, conn):
         self.height = None
+        self.mode = None
+        self.gait = None
+        self.velocity = None            # [vx, vy, vz] m/s
+        self.yaw_speed = None
+        self.fields = None              # 상태 메시지에 실제로 있던 항목 이름들
+        self.raw = None                 # 마지막 상태 메시지 통째로
+        self.modes_seen = set()
         conn.datachannel.pub_sub.subscribe(
             RTC_TOPIC["LF_SPORT_MOD_STATE"], self._on_state)
 
+    def mode_is_useful(self):
+        """이 기체가 mode 를 실제로 갱신하는지.
+
+        ★ 02 호기(MCF 모드)는 서 있든 앉아 있든 항상 0 을 보고합니다 ★
+        그런데 몸높이와 회전 속도는 정상적으로 갱신됩니다. 즉 메시지는 살아
+        있는데 이 항목만 죽어 있습니다. 이걸 모르고 mode 로 판단했다가
+        멀쩡한 로봇을 '이동 불가'로 몰아세웠습니다.
+        → 0 말고 다른 값을 한 번이라도 본 적이 있을 때만 믿습니다.
+        """
+        return bool(self.modes_seen - {0})
+
     def _on_state(self, message):
-        h = message.get("data", {}).get("body_height")
+        data = message.get("data", {}) or {}
+        self.raw = data
+        if self.fields is None:
+            self.fields = sorted(data.keys())
+
+        h = data.get("body_height")
         if isinstance(h, (int, float)):
             self.height = float(h)
+
+        m = data.get("mode")
+        if isinstance(m, int):
+            self.mode = m
+            self.modes_seen.add(m)
+
+        g = data.get("gait_type")
+        if isinstance(g, int):
+            self.gait = g
+
+        v = data.get("velocity")
+        if isinstance(v, (list, tuple)) and len(v) >= 2:
+            try:
+                self.velocity = [float(x) for x in v[:3]]
+            except (TypeError, ValueError):
+                pass
+
+        y = data.get("yaw_speed")
+        if isinstance(y, (int, float)):
+            self.yaw_speed = float(y)
 
     async def read(self, seconds=1.5):
         loop = asyncio.get_running_loop()
@@ -514,6 +725,36 @@ class StateProbe:
 
     def is_standing(self):
         return self.height is None or self.height > self.STANDING
+
+    def mode_name(self):
+        if self.mode is None:
+            return "읽지 못함"
+        return f"{self.mode}({self.MODE_NAMES.get(self.mode, '?')})"
+
+    def speed(self):
+        """지금 실제로 나아가는 속도 (m/s). 방향은 무시한 크기입니다."""
+        if not self.velocity:
+            return None
+        vx, vy = self.velocity[0], self.velocity[1]
+        return (vx * vx + vy * vy) ** 0.5
+
+    def describe(self):
+        h = f"{self.height:.3f}m" if self.height is not None else "?"
+        s = self.speed()
+        v = f"{s:.2f}m/s" if s is not None else "?"
+        w = f"{self.yaw_speed:+.2f}rad/s" if self.yaw_speed is not None else "?"
+        g = self.gait if self.gait is not None else "?"
+        return f"mode={self.mode_name()} 걸음={g} 높이={h} 속도={v} 회전={w}"
+
+    def can_move(self):
+        """로봇이 스스로 보고하는 상태로 판단합니다.
+
+        판단 근거가 없으면 막지 않습니다 — 확인 못 한다고 조종을 막아버리면
+        멀쩡한 로봇이 먹통이 됩니다. (실제로 그렇게 만들어 봤습니다)
+        """
+        if self.mode is None or not self.mode_is_useful():
+            return True
+        return self.mode in self.MOVING_MODES
 
 
 async def settle(conn, speaker=None, verbose=True):
@@ -555,6 +796,249 @@ async def settle(conn, speaker=None, verbose=True):
     return before, after
 
 
+async def stand_and_wait(conn, probe=None, timeout=10.0, verbose=True):
+    """일으켜 세우고, 실제로 섰는지 확인될 때까지 기다립니다.
+
+    ★ 고정된 초를 기다리면 안 됩니다 ★
+    엎드리거나 힘이 빠진 상태에서 일어서는 데 4~5초가 걸립니다.
+    아직 일어서는 중에 다음 명령이 도착하면 **조용히 버려집니다.**
+    오류도 나지 않아 화면에는 명령이 나간 것처럼 보이는데 로봇만 반응이 없습니다.
+    (인사 동작이 안 나가던 원인이 이것이었습니다)
+
+    돌려주는 값: 섰는지 여부
+    """
+    if probe is None:
+        probe = StateProbe(conn)
+
+    await sport(conn, "StandUp")
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    standing = False
+    settled = 0
+    last_h = None
+    while loop.time() < deadline:
+        h = probe.height
+        if h is not None and h > StateProbe.STANDING:
+            standing = True
+            # ★ 높이가 더 안 오를 때까지 기다립니다 ★
+            #   기준을 넘자마자 다음 명령을 보내면, 아직 일어서는 중이라
+            #   BalanceStand 가 조용히 버려집니다. 그러면 관절이 굳은 채로
+            #   서 있게 되고 조이스틱이 통째로 먹지 않습니다.
+            if last_h is not None and abs(h - last_h) < 0.004:
+                settled += 1
+                if settled >= 3:
+                    break
+            else:
+                settled = 0
+            last_h = h
+        await asyncio.sleep(0.2)
+
+    if verbose:
+        h = probe.height
+        shown = f"{h:.3f} m" if h is not None else "읽지 못함"
+        if standing:
+            print(f"[자세] 일어섰습니다 (몸높이 {shown})")
+        else:
+            print(f"[자세] 일어서기 확인 실패 (몸높이 {shown}) — 그대로 진행합니다")
+            print("       로봇이 실제로 서 있는지 눈으로 확인하세요.")
+
+    await ensure_locomotion(conn, probe, verbose=verbose)
+    return standing
+
+
+async def ensure_locomotion(conn, probe=None, tries=3, verbose=True):
+    """이동 명령을 받을 수 있는 상태로 만듭니다.
+
+    ★ 열쇠는 StopMove 입니다 ★
+
+    자세를 바꾼 뒤(특히 앉았다 일어난 뒤)에는 조이스틱을 아무리 보내도
+    걸음이 나오지 않습니다. 서 있고 오류도 없는데 걸음만 안 나옵니다.
+    `StopMove` 를 한 번 보내면 그 자리에서 풀립니다.
+
+    변수를 하나씩만 바꿔 확인했습니다 (sit_test.py, 매번 새로 고장낸 뒤 측정):
+
+        6초 그냥 기다리기          → 0.026 m/s   시간 문제가 아님
+        BalanceStand 세 번         → 0.022 m/s   이 명령의 문제가 아님
+        StopMove 한 번             → 0.498 m/s   ★ 이것 하나로 풀림 ★
+        StopMove + BalanceStand    → 0.550 m/s
+
+    짐작하자면, 특수 자세(Sit/StandDown)에서 빠져나온 직후의 로봇은
+    아직 '동작 수행 중'으로 남아 있고, 그 상태에서는 조이스틱 입력이
+    무시되는 것으로 보입니다. StopMove 가 그 동작을 끝내 줍니다.
+
+    BalanceStand 는 그 자체로 회복 수단은 아니지만, 걷기 준비 자세로
+    맞춰 주는 명령이므로 뒤이어 보냅니다.
+
+    돌려주는 값: 이동 가능한 상태로 보이는지
+    """
+    if probe is None:
+        probe = StateProbe(conn)
+
+    # ★ 순서가 중요합니다 — StopMove 가 먼저입니다 ★
+    await sport(conn, "StopMove")
+    await asyncio.sleep(1.0)
+
+    for n in range(1, tries + 1):
+        await sport(conn, "BalanceStand")
+        # mode 가 반영될 시간
+        for _ in range(15):
+            await asyncio.sleep(0.1)
+            if probe.can_move() and probe.mode is not None:
+                break
+
+        if probe.mode is None or not probe.mode_is_useful():
+            # mode 를 못 믿는 기체 — 확인할 수단이 없으므로 확인하지 않습니다.
+            # 회복은 위의 StopMove 가 이미 했으므로 여기서 끝냅니다.
+            await asyncio.sleep(1.0)
+            return True
+
+        if probe.can_move():
+            if verbose:
+                print(f"[자세] 이동 준비됨 ({probe.mode_name()})")
+            return True
+
+        if verbose:
+            print(f"[자세] 아직 이동할 수 없는 상태 ({probe.mode_name()}) — 다시 시도 {n}/{tries}")
+        await asyncio.sleep(1.0)
+
+    if probe.mode is None or not probe.mode_is_useful():
+        # 확인할 수단이 없는 기체. 보낼 건 다 보냈으니 정상으로 봅니다.
+        return True
+
+    if verbose:
+        print(f"[자세] ★ 이동 준비 실패 ★  현재 {probe.mode_name()}")
+        print("       조이스틱 신호를 보내도 로봇이 무시할 수 있습니다.")
+        print("       리모컨으로 한 번 세운 뒤 다시 시도하거나, mode_test.py 로 확인하세요.")
+    return False
+
+
+async def enable_joystick(conn, on=True, verbose=True):
+    """로봇이 조이스틱 신호(WIRELESS_CONTROLLER)를 받아들이도록 합니다.
+
+    앱의 조종 화면을 열고 닫으면 이 설정이 꺼진 채로 남을 수 있습니다.
+    꺼져 있으면 조이스틱 신호가 통째로 무시되는데, 보내는 쪽에는
+    아무 오류도 나지 않습니다. 그래서 조종 전에 무조건 한 번 켭니다.
+    """
+    try:
+        await sport(conn, "SwitchJoystick", {"data": bool(on)})
+        if verbose:
+            print(f"[조종] 조이스틱 입력 {'켬' if on else '끔'}")
+        return True
+    except KeyError:
+        return False
+    except Exception as e:
+        if verbose:
+            print(f"[조종] 조이스틱 입력 설정 실패 (계속 진행): {e}")
+        return False
+
+
+class Posture:
+    """로봇의 자세를 기억하고, 안전한 순서로 전환합니다.
+
+    ★ Go2 의 자세 상태 기계 ★
+
+           앉기 ──RiseSit──┐
+                           ├── 서 있기 ──── 다른 모든 동작
+         엎드림 ──StandUp──┘
+
+    앉기와 엎드림은 특수 자세라 그 상태에서는 다른 동작 명령이
+    **조용히 무시됩니다.** 오류도 나지 않아 원인을 찾기 어렵습니다.
+    자세끼리 직접 오갈 수 없고, 반드시 서 있기를 경유해야 합니다.
+
+    힘을 뺀(damp) 뒤에도 마찬가지입니다. 이동 명령이 먹지 않으니
+    먼저 일으켜 세워야 합니다.
+
+        posture = common.Posture(conn)
+        await posture.sit()
+        await posture.lie()     # 알아서 일어섰다가 엎드립니다
+    """
+
+    # 특수 자세에서 빠져나오는 명령.
+    #   힘을 뺀 뒤에는 StandUp 이 아니라 RecoveryStand 입니다.
+    #   StandUp 은 관절을 세우기만 해서, 그 뒤에 이동이 먹지 않습니다.
+    EXIT_COMMAND = {"sit": "RiseSit", "lie": "StandUp", "damp": "RecoveryStand"}
+
+    def __init__(self, conn, probe=None):
+        self.conn = conn
+        self.probe = probe if probe is not None else StateProbe(conn)
+        self.state = "unknown"
+
+    def can_move(self):
+        """지금 이동 명령이 먹히는 상태인지.
+
+        기억해 둔 이름표보다 **로봇이 스스로 보고하는 상태**를 우선합니다.
+        이름표만 믿으면, 기록이 어긋났을 때 멀쩡한 로봇을 통째로
+        막아버리게 됩니다.
+        """
+        if self.probe.mode is not None:
+            return self.probe.can_move()
+        return self.state in ("stand", "unknown")
+
+    async def stand(self, verbose=True):
+        """일으켜 세우고, **걸을 수 있는 상태까지** 만듭니다.
+
+        ★ 탈출 명령만으로는 부족합니다 ★
+        `RiseSit` 은 앉은 자세에서 빠져나오게만 해줍니다. 그 뒤에 곧바로
+        `BalanceStand` 를 보내면 로봇은 서 있긴 한데 **걷지 못합니다.**
+        조이스틱을 주면 처음 한순간만 반응하고 곧 몸통만 들썩입니다.
+
+        실측으로 확인한 차이는 `StandUp` 하나였습니다.
+          · StandUp → 안정 대기 → BalanceStand  → 0.47 m/s 로 걸음
+          · RiseSit → BalanceStand             → 0.01 m/s, 못 걸음
+        그래서 어떤 자세에서 오든 **항상 StandUp 을 거칩니다.**
+        """
+        # mode 를 믿을 수 있을 때만 '이미 서 있으니 건너뛰기'를 합니다.
+        # 믿을 수 없는 기체에서 건너뛰면, 걷기가 풀렸는데도 1 번 키가
+        # 아무 일도 안 하는 상태가 됩니다. (실제로 그랬습니다)
+        if self.state == "stand" and self.probe.mode_is_useful() and self.can_move():
+            return True
+
+        exit_cmd = self.EXIT_COMMAND.get(self.state)
+        if exit_cmd and exit_cmd != "StandUp":
+            if verbose:
+                print(f"     ({self.state} 상태 → {exit_cmd} 로 먼저 빠져나옵니다)")
+            await sport(self.conn, exit_cmd)
+            await asyncio.sleep(3.0)
+
+        # 어느 경로로 왔든 여기를 지납니다 (StandUp → 안정 → BalanceStand)
+        await stand_and_wait(self.conn, probe=self.probe, verbose=verbose)
+        self.state = "stand"
+        return True
+
+    async def sit(self, verbose=True):
+        """앉힙니다.
+
+        앉은 뒤에 일으켜 세우면 한동안 걷지 못하는 문제가 있었는데,
+        `ensure_locomotion()` 이 BalanceStand 를 간격을 두고 여러 번
+        보내면서 해결됐습니다. (sit_test.py 로 확인)
+        """
+        if self.state == "sit":
+            if verbose:
+                print("     (이미 앉아 있습니다)")
+            return
+        await self.stand(verbose=verbose)
+        await sport(self.conn, "Sit")
+        await asyncio.sleep(3)
+        self.state = "sit"
+
+    async def lie(self, verbose=True):
+        if self.state == "lie":
+            if verbose:
+                print("     (이미 엎드려 있습니다)")
+            return
+        await self.stand(verbose=verbose)
+        await sport(self.conn, "StandDown")
+        await asyncio.sleep(3)
+        self.state = "lie"
+
+    async def damp(self, verbose=True):
+        """힘 빼기. 이후에는 일으켜 세워야 이동 명령이 먹습니다."""
+        await emergency_damp(self.conn)
+        await asyncio.sleep(1.0)
+        self.state = "damp"
+
+
 async def announce(speaker, phrase_key, verbose=True):
     """등록된 멘트를 로봇 스피커로 말합니다. 실패해도 진행을 막지 않습니다."""
     text = config.PHRASES.get(phrase_key)
@@ -571,7 +1055,7 @@ async def announce(speaker, phrase_key, verbose=True):
 
 
 async def emergency_damp(conn):
-    """비상 정지. 힘을 빼고 그 자리에 주저앉습니다. (리모컨 L2+B 와 같은 동작)"""
+    """비상 정지. 힘을 빼고 그 자리에 주저앉습니다. (리모컨 P 버튼 두 번과 같은 동작)"""
     print("\n[비상] 댐핑 — 로봇을 내려앉힙니다.")
     try:
         # 비상 경로에서는 표 조회 실패 위험을 없애려고 번호를 직접 씁니다.

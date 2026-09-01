@@ -16,7 +16,7 @@
     □ 사방 3m 이상 트인 평평한 바닥
     □ 발끝의 비닐 포장 제거
     □ 배터리 50% 이상
-    □ 리모컨을 든 사람이 대기 (L2+B = 비상 정지)
+    □ 리모컨을 든 사람이 대기 (P 버튼 두 번 = 힘 빼기)
 
     python 04_guide_demo.py
 """
@@ -35,10 +35,7 @@ async def guide_sequence(conn, hub, uuids):
     """안내 시나리오 본체. 여기를 고쳐서 코스를 만드세요."""
 
     print("\n▶ 1. 일어서서 인사")
-    await common.sport(conn, "StandUp")
-    await asyncio.sleep(3)
-    await common.sport(conn, "BalanceStand")
-    await asyncio.sleep(1)
+    await common.stand_and_wait(conn)
 
     await common.say(hub, uuids, "greet", wait=6)
     await common.sport(conn, "Hello")          # 앞발 흔들기
@@ -83,6 +80,18 @@ async def main():
         return
 
     conn = await common.connect()
+    try:
+        await run_demo(conn, paths)
+    finally:
+        # ★ 정리는 반드시 살아 있는 이벤트 루프 안에서 ★
+        try:
+            await common.stop(conn)
+        except Exception:
+            pass
+        await common.disconnect(conn)
+
+
+async def run_demo(conn, paths):
     await common.prepare_motion(conn)
 
     await safety.set_auto_recovery(conn, False)
@@ -106,21 +115,13 @@ async def main():
     print("  · 폰/PC에서 한국어 음성 인식을 붙여 명령으로 이 함수들을 호출")
     print("=" * 60)
 
-    await common.disconnect(conn)
-
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n중단됨 — 비상 정지를 시도합니다.")
-        if conn:
-            try:
-                asyncio.run(common.emergency_damp(conn))
-            except Exception:
-                pass
-        print("로봇이 멈추지 않으면 리모컨의 L2+B 를 누르세요.")
-        sys.exit(0)
+        print("\n중단됨 — 로봇을 멈추고 연결을 닫았습니다.")
+        print("로봇이 멈추지 않으면 리모컨의 P 버튼을 두 번 누르세요.")
     except Exception as e:
         common.explain_error(e)
         sys.exit(1)

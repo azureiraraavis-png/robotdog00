@@ -81,7 +81,7 @@ async def main():
         print()
         print("   로봇이 아직 서 있거나 버티고 있을 수 있습니다.")
         print("   눈으로 확인하세요 — 다리가 접혀 배가 바닥에 닿아 있어야 합니다.")
-        print("   서 있다면 리모컨의  L2 + B  를 눌러 힘을 빼세요.")
+        print("   서 있다면 리모컨의 P 버튼을 두 번 눌러 힘을 빼세요.")
         print("   확실하지 않으면 들어 올리지 마세요.")
 
     print()
@@ -113,5 +113,5 @@ if __name__ == "__main__":
     except Exception as e:
         common.explain_error(e)
         print("\n연결이 안 되면 리모컨으로 하세요:")
-        print("   L2 + A  (엎드리기)  →  L2 + B  (힘 빼기)  →  들어 올리기")
+        print("   P 버튼 두 번 눌러 힘을 뺀 뒤  →  들어 올리기")
         sys.exit(1)

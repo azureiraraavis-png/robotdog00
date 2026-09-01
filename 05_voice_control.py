@@ -24,7 +24,7 @@
     □ 사방 2~3m 이상 트인 평평한 바닥
     □ 발끝의 비닐 포장 제거
     □ 배터리 50% 이상
-    □ 리모컨을 든 사람이 대기 (L2+B = 비상 정지)
+    □ 리모컨을 든 사람이 대기 (P 버튼 두 번 = 힘 빼기)
 
     .\\run 05_voice_control.py
 """
@@ -44,13 +44,29 @@ conn = None
 class Robot:
     """음성 명령을 실제 동작으로 옮깁니다."""
 
-    def __init__(self, conn, speaker):
+    def __init__(self, conn, speaker, listener=None):
         self.conn = conn
         self.speaker = speaker
+        self.listener = listener          # 말하는 동안 귀를 막기 위해
         self.moving = False
+        # 자세 전환은 공용 Posture 가 맡습니다.
+        # (앉기·엎드림 사이를 직접 오갈 수 없고 서 있기를 경유해야 합니다)
+        self.posture = common.Posture(conn)
 
     async def say_file(self, path):
-        await self.speaker.play(path)
+        """로봇이 말합니다. 그동안 마이크는 닫아둡니다.
+
+        ★ 이걸 안 하면 로봇이 자기 말을 듣습니다 ★
+        "따라와" 에 대한 응답 "이쪽입니다. 저를 따라와 주세요" 안에
+        '따라와' 가 들어 있어, 마이크가 그걸 주우면 같은 명령이 다시 걸립니다.
+        로봇이 자기 말에 반응하며 끝없이 반복하게 됩니다.
+        """
+        if self.listener is None:
+            await self.speaker.play(path)
+            return
+        with self.listener.deaf():
+            await self.speaker.play(path)
+            await asyncio.sleep(0.4)      # 방에 남은 울림이 잦아들 때까지
 
     async def say(self, text):
         """한국어 문장을 만들어 말합니다."""
@@ -73,22 +89,28 @@ class Robot:
 
         if action == "none":
             return
+
+        # 정지는 자세와 무관하게 즉시. 어떤 상태에서든 최우선입니다.
+        if action == "stop":
+            await common.stop(self.conn)
+            return
+
+        if action == "sit":
+            await self.posture.sit()
+            return
+        if action == "lie":
+            await self.posture.lie()
+            return
+        if action == "stand":
+            await self.posture.stand()
+            return
+
+        # 나머지는 전부 서 있는 상태를 거쳐야 합니다
+        await self.posture.stand()
+
         if action == "hello":
             await common.sport(self.conn, "Hello")
             await asyncio.sleep(4)
-        elif action == "sit":
-            await common.sport(self.conn, "Sit")
-            await asyncio.sleep(3)
-        elif action == "stand":
-            await common.sport(self.conn, "StandUp")
-            await asyncio.sleep(3)
-            await common.sport(self.conn, "BalanceStand")
-            await asyncio.sleep(1)
-        elif action == "lie":
-            await common.sport(self.conn, "StandDown")
-            await asyncio.sleep(3)
-        elif action == "stop":
-            await common.stop(self.conn)
         elif action in ("forward", "back", "left", "right"):
             x, y, z, dur = spec.get("move", (0.15, 0, 0, 1.5))
             self.moving = True
@@ -161,6 +183,16 @@ async def main():
 
     # 5. 연결
     conn = await common.connect()
+    try:
+        await session(conn, listener, paths, ack_path)
+    finally:
+        # ★ 정리는 반드시 살아 있는 이벤트 루프 안에서 ★
+        # 루프가 끝난 뒤 asyncio.run() 으로 닫으려 하면 실패하고,
+        # 로봇에 유령 세션이 남아 다음 실행이 연결조차 못 합니다.
+        await shutdown()
+
+
+async def session(conn, listener, paths, ack_path):
     await common.prepare_motion(conn)
     await common.set_volume(conn)
 
@@ -169,7 +201,7 @@ async def main():
     watchdog = safety.Watchdog(conn)
     watchdog.arm()
     speaker = common.Speaker(conn)
-    robot = Robot(conn, speaker)
+    robot = Robot(conn, speaker, listener)
 
     # 6. 마이크
     listener.start()
@@ -209,12 +241,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n중단됨 — 로봇을 멈추고 연결을 닫습니다.")
+        print("\n중단됨 — 로봇을 멈추고 연결을 닫았습니다.")
     except Exception as e:
         common.explain_error(e)
-    finally:
-        try:
-            asyncio.run(shutdown())
-        except Exception:
-            pass
-        print("종료. 전원을 끄기 전에  .\\run park.py  를 실행하세요.")
+    print("종료. 전원을 끄기 전에  .\\run park.py  를 실행하세요.")

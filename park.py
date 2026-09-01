@@ -68,7 +68,7 @@ async def main():
     else:
         print("   눈으로 확인하세요 — 배가 바닥에 닿아 있어야 합니다.")
         print("   서 있는 상태로 전원을 끄면 그대로 떨어집니다.")
-        print("   확실하지 않으면 리모컨의  L2 + A  →  L2 + B  를 쓰세요.")
+        print("   확실하지 않으면 리모컨의 P 버튼을 두 번 누르세요.")
     print()
     print("=" * 60)
 
@@ -84,5 +84,5 @@ if __name__ == "__main__":
     except Exception as e:
         common.explain_error(e)
         print("\n연결이 안 되면 리모컨으로도 같은 순서를 할 수 있습니다:")
-        print("   L2 + A  (엎드리기)  →  L2 + B  (힘 빼기)  →  전원 끄기")
+        print("   P 버튼 두 번  (엎드림/힘 빼기)  →  전원 끄기")
         sys.exit(1)

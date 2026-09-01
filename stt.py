@@ -17,6 +17,7 @@
 """
 
 import asyncio
+import contextlib
 import queue
 import sys
 import threading
@@ -40,31 +41,108 @@ class Listener:
         self._queue = queue.Queue()
         self._stream = None
         self._stop = threading.Event()
+        self._fails = 0
+        self._paused = False
 
     # ── 준비 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _smoke_test(model):
+        """모델이 실제로 동작하는지 1초짜리 무음으로 한 번 돌려봅니다.
+
+        ★ 이 확인이 왜 필요한가 ★
+        WhisperModel(device="cuda") 는 CUDA 라이브러리가 없어도 **객체 생성은
+        성공합니다.** 실제로 계산을 시도하는 순간에야
+        `Library cublas64_12.dll is not found` 같은 오류로 죽습니다.
+        그래서 "GPU 사용"이라고 찍어놓고 한참 뒤에 터지는 일이 생깁니다.
+        만들자마자 한 번 돌려보면 그 자리에서 판별됩니다.
+        """
+        silence = np.zeros(SAMPLE_RATE, dtype=np.float32)
+        segments, _ = model.transcribe(silence, language="ko", beam_size=1)
+        list(segments)          # 제너레이터라 소비해야 실제로 계산합니다
 
     def load_model(self):
         """whisper 모델을 올립니다. 첫 실행 때는 내려받느라 몇 분 걸립니다."""
         from faster_whisper import WhisperModel
 
         size = config.STT_MODEL
+        want = (getattr(config, "STT_DEVICE", "auto") or "auto").lower()
+
         if self.verbose:
             print(f"[인식] 모델 '{size}' 준비 중...")
             print("       처음이면 내려받느라 몇 분 걸립니다. 이후에는 즉시 뜹니다.")
 
-        # GPU 가 있으면 쓰고, 없으면 CPU 로 떨어집니다.
-        try:
-            self.model = WhisperModel(size, device="cuda", compute_type="float16")
-            if self.verbose:
-                print("[인식] GPU 사용")
-        except Exception:
-            self.model = WhisperModel(size, device="cpu", compute_type="int8")
-            if self.verbose:
-                print("[인식] CPU 사용 (GPU 를 못 찾았거나 사용할 수 없습니다)")
+        if want in ("auto", "cuda"):
+            try:
+                model = WhisperModel(size, device="cuda", compute_type="float16")
+                self._smoke_test(model)          # 여기서 진짜인지 판별됩니다
+                self.model = model
+                if self.verbose:
+                    print("[인식] GPU 사용")
+                return self.model
+            except Exception as e:
+                if want == "cuda":
+                    raise
+                if self.verbose:
+                    reason = str(e).split("\n")[0][:100]
+                    print(f"[인식] GPU 를 쓸 수 없습니다 — {reason}")
+                    if "cublas" in str(e).lower() or "cudnn" in str(e).lower():
+                        print("       CUDA 라이브러리가 없습니다. GPU 로 쓰고 싶다면:")
+                        print("         pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
+                    print("[인식] CPU 로 진행합니다.")
+
+        self.model = WhisperModel(size, device="cpu", compute_type="int8")
+        self._smoke_test(self.model)
+        if self.verbose:
+            print("[인식] CPU 사용")
+            if size in ("medium", "large-v2", "large-v3"):
+                print(f"       ※ CPU 에서 '{size}' 는 느립니다. "
+                      "답답하면 config.py 의 STT_MODEL 을 'small' 로 낮추세요.")
         return self.model
 
     def _callback(self, indata, frames, time_info, status):
+        if self._paused:
+            return              # 로봇이 말하는 동안은 담지 않습니다
         self._queue.put(indata[:, 0].copy())
+
+    # ── 로봇이 말하는 동안 귀를 막기 ──────────────────────
+
+    def pause(self):
+        """마이크 입력을 잠시 무시합니다.
+
+        ★ 왜 필요한가 ★
+        로봇이 스피커로 말하면 그 소리를 마이크가 다시 주워 담습니다.
+        예를 들어 "따라와" 명령에 로봇이 "이쪽입니다. 저를 따라와 주세요"
+        라고 답하면, 그 말에 '따라와' 가 들어 있어 또 같은 명령으로 인식됩니다.
+        그대로 두면 로봇이 자기 말에 반응하며 끝없이 반복합니다.
+        """
+        self._paused = True
+
+    def resume(self, drain=True):
+        """다시 듣기 시작합니다. 그동안 남은 소리는 버립니다."""
+        if drain:
+            self._drain()
+        self._paused = False
+
+    def _drain(self):
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return
+
+    @contextlib.contextmanager
+    def deaf(self):
+        """로봇이 말하는 구간을 감쌉니다.
+
+            with listener.deaf():
+                await speaker.play(path)
+        """
+        self.pause()
+        try:
+            yield
+        finally:
+            self.resume()
 
     def start(self):
         """마이크를 엽니다."""
@@ -172,12 +250,28 @@ class Listener:
         return "".join(s.text for s in segments).strip()
 
     async def listen(self):
-        """말 한 마디를 듣고 한국어 문장으로 돌려줍니다. 없으면 None."""
+        """말 한 마디를 듣고 한국어 문장으로 돌려줍니다. 없으면 None.
+
+        한 마디를 옮기다 실패해도 전체를 멈추지 않습니다.
+        한 번 삐끗했다고 대화가 통째로 끝나면 곤란하니까요.
+        """
         audio = await asyncio.to_thread(self._next_utterance)
         if audio is None or len(audio) == 0:
             return None
+
         seconds = len(audio) / SAMPLE_RATE
-        text = await asyncio.to_thread(self.transcribe, audio)
+        try:
+            text = await asyncio.to_thread(self.transcribe, audio)
+        except Exception as e:
+            self._fails += 1
+            print(f"[인식] 실패 ({seconds:.1f}초 분량): {type(e).__name__}: "
+                  f"{str(e).split(chr(10))[0][:80]}")
+            if self._fails == 3:
+                print("[인식] 계속 실패하고 있습니다. "
+                      "config.py 의 STT_DEVICE 를 \"cpu\" 로 고정해 보세요.")
+            return None
+
+        self._fails = 0
         if self.verbose and text:
             print(f"[인식] ({seconds:.1f}초) \"{text}\"")
         return text or None

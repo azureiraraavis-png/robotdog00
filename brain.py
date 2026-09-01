@@ -49,14 +49,28 @@ def _allowed(cleaned, phrase, spec):
 
 
 def match_command(text):
-    """등록된 명령이면 (이름, 정의) 를, 아니면 (None, None) 을 돌려줍니다.
+    """등록된 명령이면 (이름, 정의) 를, 아니면 (None, None) 을 돌려줍니다."""
+    name, spec, _, _ = match_detail(text)
+    return name, spec
 
-    1) 등록된 표현이 문장 안에 들어 있으면 채택 — "저기, 앉아 볼래?" 도 잡힙니다
-    2) 못 찾으면 유사도로 한 번 더 봅니다 — 인식이 살짝 어긋났을 때를 위해
+
+def match_detail(text):
+    """match_command 와 같지만 어떻게 맞았는지도 알려줍니다.
+
+    돌려주는 값: (이름, 정의, 방식, 점수)
+      방식 = "exact"  문장 안에 등록된 표현이 그대로 들어 있음
+             "fuzzy"  비슷해서 추정함 (인식이 뭉개졌을 때 복구되는 경로)
+             None     명령이 아님
+
+    추측으로 맞은 것이 잦다면 그 말투를 phrases 에 정식으로 추가하는 게 좋습니다.
+
+    판단 순서
+      1) 등록된 표현이 문장 안에 들어 있으면 채택 — "저기, 앉아 볼래?" 도 잡힙니다
+      2) 못 찾으면 유사도로 한 번 더 봅니다 — 인식이 살짝 어긋났을 때를 위해
     """
     cleaned = normalize(text)
     if not cleaned:
-        return None, None
+        return None, None, None, 0.0
 
     # 1) 포함 관계 — 긴 표현부터 봐야 "정지" 가 "정지하지마" 를 삼키지 않습니다
     candidates = []
@@ -66,7 +80,7 @@ def match_command(text):
     for _, phrase, name in sorted(candidates, reverse=True):
         if phrase and phrase in cleaned:
             if _allowed(cleaned, phrase, config.COMMANDS[name]):
-                return name, config.COMMANDS[name]
+                return name, config.COMMANDS[name], "exact", 1.0
 
     # 2) 유사도 — 인식 오차 보정
     best_name, best_score = None, 0.0
@@ -77,9 +91,9 @@ def match_command(text):
                 best_name, best_score = name, score
 
     if best_score >= config.COMMAND_FUZZY_THRESHOLD:
-        return best_name, config.COMMANDS[best_name]
+        return best_name, config.COMMANDS[best_name], "fuzzy", best_score
 
-    return None, None
+    return None, None, None, best_score
 
 
 # ═════════════════════════════════════════════════════════════
