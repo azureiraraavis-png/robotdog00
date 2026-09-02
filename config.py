@@ -98,9 +98,11 @@ PHRASES = {
 # ─────────────────────────────────────────────────────────────
 
 # 모델 크기.  tiny < base < small < medium < large-v3
-#   한국어는 base 이하가 많이 약합니다. small 이 실용적인 최소선입니다.
-#   느리면 base 로 낮추고, GPU 가 있으면 medium 이 훨씬 정확합니다.
-STT_MODEL = os.environ.get("GO2_STT_MODEL", "small")
+#   한국어는 base 이하가 많이 약합니다. small 이 CPU 에서의 실용적인 최소선입니다.
+#   ※ 이 기체 PC(RTX 4070)에서 GPU 추론이 확인되어 medium 으로 올렸습니다.
+#     medium 은 CPU 에서 답답합니다. GPU 를 못 쓰는 PC 로 옮기면 small 로 내리세요.
+#     첫 실행 때 약 1.5GB 를 내려받습니다.
+STT_MODEL = os.environ.get("GO2_STT_MODEL", "medium")
 
 # 어디서 돌릴지.  "auto" | "cuda" | "cpu"
 #   auto : GPU 를 먼저 시도하고, 실제로 돌려본 뒤 안 되면 CPU 로 내려갑니다
@@ -109,7 +111,11 @@ STT_MODEL = os.environ.get("GO2_STT_MODEL", "small")
 #
 #   ※ NVIDIA GPU 가 있어도 CUDA 라이브러리가 따로 필요합니다.
 #     없으면 auto 가 알아서 CPU 로 넘어가니 그냥 두셔도 됩니다.
-#     GPU 로 쓰고 싶다면:  pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+#     GPU 로 쓰고 싶다면 먼저:  .\run gpu_check.py
+#     (설치만으로는 윈도우에서 대개 안 됩니다 — cuda_dlls.py 참고)
+#
+#   "auto" 로 두어도 GPU 를 씁니다. 굳이 "cuda" 로 박아두지 않는 이유는,
+#   다른 PC 로 옮겼을 때 오류로 멈추는 대신 CPU 로 내려가게 하기 위함입니다.
 STT_DEVICE = os.environ.get("GO2_STT_DEVICE", "auto")
 
 # 마이크 장치 번호. None 이면 윈도우 기본 장치.
@@ -127,6 +133,9 @@ STT_MIN_SPEECH = 0.3       # 이보다 짧은 소리는 잡음으로 봅니다 (
 STT_END_SILENCE = 0.8      # 이만큼 조용하면 말이 끝난 것으로 봅니다 (초)
 STT_MAX_SECONDS = 12.0     # 한 번에 받을 최대 길이 (초)
 STT_BEAM = 1               # 1 이 가장 빠릅니다. 정확도를 원하면 5
+                           #   GPU 라면 5 로 올려도 체감 지연이 크지 않습니다.
+                           #   다만 한 번에 하나씩 바꾸세요 — medium 효과를
+                           #   먼저 확인한 다음에 건드리는 편이 낫습니다.
 
 
 # ─────────────────────────────────────────────────────────────

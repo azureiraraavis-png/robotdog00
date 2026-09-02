@@ -18,6 +18,7 @@
 
 import asyncio
 import contextlib
+import os
 import queue
 import sys
 import threading
@@ -26,6 +27,10 @@ import time
 import numpy as np
 
 import config
+
+# 모델을 받을 때마다 나오는 심볼릭 링크 경고를 끕니다.
+# 기능에는 영향이 없고 콘솔만 어지럽힙니다. (관리자 권한 없이 쓰는 게 정상)
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 SAMPLE_RATE = 16000        # whisper 가 쓰는 표준
 BLOCK = 1600               # 0.1초 단위로 봅니다
@@ -63,6 +68,12 @@ class Listener:
 
     def load_model(self):
         """whisper 모델을 올립니다. 첫 실행 때는 내려받느라 몇 분 걸립니다."""
+        # ★ import 보다 먼저 DLL 경로를 등록해야 합니다 ★
+        # 윈도우에서는 pip 로 받은 NVIDIA DLL 이 PATH 에 있어도 안 보입니다.
+        # 자세한 사정은 cuda_dlls.py 를 보세요.
+        import cuda_dlls
+        cuda_dlls.enable()
+
         from faster_whisper import WhisperModel
 
         size = config.STT_MODEL
@@ -86,9 +97,13 @@ class Listener:
                 if self.verbose:
                     reason = str(e).split("\n")[0][:100]
                     print(f"[인식] GPU 를 쓸 수 없습니다 — {reason}")
-                    if "cublas" in str(e).lower() or "cudnn" in str(e).lower():
-                        print("       CUDA 라이브러리가 없습니다. GPU 로 쓰고 싶다면:")
-                        print("         pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
+                    low = str(e).lower()
+                    if "cublas" in low or "cudnn" in low:
+                        print("       CUDA 라이브러리를 찾지 못했습니다.")
+                        print("       원인과 해결책을 짚어줍니다:  .\\run gpu_check.py")
+                    elif "out of memory" in low:
+                        print("       VRAM 이 모자랍니다. 다른 GPU 프로그램을 닫거나")
+                        print("       config.py 의 STT_MODEL 을 낮추세요.")
                     print("[인식] CPU 로 진행합니다.")
 
         self.model = WhisperModel(size, device="cpu", compute_type="int8")

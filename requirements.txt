@@ -12,5 +12,15 @@ edge-tts>=6.1.0
 # 첫 실행 때 모델을 한 번 내려받고, 그 뒤로는 오프라인으로 동작합니다.
 faster-whisper>=1.0.0
 
+# ── GPU 로 음성 인식을 돌릴 때만 (선택) ──────────────────────
+# NVIDIA RTX 그래픽카드가 있으면 medium 모델을 CPU 의 small 보다 빠르게 돌립니다.
+#   설치 후  .\run gpu_check.py  로 실제 동작까지 확인하세요.
+#
+#   ※ cuDNN 은 버전을 맞춰야 합니다.
+#     ctranslate2 4.5.0 이상 → cuDNN 9  (아래 그대로)
+#     그 아래           → nvidia-cudnn-cu12==8.9.7.29
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12
+
 # 자유 질의응답 (선택) — ANTHROPIC_API_KEY 가 있을 때만 쓰입니다
 anthropic>=0.40.0

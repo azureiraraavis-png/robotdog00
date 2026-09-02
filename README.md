@@ -22,12 +22,13 @@ Unitree Go2 PRO가 **한국어로 말하면서 방문객을 안내하도록** �
 | 연속 재생 (여러 문장을 이어서) | ✅ 실기 확인 |
 | 안전하게 눕히기 / 들어 올리기 / 넘어짐 복구 | ✅ 실기 확인 |
 | 자세 감시 (기울기 읽기) | ✅ 실기 확인 |
-| 한국어 음성 인식 (whisper, CPU) | ✅ 실기 확인 |
+| 한국어 음성 인식 (whisper) | ✅ 실기 확인 — GPU(RTX 4070) 로 medium 모델 |
 | 음성 명령 → 제자리 동작 (`05`) | ✅ 실기 확인 |
 | 보행·회전 (`02_move_test.py`) | ✅ 실기 확인 |
 | 키보드 조종 (`drive.py`) | ✅ 실기 확인 — 전진 0.5 m/s, 회전 1.4 rad/s |
 | 자세 전환 뒤에도 계속 걷기 | ✅ 해결 — 일어선 뒤 `StopMove` (13-11-7) |
-| 음성 명령 → 보행 | ⬜ 미검증 |
+| 음성 명령 → 보행 | ✅ 실기 확인 — 전진·후진·좌우 회전 |
+| 음성 명령: 자세 전환 뒤 회전 | ✅ 실기 확인 (앉기·엎드리기 후에도 정상) |
 | 안내 통합 데모 (`04_guide_demo.py`) | ⬜ 미검증 |
 
 **기체**: Unitree Go2 **PRO** (오디오 재생은 PRO/EDU 전용), 펌웨어 MCF 모드
@@ -825,6 +826,39 @@ MCF 모드에서 `SpeedLevel`(1015) 에 `{"data": 0}` 을 보내면 `-1` 이 돌
 영어 환경에서는 `"Korea Standard Time"` 이라 재현되지 않습니다.
 → 해당 헤더만 바꿔치기해 우회합니다. (`get_aes_key.py`)
 
+**14-2. 윈도우에서는 `pip install` 만으로 CUDA 라이브러리를 못 찾습니다**
+`Library cublas64_12.dll is not found` 가 나서 `nvidia-cublas-cu12` 를 깔았는데
+**같은 오류가 그대로** 나는 경우입니다.
+
+파이썬 3.8 부터 윈도우에서 확장 모듈이 의존하는 DLL 을 **PATH 에서 찾지
+않습니다.** 보안 때문에 바뀐 동작인데, 그 결과 pip 가 아래에 잘 깔아놓아도
+아무도 못 찾습니다.
+
+```
+.venv\Lib\site-packages\nvidia\cublas\bin\cublas64_12.dll
+```
+
+→ `os.add_dll_directory()` 로 그 폴더를 직접 등록해야 하고, 그것도
+  **faster_whisper 를 import 하기 전에** 해야 합니다. (`cuda_dlls.py`)
+
+  ※ 등록이 돌려주는 핸들을 붙잡아 두어야 합니다. 지역 변수에만 담으면
+    함수를 나가는 순간 등록이 풀립니다.
+
+**14-3. cuDNN 은 버전을 맞춰야 합니다**
+`ctranslate2` **4.5.0 부터 cuDNN 9**, 그 아래는 cuDNN 8 입니다.
+엇갈리면 `cudnn_ops64_9.dll not found` 가 계속 납니다.
+오류 문구의 숫자(`..._9.dll` / `..._8.dll`)가 무엇을 깔아야 하는지 알려줍니다.
+
+실측 (이 PC): `ctranslate2 4.8.2` + `nvidia-cudnn-cu12`(9.x) → **동작**.
+RTX 4070 12GB 에서 medium 모델이 CPU 의 small 보다 빠릅니다.
+
+**14-4. 확인은 실제 추론까지 해야 합니다**
+`WhisperModel(device="cuda")` 는 CUDA 라이브러리가 없어도 **객체 생성은
+성공합니다.** 계산을 시도하는 순간에야 죽습니다. 그래서 "GPU 사용" 이라고
+찍어놓고 한참 뒤에 터집니다.
+→ `.\run gpu_check.py` 가 6단계(가상환경 → 카드 → 패키지 → DLL → 장치 →
+  **실제 추론**)를 순서대로 짚고, 막힌 지점에 맞는 처방을 내놓습니다.
+
 **15. `pyaudio` 는 Python 3.13/3.14 용 휠이 없습니다**
 `portaudio.h: No such file` 로 빌드가 실패합니다. Python 3.12 를 쓰세요.
 
@@ -857,6 +891,8 @@ robotdog00/
 ├── find_robot.py          로봇 IP 찾기 + 네트워크 진단
 ├── safety.py              자세 감시, 자동 복구 제어
 ├── stt.py                 한국어 음성 인식 (로컬 whisper)
+├── cuda_dlls.py           윈도우 CUDA DLL 경로 등록 (stt 가 자동 사용)
+├── gpu_check.py           음성 인식 GPU 사용 가능 여부 진단
 ├── brain.py               명령어 판단 + 자유 질의응답
 ├── 01_connect_test.py     연결 확인          (안 움직임)
 ├── 02_move_test.py        동작 확인          (움직임)
