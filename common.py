@@ -13,6 +13,7 @@ import contextlib
 import fractions
 import io
 import json
+import math
 import random
 import sys
 import time
@@ -590,6 +591,77 @@ async def move(conn, x=0.0, y=0.0, z=0.0, duration=1.0):
         await stop(conn)
 
 
+def stick_to_speed(stick):
+    """스틱 값 → 대략적인 속도 (m/s)."""
+    return abs(stick) * getattr(config, "STICK_TO_MPS", 1.65)
+
+
+def distance_for(stick, seconds):
+    """이 명령이 대략 몇 미터를 갈지. 코스가 공간에 들어가는지 볼 때 씁니다."""
+    return stick_to_speed(stick) * seconds
+
+
+async def move_guarded(conn, probe, x=0.0, y=0.0, z=0.0, duration=1.0,
+                       max_drift_deg=None, verbose=True):
+    """이동하되, 방향이 틀어지면 멈춥니다.
+
+    ★ 좁은 곳에서 열린 루프로 걷는 것의 진짜 위험 ★
+    직진 명령만 줘도 로봇은 조금씩 돌아갑니다. 실측 로그에서 전진 중
+    회전 속도가 ±0.2 rad/s 까지 튀었습니다. 3초면 30도 넘게 틀어질 수
+    있고, 폭 1.5m 복도에서 그건 벽입니다.
+
+    앞을 보는 것은 아직 못 하지만, **얼마나 틀어졌는지는 지금도 압니다.**
+    로봇이 보고하는 회전 속도를 적분하면 됩니다. 한도를 넘으면 멈춥니다.
+
+    돌려주는 값: (끝까지 갔는지, 누적 회전 각도)
+    """
+    if max_drift_deg is None:
+        max_drift_deg = getattr(config, "MAX_DRIFT_DEG", 20.0)
+
+    lim = config.MAX_FORWARD_STICK
+    yaw = config.MAX_YAW_STICK
+    x = max(-lim, min(lim, x))
+    y = max(-lim, min(lim, y))
+    z = max(-yaw, min(yaw, z))
+    duration = min(duration, config.MAX_MOVE_DURATION)
+
+    turning = abs(z) > 0.05
+    if verbose:
+        dist = distance_for(x, duration)
+        note = "" if turning else f"  (약 {dist:.2f} m)"
+        print(f"[이동] 전진={x} 게걸음={y} 회전={z} / {duration}초{note}")
+
+    drift = 0.0                 # 누적 회전 (라디안)
+    last = time.time()
+    deadline = last + duration
+    finished = True
+
+    try:
+        while time.time() < deadline:
+            joystick(conn, **stick_from_intent(x, y, z))
+            await asyncio.sleep(0.02)
+
+            now = time.time()
+            dt, last = now - last, now
+
+            # 회전 명령을 준 구간은 당연히 도는 것이므로 재지 않습니다.
+            if not turning and probe is not None and probe.yaw_speed is not None:
+                drift += probe.yaw_speed * dt
+                if abs(math.degrees(drift)) > max_drift_deg:
+                    finished = False
+                    if verbose:
+                        print(f"[이동] ★ 방향이 {math.degrees(drift):+.0f}도 틀어져 멈춥니다 ★")
+                        print("       좁은 곳이라면 여기서 사람이 자세를 잡아주세요.")
+                    break
+    finally:
+        for _ in range(5):
+            joystick(conn, 0.0, 0.0, 0.0)
+            await asyncio.sleep(0.02)
+        await stop(conn)
+
+    return finished, math.degrees(drift)
+
+
 async def _move_by_sport(conn, x, y, z, duration):
     """예전 방식 — sport Move 명령. MCF 모드에서는 걷지 않습니다.
 
@@ -1067,6 +1139,15 @@ async def emergency_damp(conn):
         print(f"[비상] 댐핑 명령 실패: {e}")
 
 
+async def ask(prompt):
+    """사람에게 한 줄 물어봅니다.
+
+    confirm() 과 같은 이유로 반드시 to_thread 를 씁니다 — 그냥 input() 을
+    쓰면 이벤트 루프가 멈춰 로봇과의 연결이 끊깁니다.
+    """
+    return await asyncio.to_thread(input, prompt)
+
+
 async def confirm(message):
     """위험한 동작 전 사람의 확인을 받습니다.
 
@@ -1277,6 +1358,55 @@ async def make_all_phrases():
     return paths
 
 
+def prepare_wav(mp3_path, verbose=True):
+    """업로드용 wav 를 만듭니다. 이미 있으면 그대로 씁니다.
+
+    ★ 왜 우리가 직접 변환하나 ★
+    라이브러리에 mp3 를 주면 알아서 44.1kHz wav 로 바꿔 올립니다.
+    그런데 그 변환은 **소리 크기를 손보지 않습니다.**
+
+    edge-tts 의 출력은 24kHz / 48kbps 로 고정되어 있고(라이브러리가 그렇게
+    박아두어 우리가 못 올립니다), 게다가 최대 음량이 꽤 낮게 나옵니다.
+    그 상태로 올리면 잘 안 들려서 로봇 볼륨을 올리게 되는데, 로봇의 볼륨
+    눈금은 선형이 아니라 7 이상에서 거칠어집니다. 결국 압축 잡음과
+    스피커 잡음까지 같이 커집니다.
+
+    그래서 **여기서 최대 음량을 맞춰 올립니다.** 같은 크기로 들리면서
+    로봇 볼륨은 더 낮게 쓸 수 있습니다.
+
+    ※ 소리의 근본 품질(24kHz/48kbps)은 이걸로 나아지지 않습니다.
+      나빠지지 않게 하고, 음량만 제대로 맞추는 것입니다.
+    """
+    mp3_path = Path(mp3_path)
+    wav_path = mp3_path.with_suffix(".wav")
+    if wav_path.exists():
+        return wav_path
+
+    try:
+        from pydub import AudioSegment
+    except ImportError:
+        return mp3_path          # pydub 이 없으면 라이브러리에 맡깁니다
+
+    try:
+        audio = AudioSegment.from_mp3(str(mp3_path))
+        audio = audio.set_channels(1).set_frame_rate(44100)
+
+        if getattr(config, "TTS_NORMALIZE", True):
+            target = getattr(config, "TTS_PEAK_DBFS", -1.0)
+            gain = target - audio.max_dBFS
+            if audio.max_dBFS > -90:      # 무음이 아니면
+                audio = audio.apply_gain(gain)
+                if verbose and abs(gain) > 0.5:
+                    print(f"[음성] {mp3_path.stem}: 음량 {gain:+.1f} dB 보정")
+
+        audio.export(str(wav_path), format="wav")
+        return wav_path
+    except Exception as e:
+        if verbose:
+            print(f"[음성] wav 변환 실패, mp3 그대로 올립니다: {type(e).__name__}")
+        return mp3_path
+
+
 # ═════════════════════════════════════════════════════════════
 # 로봇 스피커 (AudioHub)
 # ═════════════════════════════════════════════════════════════
@@ -1347,8 +1477,12 @@ def quiet_upload():
         sys.stdout = old
 
 
-async def upload_phrase(hub, mp3_path):
-    """mp3 를 로봇에 올리고 UUID 를 돌려줍니다. 이미 있으면 재사용합니다.
+async def upload_phrase(hub, mp3_path, replace=False):
+    """멘트를 로봇에 올리고 UUID 를 돌려줍니다. 이미 있으면 재사용합니다.
+
+    replace=True 면 로봇에 있는 같은 이름을 지우고 다시 올립니다.
+    음량 보정처럼 **파일 내용이 바뀌었을 때** 씁니다. 그러지 않으면
+    이름이 같아서 옛 파일이 계속 재생됩니다.
 
     ※ 라이브러리 예제에는 업로드 직후 목록을 다시 읽지 않는 버그가 있습니다.
        여기서는 새로 읽어서 우회합니다.
@@ -1356,9 +1490,16 @@ async def upload_phrase(hub, mp3_path):
     mp3_path = Path(mp3_path)
     name = mp3_path.stem
 
-    for item in await _audio_list(hub):
-        if item.get("CUSTOM_NAME") == name:
-            return item["UNIQUE_ID"]
+    existing = [i for i in await _audio_list(hub)
+                if i.get("CUSTOM_NAME") == name]
+    if existing and not replace:
+        return existing[0]["UNIQUE_ID"]
+    for item in existing:
+        await hub.delete_record(item["UNIQUE_ID"])
+        await asyncio.sleep(0.4)
+
+    # 업로드용 wav 로 바꿉니다 (음량 보정 포함)
+    mp3_path = prepare_wav(mp3_path)
 
     # 4KB 조각 단위로 올라가고 조각마다 0.1초 쉽니다.
     size = mp3_path.stat().st_size
@@ -1397,17 +1538,99 @@ async def delete_robot_audio(hub, name):
     return False
 
 
-async def upload_all(conn, paths):
-    """모든 안내 멘트를 올리고 {key: uuid} 를 돌려줍니다."""
+# 로봇의 재생 모드.  라이브러리 문서 기준:
+#   single_cycle — 한 곡 반복   ★ 이게 기본값이라 멘트가 끝없이 되풀이됐습니다 ★
+#   no_cycle     — 한 번만 재생
+#   list_loop    — 목록 전체 반복
+PLAY_ONCE = "no_cycle"
+
+
+async def get_play_mode(hub):
+    """로봇의 현재 재생 모드를 읽습니다. 못 읽으면 None."""
+    try:
+        resp = await hub.get_play_mode()
+    except Exception:
+        return None
+    if not isinstance(resp, dict):
+        return None
+    try:
+        inner = resp.get("data", {}).get("data")
+        if isinstance(inner, str):
+            inner = json.loads(inner)
+        if isinstance(inner, dict):
+            return inner.get("play_mode")
+    except (ValueError, AttributeError):
+        pass
+    return None
+
+
+async def set_play_once(hub, verbose=True):
+    """멘트를 한 번만 재생하도록 맞춥니다.
+
+    ★ 이게 없으면 로봇이 같은 멘트를 끝없이 되풀이합니다 ★
+    기본 재생 모드가 '한 곡 반복'이라, play_by_uuid 한 번에 재생이
+    영원히 이어집니다. 04 에서 "두 번 말한다"고 느껴졌던 것도 사실은
+    반복이었고, 다음 명령이 우연히 끊어준 것뿐이었습니다.
+
+    돌려주는 값: 실제로 바뀌었는지 (읽어서 확인합니다)
+    """
+    before = await get_play_mode(hub)
+    try:
+        await hub.set_play_mode(PLAY_ONCE)
+    except Exception as e:
+        if verbose:
+            print(f"[음성] 재생 모드를 바꾸지 못했습니다: {type(e).__name__}")
+        return False
+    await asyncio.sleep(0.3)
+    after = await get_play_mode(hub)
+
+    if verbose:
+        if after == PLAY_ONCE:
+            note = f" (이전: {before})" if before and before != after else ""
+            print(f"[음성] 재생 모드: {after} — 한 번만 재생합니다{note}")
+        elif after is None:
+            print(f"[음성] 재생 모드를 {PLAY_ONCE} 로 설정했습니다 (확인은 못 했습니다)")
+        else:
+            print(f"[음성] ★ 재생 모드가 여전히 '{after}' 입니다 ★")
+            print("       멘트가 반복될 수 있습니다. hush.py 로 멈출 수 있습니다.")
+    return after in (PLAY_ONCE, None)
+
+
+async def hush(hub, verbose=True):
+    """지금 나오는 소리를 멈춥니다. (라이브러리에 stop 은 없고 pause 가 있습니다)"""
+    try:
+        await hub.pause()
+        if verbose:
+            print("[음성] 재생을 멈췄습니다.")
+        return True
+    except Exception as e:
+        if verbose:
+            print(f"[음성] 멈추지 못했습니다: {type(e).__name__}")
+        return False
+
+
+async def upload_all(conn, paths, replace=False):
+    """모든 안내 멘트를 올리고 {key: uuid} 를 돌려줍니다.
+
+    replace=True 면 로봇에 있는 것을 지우고 새로 올립니다.
+    (음량 보정을 켰거나 멘트 문구를 바꿨을 때)
+    """
     hub = make_audio_hub(conn)
+    await set_play_once(hub)          # ★ 올리기 전에 반복부터 끕니다 ★
     uuids = {}
     for key, path in paths.items():
-        uuids[key] = await upload_phrase(hub, path)
+        uuids[key] = await upload_phrase(hub, path, replace=replace)
     return hub, uuids
 
 
-async def say(hub, uuids, key, wait=3.0):
-    """올려둔 멘트를 로봇 스피커로 재생합니다."""
+async def say(hub, uuids, key, wait=3.0, stop_after=False):
+    """올려둔 멘트를 로봇 스피커로 재생합니다.
+
+    stop_after 를 켜면 기다린 뒤 확실히 멈춥니다. 재생 모드가 말을 듣지
+    않는 기체를 위한 보험인데, wait 가 멘트 길이보다 짧으면 말을 자릅니다.
+    """
     print(f"[음성] 재생: {key} — \"{config.PHRASES.get(key, '')}\"")
     await hub.play_by_uuid(uuids[key])
     await asyncio.sleep(wait)
+    if stop_after:
+        await hush(hub, verbose=False)
