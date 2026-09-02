@@ -22,5 +22,8 @@ faster-whisper>=1.0.0
 # nvidia-cublas-cu12
 # nvidia-cudnn-cu12
 
+# 로봇의 눈으로 보기 (look.py) — 카메라 사진과 라이다 지도를 이미지로 저장
+pillow>=10.0.0
+
 # 자유 질의응답 (선택) — ANTHROPIC_API_KEY 가 있을 때만 쓰입니다
 anthropic>=0.40.0
