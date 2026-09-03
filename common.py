@@ -159,6 +159,51 @@ def resolve_key():
 # 연결
 # ═════════════════════════════════════════════════════════════
 
+# 연결이 이 시간 안에 안 되면 실패로 봅니다 (초).
+#
+# ★ 왜 필요한가 ★
+# WebRTC 협상이 어긋나면 라이브러리 안의 백그라운드 작업만 죽고
+# `await conn.connect()` 는 **영원히 돌아오지 않습니다.** 화면에는
+#     AttributeError: 'NoneType' object has no attribute 'media'
+# 한 줄만 찍히고 그대로 멈춰 있습니다. 사람이 강제 종료할 때까지요.
+# 실측: 로봇을 막 켠 직후나 이전 세션이 남아 있을 때 가끔 이렇게 됩니다.
+CONNECT_TIMEOUT = 30.0
+
+# 실패했을 때 다시 붙기까지 기다리는 시간 (초).
+# 로봇이 이전 세션을 놓는 데 시간이 걸립니다.
+RECONNECT_WAIT = 20.0
+
+
+async def _open_with_timeout(method, kwargs, verbose=True, tries=2):
+    """연결을 열되, 매달리지 않습니다. 실패하면 한 번 더 시도합니다."""
+    last = None
+    for n in range(1, tries + 1):
+        conn = UnitreeWebRTCConnection(method, **kwargs)
+        try:
+            await asyncio.wait_for(conn.connect(), timeout=CONNECT_TIMEOUT)
+            return conn
+        except asyncio.TimeoutError:
+            last = TimeoutError(
+                f"연결이 {CONNECT_TIMEOUT:.0f}초 안에 되지 않았습니다.")
+        except Exception as e:
+            last = e
+        finally:
+            if last is not None:
+                with contextlib.suppress(Exception):
+                    await conn.disconnect()
+
+        if verbose:
+            print(f"\n[연결] 실패 ({type(last).__name__}) — {n}/{tries}")
+        if n < tries:
+            if verbose:
+                print(f"[연결] 로봇이 이전 세션을 놓도록 "
+                      f"{RECONNECT_WAIT:.0f}초 기다렸다 다시 시도합니다...")
+            await asyncio.sleep(RECONNECT_WAIT)
+            last = None
+
+    raise last if last else RuntimeError("연결에 실패했습니다.")
+
+
 async def connect(verbose=True):
     """로봇에 연결하고 UnitreeWebRTCConnection 을 돌려줍니다.
 
@@ -195,8 +240,7 @@ async def connect(verbose=True):
         method = WebRTCConnectionMethod.LocalSTA
         kwargs["ip"] = ip
 
-    conn = UnitreeWebRTCConnection(method, **kwargs)
-    await conn.connect()
+    conn = await _open_with_timeout(method, kwargs, verbose=verbose)
 
     if verbose:
         print("[연결] 성공")
@@ -315,6 +359,16 @@ def explain_error(exc):
             "  → 앱이 아직 붙어 있을 수 있습니다. 20초 후 다시 시도하세요.",
         "NoSdpAnswerError":
             "로봇이 응답하지 않았습니다. 재부팅 후 다시 시도해 보세요.",
+        "TimeoutError":
+            "연결 협상이 제 시간에 끝나지 않았습니다.\n"
+            "  → 로봇을 막 켠 직후라면 1분쯤 두었다가 다시 시도하세요.\n"
+            "  → 폰의 유니트리 앱이 붙어 있지 않은지 확인하세요.\n"
+            "  → 화면에 'NoneType' object has no attribute 'media' 가 함께\n"
+            "    떴다면 WebRTC 협상이 어긋난 것입니다. 재시도로 대개 풀립니다.",
+        "AttributeError":
+            "라이브러리 내부에서 예상 못 한 값이 나왔습니다.\n"
+            "  → 'NoneType' object has no attribute 'media' 라면 WebRTC 협상\n"
+            "    실패입니다. 20초 기다렸다 다시 시도하세요.",
     }
     print(f"\n[오류] {name}: {exc}")
     if name in hints:
@@ -592,13 +646,29 @@ async def move(conn, x=0.0, y=0.0, z=0.0, duration=1.0):
 
 
 def stick_to_speed(stick):
-    """스틱 값 → 대략적인 속도 (m/s)."""
-    return abs(stick) * getattr(config, "STICK_TO_MPS", 1.65)
+    """스틱 값 → **실제로 유지되는** 속도 (m/s). 거리 계산용."""
+    return abs(stick) * getattr(config, "STICK_TO_MPS", 1.05)
 
 
-def distance_for(stick, seconds):
-    """이 명령이 대략 몇 미터를 갈지. 코스가 공간에 들어가는지 볼 때 씁니다."""
-    return stick_to_speed(stick) * seconds
+def stick_to_peak_speed(stick):
+    """스틱 값 → **순간 최고** 속도 (m/s). 안전 여유 계산용."""
+    return abs(stick) * getattr(config, "STICK_TO_MPS_PEAK", 1.65)
+
+
+def distance_for(stick, seconds, safe=False):
+    """이 명령이 몇 미터를 갈지.
+
+    ★ 어느 쪽으로 틀릴지를 골라야 합니다 ★
+      safe=False (기본)  실제에 가까운 값. "얼마나 갈까" 를 물을 때.
+      safe=True          넉넉히 큰 값. "이 코스가 공간에 들어갈까" 를 물을 때.
+                         공간 판정에서 작게 잡으면 벽에 부딪힙니다.
+
+    출발 지연 0.5초를 뺍니다. 짧은 명령에서는 이게 큽니다 —
+    1.5초 명령이면 3분의 1이 출발하는 데 쓰입니다.
+    """
+    lag = 0.0 if safe else getattr(config, "START_LAG", 0.5)
+    speed = stick_to_peak_speed(stick) if safe else stick_to_speed(stick)
+    return speed * max(0.0, seconds - lag)
 
 
 async def move_guarded(conn, probe, x=0.0, y=0.0, z=0.0, duration=1.0,
@@ -917,6 +987,45 @@ async def stand_and_wait(conn, probe=None, timeout=10.0, verbose=True):
 
     await ensure_locomotion(conn, probe, verbose=verbose)
     return standing
+
+
+async def ensure_standing(conn, probe=None, ask=True, verbose=True):
+    """서 있지 않으면 일으켜 세웁니다. 돌려주는 값: 서 있게 되었는지
+
+    ★ 왜 필요한가 ★
+    엎드린 로봇으로 주변을 보면 **카메라는 바닥을 찍고, 라이다는 낮은 데만
+    봅니다.** 복도 벽이 제대로 안 잡힙니다.
+
+    그런데 실험이 중단되면 settle() 이 로봇을 눕히고 끝납니다(서 있는 채로
+    힘을 빼면 넘어지니까요). 그래서 **다음 실행은 기본적으로 엎드린
+    상태에서 시작합니다.** 사람에게 "리모컨으로 세우세요" 라고 말로 맡기면
+    잊어버리기 마련이고, 그러면 바닥 사진만 남습니다.
+
+    ask=True 면 일으키기 전에 물어봅니다. 제자리에서 일어서기만 하고
+    이동하지는 않습니다.
+    """
+    if probe is None:
+        probe = StateProbe(conn)
+    h = await probe.read()
+
+    if h is not None and h > StateProbe.STANDING:
+        if verbose:
+            print(f"[자세] 이미 서 있습니다 (몸높이 {h:.3f} m)")
+        return True
+
+    if verbose:
+        shown = f"{h:.3f} m" if h is not None else "읽지 못함"
+        print(f"[자세] 로봇이 서 있지 않습니다 (몸높이 {shown})")
+        print("       이대로는 카메라가 바닥을 찍고, 라이다도 낮은 데만 봅니다.")
+
+    if ask and not await confirm(
+            "일으켜 세울까요?  (제자리에서 일어서기만 하고 이동하지 않습니다)"):
+        if verbose:
+            print("[자세] 엎드린 채로 진행합니다 — 결과를 그대로 믿지 마세요.")
+        return False
+
+    await stand_and_wait(conn, probe=probe, verbose=verbose)
+    return True
 
 
 async def ensure_locomotion(conn, probe=None, tries=3, verbose=True):

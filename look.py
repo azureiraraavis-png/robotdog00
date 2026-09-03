@@ -4,7 +4,9 @@
 
     .\\run look.py
 
-  로봇은 움직이지 않습니다. 보기만 합니다.
+  로봇은 **제자리에서 일어서기만** 하고, 이동하지 않습니다.
+  엎드려 있으면 물어보고 세웁니다 — 엎드린 채로 찍으면 카메라가 바닥을
+  보고 라이다도 낮은 데만 봐서, 복도 벽이 제대로 안 잡힙니다.
 
   왜 만들었나
     "회피가 되는가" 를 시험하기 전에 물어야 할 것이 있습니다.
@@ -33,28 +35,15 @@ from pathlib import Path
 import numpy as np
 
 import common
-from unitree_webrtc_connect.constants import RTC_TOPIC
+import perception
+from perception import (OBSTACLE_LOW, OBSTACLE_HIGH, WALL_LOW, WALL_HIGH,
+                        to_robot_frame, voxels_to_points)
 
 conn = None
 OUT = Path(__file__).parent / "look"
 
-# '부딪힐 만한 높이' 구간 — ★ 바닥 기준 ★ (m)
-#
-# 실측으로 확인: 서 있는 로봇의 자세 z 가 +0.33 m 로 나왔고, 이는 앞서 잰
-# 실제 기립 높이(0.31~0.33 m)와 일치합니다. 즉 지도의 z=0 이 바닥입니다.
-#
-# 그래서 높이를 '로봇 몸통 기준' 이 아니라 '바닥 기준' 으로 셉니다.
-# 몸통 기준으로 세면 0.38~1.53 m 를 보게 되는데, 그건 벽과 사물함 높이일 뿐
-# **로봇이 실제로 걸려 넘어질 낮은 것들을 통째로 놓칩니다.**
-OBSTACLE_LOW = 0.05        # 바닥에서 이만큼 위부터
-OBSTACLE_HIGH = 0.60       # 로봇 어깨 높이 언저리까지
-
-# 참고용으로 같이 재는, 더 높은 구간 (벽·사물함 등 '통로 폭' 판단용)
-WALL_LOW = 0.60
-WALL_HIGH = 1.60
-
-# 이 반경 안의 점은 로봇 자기 몸에서 돌아온 것으로 봅니다 (m)
-SELF_RADIUS = 0.25
+# 높이 구간·자기몸 반경 등은 perception.py 에 모아두었습니다.
+# 같은 지식을 두 군데 두면 반드시 어긋납니다.
 
 # 지도 범위 (로봇을 중심으로 앞뒤·좌우 몇 미터까지 그릴지)
 MAP_RANGE = 4.0
@@ -118,150 +107,28 @@ async def grab_photo(conn, path, frames=12, timeout=15.0):
 # 라이다
 # ═════════════════════════════════════════════════════════════
 
-class VoxelCatcher:
-    """라이다 복셀 맵과 로봇의 자세를 받아둡니다.
-
-    ★ 왜 자세가 필요한가 ★
-    복셀 맵은 **로봇 기준이 아니라 지도 기준**입니다. 로봇이 돌아다니며
-    쌓아온 주변 지도 전체이고, 좌표의 원점도 로봇이 아닙니다.
-
-    그걸 모르고 '로봇이 원점, x 가 앞' 이라고 가정했더니, 사진에는 앞이
-    훤히 트여 있는데 "정면 0.58m" 같은 숫자가 나왔습니다.
-
-    로봇의 위치와 방향을 같이 받아 점들을 로봇 기준으로 옮겨야 합니다.
-    """
-
-    def __init__(self, conn):
-        self.latest = None
-        self.count = 0
-        self.pose = None
-        self.pose_raw = None
-        conn.datachannel.pub_sub.subscribe(
-            RTC_TOPIC["ULIDAR_ARRAY"], self._on_msg)
-        conn.datachannel.pub_sub.subscribe(
-            RTC_TOPIC["ROBOTODOM"], self._on_pose)
-
-    def _on_msg(self, message):
-        self.count += 1
-        data = message.get("data")
-        if isinstance(data, dict):
-            self.latest = data
-
-    def _on_pose(self, message):
-        data = message.get("data")
-        if not isinstance(data, dict):
-            return
-        self.pose_raw = data
-        pos = data.get("position") or data.get("pose", {}).get("position")
-        ori = data.get("orientation") or data.get("pose", {}).get("orientation")
-        try:
-            if isinstance(pos, dict):
-                xyz = [pos.get("x", 0.0), pos.get("y", 0.0), pos.get("z", 0.0)]
-            else:
-                xyz = list(pos)[:3]
-            if isinstance(ori, dict):
-                q = [ori.get("x", 0.0), ori.get("y", 0.0),
-                     ori.get("z", 0.0), ori.get("w", 1.0)]
-            else:
-                q = list(ori)[:4]
-            # 쿼터니언 → yaw (평면 위 회전각)
-            qx, qy, qz, qw = [float(v) for v in q]
-            yaw = np.arctan2(2 * (qw * qz + qx * qy),
-                             1 - 2 * (qy * qy + qz * qz))
-            self.pose = (float(xyz[0]), float(xyz[1]), float(xyz[2]), float(yaw))
-        except (TypeError, ValueError, IndexError, AttributeError):
-            pass
-
-
-def to_robot_frame(points, pose):
-    """지도 기준 점들을 로봇 기준으로 옮깁니다.
-
-    돌려주는 값: (옮긴 점들, 옮겼는지 여부)
-    로봇 기준에서는 x 가 앞, y 가 왼쪽, z 가 로봇 몸높이 기준입니다.
-    """
-    if pose is None or points is None or len(points) == 0:
-        return points, False
-
-    rx, ry, rz, yaw = pose
-    rel = points[:, :2] - np.array([rx, ry])
-    c, s = np.cos(-yaw), np.sin(-yaw)
-    x = rel[:, 0] * c - rel[:, 1] * s
-    y = rel[:, 0] * s + rel[:, 1] * c
-    # ★ z 는 빼지 않습니다 ★
-    # 지도의 z=0 이 바닥이므로, 원래 값이 곧 '바닥에서의 높이' 입니다.
-    # 로봇 몸통 기준으로 바꿔버리면 낮은 장애물을 놓칩니다.
-    z = points[:, 2]
-    return np.stack([x, y, z], axis=1), True
-
-
 async def grab_voxels(conn, timeout=15.0):
-    """라이다를 켜고 복셀 맵 한 장을 받습니다."""
-    catcher = VoxelCatcher(conn)
-
-    # 라이다 데이터는 양이 많아 기본적으로 절약 모드로 막혀 있습니다.
-    try:
-        await conn.datachannel.disableTrafficSaving(True)
-    except Exception as e:
-        print(f"[라이다] 절약 모드 해제 실패 (계속 시도): {type(e).__name__}")
-
-    conn.datachannel.pub_sub.publish_without_callback(
-        RTC_TOPIC["ULIDAR_SWITCH"], "on")
+    """라이다를 켜고 복셀 맵 한 장과 로봇 자세를 받습니다."""
+    eyes = perception.Eyes(conn)
+    await eyes.start(timeout=timeout, verbose=False)
     print("[라이다] 켜고 복셀 맵을 기다립니다...")
 
-    deadline = time.time() + timeout
-    while catcher.latest is None and time.time() < deadline:
-        await asyncio.sleep(0.3)
-
-    if catcher.latest is None:
+    if eyes.payload is None:
         print("[라이다] 데이터가 오지 않았습니다.")
-        print(f"         받은 메시지 {catcher.count}개")
+        print(f"         받은 메시지 {eyes.count}개")
         print("         라이다가 꺼져 있거나(리모컨/앱에서 확인),")
         print("         연결 직후의 'Radar malfunction' 오류가 계속되는 상태일 수 있습니다.")
         return None, None
 
-    if catcher.pose is None:
+    if eyes.pose is None:
         print("[라이다] ★ 로봇 자세를 못 받았습니다 ★")
         print("         지도는 그리지만 '로봇 기준' 이 아니라 '지도 기준' 입니다.")
         print("         거리 숫자를 믿지 마세요.")
-        if catcher.pose_raw:
-            print(f"         받은 자세 항목: {sorted(catcher.pose_raw.keys())}")
     else:
-        rx, ry, rz, yaw = catcher.pose
+        rx, ry, rz, yaw = eyes.pose
         print(f"[라이다] 로봇 위치 ({rx:+.2f}, {ry:+.2f}, {rz:+.2f}) m, "
               f"방향 {np.degrees(yaw):+.0f}도")
-    return catcher.latest, catcher.pose
-
-
-def voxels_to_points(payload):
-    """복셀 맵을 (N, 3) 실좌표 배열로 바꿉니다. 실패하면 None.
-
-    라이다는 공간을 작은 정육면체로 나눠 '여기 뭔가 있다' 를 표시합니다.
-    positions 는 그 정육면체의 격자 번호이고, 실제 위치는
-        원점(origin) + 격자번호 × 한 칸 크기(resolution)
-    입니다.
-    """
-    try:
-        inner = payload.get("data")
-        if not isinstance(inner, dict):
-            return None, "복셀 데이터 형식이 예상과 다릅니다"
-
-        positions = inner.get("positions")
-        if positions is None:
-            return None, f"positions 가 없습니다 (있는 항목: {sorted(inner.keys())})"
-
-        arr = np.asarray(positions)
-        if arr.ndim != 1 or arr.size < 3:
-            return None, f"positions 모양이 예상과 다릅니다: {arr.shape}"
-
-        arr = arr[: (arr.size // 3) * 3].reshape(-1, 3).astype(np.float64)
-
-        origin = payload.get("origin") or inner.get("origin") or [0.0, 0.0, 0.0]
-        res = payload.get("resolution") or inner.get("resolution") or 0.05
-        origin = np.asarray(origin, dtype=np.float64).reshape(3)
-
-        return origin + arr * float(res), None
-    except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+    return eyes.payload, eyes.pose
 
 
 def summarize(points):
@@ -278,14 +145,14 @@ def summarize(points):
     lines.append(f"전체 점 {len(points)}개 중, 부딪힐 높이"
                  f"({OBSTACLE_LOW}~{OBSTACLE_HIGH}m) 에 {len(band)}개")
 
-    # 로봇 자기 몸에서 돌아온 점 제거 (몸통 반경 약 0.25m)
+    # 로봇 자기 몸(과 걸을 때 뻗는 발)에서 돌아온 점 제거
     if len(band):
-        r = np.hypot(band[:, 0], band[:, 1])
-        selfhits = int((r < SELF_RADIUS).sum())
-        band = band[r >= SELF_RADIUS]
+        before = len(band)
+        band = perception.obstacle_band(points)
+        selfhits = before - len(band)
         if selfhits:
             lines.append(f"자기 몸 반사로 보이는 {selfhits}개는 뺐습니다"
-                         f" (반경 {SELF_RADIUS}m)")
+                         f" (앞뒤 {perception.SELF_LONG}m × 좌우 {perception.SELF_WIDE}m)")
 
     if len(band) == 0:
         lines.append("그 높이에 아무것도 없습니다 — 트여 있거나, 라이다가 못 보고 있습니다.")
@@ -389,6 +256,19 @@ async def run(conn_):
     OUT.mkdir(exist_ok=True)
     t = stamp()
     made = []
+
+    # ── 자세부터 ─────────────────────────────────────────────
+    # 엎드린 채로 찍으면 바닥 사진과 낮은 라이다만 남습니다.
+    print("\n" + "=" * 62)
+    print(" 0. 자세 확인")
+    print("=" * 62)
+    probe = common.StateProbe(conn_)
+    stood = await common.ensure_standing(conn_, probe=probe)
+    if stood:
+        # 일어선 뒤 라이다 지도가 새 높이로 갱신될 시간을 줍니다.
+        # 지도는 쌓이는 것이라, 엎드려서 본 것이 잠시 남아 있습니다.
+        print("[자세] 라이다 지도가 갱신되도록 3초 기다립니다...")
+        await asyncio.sleep(3.0)
 
     print("\n" + "=" * 62)
     print(" 1. 앞 카메라")

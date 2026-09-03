@@ -55,10 +55,16 @@ COURSE = [
 ]
 
 
-def course_distance(steps=None):
-    """코스가 앞으로 나아가는 총 거리 (m)."""
+def course_distance(steps=None, safe=True):
+    """코스가 앞으로 나아가는 총 거리 (m).
+
+    ★ 기본이 safe=True 인 이유 ★
+    이 값으로 "공간에 들어가는가" 를 판정합니다. 판정에서는 **크게** 잡아야
+    합니다 — 작게 잡고 틀리면 벽입니다. 실제로 얼마나 갈지 궁금할 때만
+    safe=False 로 부르세요.
+    """
     steps = COURSE if steps is None else steps
-    return sum(common.distance_for(x, secs)
+    return sum(common.distance_for(x, secs, safe=safe)
                for _, x, z, secs in steps if abs(z) <= 0.05)
 
 
@@ -73,8 +79,10 @@ def check_space(verbose=True):
     usable = length - margin
 
     if verbose:
+        real = course_distance(safe=False)
         print("\n[공간] 코스가 들어가는지 확인합니다")
-        print(f"       코스가 나아가는 거리   약 {need:.2f} m")
+        print(f"       코스가 나아가는 거리   최대 {need:.2f} m"
+              f"  (실제로는 {real:.2f} m 쯤)")
         print(f"       쓸 수 있는 거리        {length:.2f} m − 여유 {margin:.2f} m"
               f" = {usable:.2f} m")
         width = getattr(config, "COURSE_WIDTH", 1.5)
