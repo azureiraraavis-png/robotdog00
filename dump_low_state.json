@@ -1,0 +1,214 @@
+{
+  "imu_state": {
+    "rpy": [
+      0.002889,
+      0.039,
+      1.72239
+    ]
+  },
+  "motor_state": [
+    {
+      "q": -0.121239,
+      "temperature": 35,
+      "lost": 10,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": 0.72613,
+      "temperature": 31,
+      "lost": 11,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": -1.393412,
+      "temperature": 35,
+      "lost": 13,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": -0.093399,
+      "temperature": 36,
+      "lost": 10,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": 0.74469,
+      "temperature": 33,
+      "lost": 11,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": -1.532978,
+      "temperature": 35,
+      "lost": 14,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": 0.127002,
+      "temperature": 40,
+      "lost": 20,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": 0.763608,
+      "temperature": 33,
+      "lost": 5,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": -1.443362,
+      "temperature": 36,
+      "lost": 5,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": 0.002616,
+      "temperature": 44,
+      "lost": 12,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": 0.666629,
+      "temperature": 32,
+      "lost": 11,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": -1.365578,
+      "temperature": 35,
+      "lost": 5,
+      "reserve": [
+        0,
+        618
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    },
+    {
+      "q": 0,
+      "temperature": 0,
+      "lost": 0,
+      "reserve": [
+        0,
+        0
+      ]
+    }
+  ],
+  "bms_state": {
+    "version_high": 1,
+    "version_low": 18,
+    "soc": 88,
+    "current": -1541,
+    "cycle": 4,
+    "bq_ntc": [
+      27,
+      26
+    ],
+    "mcu_ntc": [
+      30,
+      29
+    ]
+  },
+  "foot_force": [
+    97,
+    108,
+    109,
+    100
+  ],
+  "temperature_ntc1": 43,
+  "power_v": 31.040199
+}

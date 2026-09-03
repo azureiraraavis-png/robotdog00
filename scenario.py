@@ -50,7 +50,10 @@ def _pad(text, width, right=False):
 # ─────────────────────────────────────────────────────────────
 
 TITLE = "AI응용소프트웨어과 외빈 안내"
-ROUTE = "3층 엘리베이터 홀 → 301호 → 302호 → 303호 프로젝트실"
+ROUTE = "3층 엘리베이터 홀 → 301호 → 303호 → 304호 프로젝트실"
+# ※ 문서 원문은 301 → 302 → 303 이었습니다. 이 층에 302호가 없어
+#   한 칸씩 밀렸습니다. 역할(전반기 강의실 / 후반기 강의실 / 프로젝트실)은
+#   그대로이고 호실 번호만 바뀌었습니다.
 AUDIENCE = "외부 방문객(외빈), 산업체 관계자, 학부모·수험생"
 
 # 문서 §1-1 의 원칙. 코드가 이걸 지키는지 check() 가 봅니다.
@@ -144,17 +147,69 @@ class Step:
         self.notes = list(notes)
 
 
+# ── 동작에 걸리는 시간 (초) ──────────────────────────────────
+# 어림값입니다. 실제로 재면 고치세요.
+GESTURE_SECONDS = {
+    None: 0.0,
+    "hello": 3.0,      # 고개 숙여 인사
+    "sit": 3.5,        # 앉기
+    "stand": 3.5,      # 일어서기
+    "tilt": 1.5,       # 발은 그대로 두고 몸통만 기울여 가리키기 (Euler)
+    "lie": 3.5,        # 엎드리기 — 안내가 끝났다는 신호
+}
+
+
+class Line:
+    """정차 지점 안의 한 토막.  멘트 하나 + 그 시작에 맞춰 하는 동작 하나.
+
+    ★ 왜 토막을 내는가 ★
+      S1(환영 인사)이 실측 46초였습니다. 문서가 정한 기준의 두 배입니다.
+      그런데 **줄이는 것만이 답은 아닙니다.** 46초가 문제인 이유는 길이
+      자체가 아니라, 그동안 방문객이 볼 것이 없다는 데 있습니다.
+      말을 토막 내고 사이에 동작을 넣으면, 시간은 오히려 조금 늘지만
+      보는 사람에게는 훨씬 짧게 느껴집니다.
+
+      그래서 판정 기준도 바뀝니다. **한 지점의 총 길이가 아니라
+      한 토막의 길이**를 봅니다. 쉬지 않고 이어지는 말의 덩어리가
+      얼마나 큰가 — 그게 실제로 지루함을 만드는 값입니다.
+
+      gesture 는 그 토막이 **시작될 때** 함께 합니다. 끝날 때까지 기다리지
+      않습니다 (인사하면서 "안녕하십니까" 를 말해야 자연스럽습니다).
+      pause 는 그 토막이 끝나고 쉬는 시간입니다.
+    """
+
+    def __init__(self, key, text, gesture=None, pause=0.0, note=None):
+        self.key = key
+        self.text = text
+        self.gesture = gesture
+        self.pause = pause
+        self.note = note
+
+    def seconds(self):
+        secs, _real = _line_seconds(self)
+        return secs
+
+
 class Stop(Step):
-    """멈춰서 말하는 지점."""
+    """멈춰서 말하는 지점.
+
+    멘트가 하나면 key/text 를, 토막을 내려면 lines 를 줍니다.
+    """
     kind = "정차"
 
-    def __init__(self, sid, place, purpose, key, text,
+    def __init__(self, sid, place, purpose, key=None, text=None, lines=None,
                  doc_seconds=None, gesture=None, face=None, notes=()):
         super().__init__(sid, place, purpose, notes)
-        self.key = key            # 로봇에 올라갈 오디오 파일 이름 (영문/숫자)
-        self.text = text
+        if lines:
+            self.lines = list(lines)
+            self.key = None                    # 토막마다 따로 있습니다
+            self.text = " ".join(l.text for l in self.lines)
+        else:
+            self.lines = [Line(key, text, gesture=gesture)]
+            self.key = key
+            self.text = text
         self.doc_seconds = doc_seconds
-        self.gesture = gesture    # "hello" = 인사 동작
+        self.gesture = gesture    # 토막이 하나일 때의 동작
         self.face = face          # "visitor" 방문객 쪽 | "door" 문 쪽
 
 
@@ -163,42 +218,62 @@ class Move(Step):
     kind = "이동"
 
     def __init__(self, sid, place, purpose, key, text,
-                 meters=None, doc_seconds=None, turn_deg=0.0, notes=()):
+                 meters=None, doc_seconds=None, turn_deg=0.0,
+                 reposition=False, notes=()):
         super().__init__(sid, place, purpose, notes)
         self.key = key
         self.text = text
-        self.meters = meters      # ★ 줄자로 재서 채우세요 (m) ★
+        self.meters = meters      # 실측 (m)
         self.doc_seconds = doc_seconds
         self.turn_deg = turn_deg  # 출발 전 돌아야 하는 각도 (+ 가 왼쪽)
+        # 짧게 자리만 고쳐 잡는 구간. 예고 멘트가 없어도 됩니다.
+        # (문서 원칙은 "출발 전 반드시 예고" 인데, 한 걸음 물러나 방문객을
+        #  마주보는 것까지 예고하면 오히려 어색합니다)
+        self.reposition = reposition
 
 
 SCENARIO = [
     Stop(
         "S1", "3층 엘리베이터 홀", "환영 인사 및 학과 소개",
-        key="s1_welcome",
-        doc_seconds=30,
-        gesture="hello", face="visitor",
-        text=(
-            "안녕하십니까. 저는 AI응용소프트웨어과 안내를 맡은 로봇입니다. "
-            "저희 학과를 방문해 주셔서 진심으로 감사합니다. "
-            "지금부터 AI응용소프트웨어과를 안내해 드리겠습니다. "
-            "저희 학과는 인공지능과 데이터 분석, 그리고 응용 소프트웨어 개발을 "
-            "함께 배우는 학과입니다. "
-            "한 해에 두 개의 하이테크 과정을 운영하며, 전공 기초부터 인공지능 응용, "
-            "그리고 현장 중심 프로젝트로 이어지는 교육과정을 진행하고 있습니다. "
-            "오늘은 저희 학과의 강의실과 프로젝트실을 차례로 안내해 드리겠습니다. "
-            "제 뒤를 따라 천천히 이동해 주시기 바랍니다."
-        ),
+        doc_seconds=30, face="visitor",
+        lines=[
+            # 문서 §2: "인사 동작은 멘트 첫 문장과 동기화한다"
+            Line("s1a_greet", gesture="hello", pause=0.5, text=(
+                "안녕하십니까. 저는 AI응용소프트웨어과 안내를 맡은 로봇입니다. "
+                "저희 학과를 방문해 주셔서 진심으로 감사합니다."
+            )),
+            # 여기서 앉습니다. 서서 40초를 떠드는 것보다, 자리를 잡고
+            # 이야기하는 편이 자연스럽고 볼 것도 생깁니다.
+            Line("s1b_intro", gesture="sit", pause=0.3, text=(
+                "지금부터 AI응용소프트웨어과를 안내해 드리겠습니다. "
+                "저희 학과는 인공지능과 데이터 분석, 그리고 응용 소프트웨어 개발을 "
+                "함께 배우는 학과입니다."
+            )),
+            # 앉은 채로 이어갑니다
+            Line("s1c_program", pause=0.3, text=(
+                "한 해에 두 개의 하이테크 과정을 운영하며, 전공 기초부터 인공지능 응용, "
+                "그리고 현장 중심 프로젝트로 이어지는 교육과정을 진행하고 있습니다."
+            )),
+            # 일어서면서 "따라오세요" — 동작이 말을 예고합니다
+            Line("s1d_lead", gesture="stand", text=(
+                "오늘은 저희 학과의 강의실과 프로젝트실을 차례로 안내해 드리겠습니다. "
+                "제 뒤를 따라 천천히 이동해 주시기 바랍니다."
+            )),
+        ],
         notes=[
-            "인사 동작은 멘트 첫 문장과 동기화한다.",
+            "★ 원문 그대로입니다. 글자는 하나도 안 바꿨습니다 ★ "
+            "한 덩어리 46초를 네 토막으로 나누고 사이에 동작을 넣었을 뿐입니다.",
+            "일어서는 동작이 '따라오세요' 를 예고합니다. 말보다 동작이 먼저 "
+            "읽히므로, 방문객이 출발 준비를 할 시간이 생깁니다.",
             "방문객이 여러 명일 경우, 인원이 모두 모인 것을 확인한 뒤 발화를 시작한다.",
-            "★ 문서의 15~25초 기준을 이 구간만 크게 넘깁니다. 아래 S1_SHORT 참고.",
+            "앉기→일어서기 뒤에 바로 걷는 것은 실측으로 확인했습니다 "
+            "(StopMove 를 먼저 보내는 것이 핵심 — README 참고).",
         ],
     ),
     Move(
         "M1", "홀 → 301호 앞", "이동 예고 후 저속 주행",
         key="m1_to_301",
-        meters=None, doc_seconds=25,
+        meters=0.98, doc_seconds=25, turn_deg=+170,
         text=("지금부터 301호 강의실로 이동하겠습니다. "
               "통로가 좁으니 한 줄로 천천히 따라와 주시기 바랍니다."),
         notes=[
@@ -223,39 +298,43 @@ SCENARIO = [
         ],
     ),
     Move(
-        "M2", "301호 → 302호", "이동",
-        key="m2_to_302",
-        meters=None, doc_seconds=15,
-        text="이어서 302호 강의실로 이동하겠습니다.",
+        "M2", "301호 → 303호", "이동",
+        key="m2_to_303",
+        meters=8.72, doc_seconds=15, turn_deg=+35,
+        text="이어서 303호 강의실로 이동하겠습니다.",
+        notes=["코스에서 가장 긴 구간입니다. 주행거리계가 흐르면 여기서 가장 크게 틀립니다."],
     ),
     Stop(
-        "S3", "302호 강의실 앞", "302호 소개 (후반기 과정)",
-        key="s3_room302",
+        "S3", "303호 강의실 앞", "303호 소개 (후반기 과정)",
+        key="s3_room303",
         doc_seconds=15, face="door",
         text=(
-            "여기는 302호 강의실입니다. "
+            "여기는 303호 강의실입니다. "
             "AI응용소프트웨어과는 한 해에 두 과정의 하이테크 과정을 운영하는데, "
             "후반기에 입학한 학생들이 학습하는 강의실입니다. "
             "이 강의실의 교과 과정은 전반기 과정과 동일합니다."
         ),
         notes=[
+            "★ 문서 원문은 '302호' 였습니다. 302호는 이 층에 없습니다 — "
+            "역할(후반기 하이테크 과정 강의실)은 그대로 두고 호실만 303호로 "
+            "옮겼습니다.",
             "'전반기 과정과 동일합니다'는 301호 설명을 전제로 한다. "
             "301호를 건너뛰면 이 구간도 함께 조정해야 한다.",
             "'운영하는데,' 뒤에 0.4초 휴지.",
         ],
     ),
     Move(
-        "M3", "302호 → 303호", "이동",
-        key="m3_to_303",
-        meters=None, doc_seconds=15,
-        text="다음은 303호 프로젝트실입니다. 이쪽으로 이동하겠습니다.",
+        "M3", "303호 → 304호", "이동",
+        key="m3_to_304",
+        meters=2.50, doc_seconds=15, turn_deg=-81,
+        text="다음은 304호 프로젝트실입니다. 이쪽으로 이동하겠습니다.",
     ),
     Stop(
-        "S4", "303호 프로젝트실 앞", "프로젝트실 소개",
-        key="s4_room303",
+        "S4", "304호 프로젝트실 앞", "프로젝트실 소개",
+        key="s4_room304",
         doc_seconds=25, face="door",
         text=(
-            "여기는 303호 프로젝트실입니다. "
+            "여기는 304호 프로젝트실입니다. "
             "학생들이 여러 가지 프로젝트를 진행하기 위해 토의하고 작업하는 공간입니다. "
             "수업에서 배운 내용을 실제 결과물로 완성하는 곳으로, "
             "졸업작품과 각종 공모전 출품작이 이곳에서 만들어집니다. "
@@ -263,24 +342,56 @@ SCENARIO = [
             "팀 단위로 직접 경험하게 됩니다."
         ),
         notes=[
+            "★ 문서 원문은 '303호' 였습니다. 302호가 없어 한 칸씩 밀렸습니다 — "
+            "역할(학생 프로젝트 공간)은 그대로 두고 호실만 304호로 옮겼습니다.",
             "내부에 학생이 작업 중이면 문 앞에서 멈추고 입장은 하지 않는다.",
             "선택 멘트 s4_extra 는 학생 개발 결과물임을 강조할 때만 재생.",
         ],
     ),
-    Stop(
-        "S5", "303호 앞", "마무리 인사 및 배웅",
-        key="s5_farewell",
-        doc_seconds=20, gesture="hello", face="visitor",
-        text=(
-            "이상으로 AI응용소프트웨어과 안내를 마치겠습니다. "
-            "저희 학과는 전공 기초부터 인공지능 응용, 그리고 현장 중심 프로젝트로 "
-            "이어지는 교육과정을 한 해 두 차례의 하이테크 과정으로 운영하고 있습니다. "
-            "오늘 방문해 주셔서 다시 한번 감사드립니다. "
-            "남은 일정도 편안하게 보내시기 바랍니다. 감사합니다."
-        ),
+    Move(
+        "M4", "304호 앞 — 방문객 마주보기", "마무리 자세로 자리 고쳐 잡기",
+        key="m4_face_visitors",
+        meters=0.87, turn_deg=-127, reposition=True,
+        text="",
         notes=[
-            "인사 동작은 마지막 '감사합니다'에 맞춰 실행한다.",
-            "질문이 이어질 수 있으므로 복귀 전 5초간 정지 상태를 유지한다.",
+            "★ 문서에는 없는 구간입니다 ★  실측에서 나왔습니다.",
+            "S4 는 문을 보고 서고, S5 는 방문객을 봐야 합니다. 그 사이에 "
+            "0.87 m 물러나며 127도 도는 동작이 실제로 있었습니다.",
+            "짧지만 코스에 적어두지 않으면, 로봇이 문을 보고 작별 인사를 합니다.",
+        ],
+    ),
+    Stop(
+        "S5", "304호 앞", "마무리 인사 및 배웅",
+        doc_seconds=20, face="visitor",
+        lines=[
+            # 방문객 쪽으로 도는 것은 앞의 M4 가 합니다 (실측 -127도)
+            Line("s5a_close", pause=0.3, text=(
+                "이상으로 AI응용소프트웨어과 안내를 마치겠습니다."
+            )),
+            Line("s5b_program", gesture="sit", pause=0.3, text=(
+                "저희 학과는 전공 기초부터 인공지능 응용, 그리고 현장 중심 "
+                "프로젝트로 이어지는 교육과정을 한 해 두 차례의 하이테크 과정으로 "
+                "운영하고 있습니다."
+            )),
+            Line("s5c_thanks", gesture="stand", pause=0.3, text=(
+                "오늘 방문해 주셔서 다시 한번 감사드립니다."
+            )),
+            # 문서 §2: "인사 동작은 마지막 '감사합니다'에 맞춰 실행한다"
+            Line("s5d_bye", gesture="hello", pause=5.0, text=(
+                "남은 일정도 편안하게 보내시기 바랍니다. 감사합니다."
+            )),
+            # ★ 말 없는 토막 ★ 동작만 합니다.
+            # 앞 토막의 pause 5초가 문서의 "복귀 전 5초간 정지" 입니다.
+            # 질문이 나올 수 있는 시간을 두고 나서 엎드립니다.
+            Line("s5e_rest", "", gesture="lie",
+                 note="엎드리는 것이 '안내가 끝났다' 는 가장 분명한 신호입니다"),
+        ],
+        notes=[
+            "★ 원문 그대로입니다. 자르고 동작을 넣었을 뿐입니다 ★",
+            "앉기 → 일어서기 → 인사 → 엎드리기. 마지막 인사가 '감사합니다'와 "
+            "겹칩니다 (문서 §2 요구).",
+            "엎드리기 전 5초는 문서의 '질문이 이어질 수 있으므로 복귀 전 "
+            "5초간 정지'. 엎드린 뒤에도 말은 할 수 있으니 질의응답은 계속됩니다.",
         ],
     ),
 ]
@@ -311,28 +422,39 @@ S1_SHORT = (
 # ─────────────────────────────────────────────────────────────
 #
 # key, 상황, 멘트, 동작
+#
+# ★ 이름 앞에 alert_ 를 붙입니다 ★
+#   처음에는 그냥 excuse_me 였는데, config.PHRASES 에 **같은 이름의 다른
+#   문장**이 있었습니다. 키가 곧 파일 이름이고 파일 이름이 곧 로봇에
+#   올라가는 이름이라, 둘이 서로를 덮어씁니다. 실제로 한 번 당했습니다 —
+#   문서의 새 문장을 넣었는데 옛날 파일이 그대로 쓰였고, 로그에는
+#   아무 문제 없이 찍혔습니다.
+#
+#   로봇이 엉뚱한 문장을 말하면서 정상으로 보이는 것이 제일 나쁩니다.
+#   층이 늘고 코스가 늘면 이런 충돌은 더 자주 생깁니다. 이름 공간을
+#   나눠두면 애초에 안 부딪힙니다.
 EXCEPTIONS = {
-    "excuse_me": (
+    "alert_excuse_me": (
         "경로에 사람이 서 있음",
         "잠시 지나가겠습니다. 조금만 비켜 주시면 감사하겠습니다.",
         "3초 대기 후 재시도.  ★ 문서의 '우회 주행' 은 이 복도에서 불가능합니다 ★",
     ),
-    "please_wait": (
+    "alert_please_wait": (
         "방문객이 뒤처짐",
         "잠시 기다리겠습니다.",
         "정지 후 최대 15초 대기. 판단은 운영자가 합니다.",
     ),
-    "blocked": (
+    "alert_blocked": (
         "장애물로 경로 차단",
         "경로에 장애물이 있어 잠시 멈추겠습니다. 담당자를 불러 주시기 바랍니다.",
         "정지. 운영자에게 알립니다.",
     ),
-    "keep_back": (
+    "alert_keep_back": (
         "방문객이 만지려 함",
         "안전을 위해 조금만 떨어져서 봐 주시기 바랍니다.",
         "동작 일시 정지.",
     ),
-    "low_battery": (
+    "alert_low_battery": (
         "배터리 부족 (20% 이하)",
         "안내를 마치고 충전 위치로 돌아가겠습니다.",
         "마무리 멘트로 건너뛰고 종료.",
@@ -351,8 +473,9 @@ TTS_FIXES = [
     ("AI 모델링", "에이아이 모델링"),
     ("AI", "에이아이"),
     ("301호", "삼백일 호"),
-    ("302호", "삼백이 호"),
+    ("302호", "삼백이 호"),     # 이 층에 없지만, 남겨둡니다 (다른 층에서 쓸 수 있음)
     ("303호", "삼백삼 호"),
+    ("304호", "삼백사 호"),
 ]
 
 
@@ -368,6 +491,61 @@ def for_tts(text):
 # ─────────────────────────────────────────────────────────────
 #
 # ★ 실제 교육과정과 다르면 여기를 먼저 고치고, 그 다음 멘트를 고치세요 ★
+# ─────────────────────────────────────────────────────────────
+# 4-2. 정차 지점 실측  (measure.py, 2026-09-03)
+# ─────────────────────────────────────────────────────────────
+#
+# 실제 코스대로 로봇을 몰면서 지점마다 기록한 값입니다.
+#   왼 / 오른 / 앞 — 로봇 기준 여유 (m). None 은 못 잰 것(트였거나 유리).
+#
+# ★ 여기서 보는 것은 '합' 이 아니라 '가장 좁은 쪽' 입니다 ★
+#   로봇은 자기 중심으로 돕니다. 왼 0.38 / 오른 1.76 은 합이 2.14 라
+#   널찍해 보여도, 돌면 왼쪽 벽에 닿습니다.
+CLEARANCE = {
+    # sid:  (왼, 오른, 앞)
+    "S1": (0.48, 0.96, 0.96),
+    "S2": (0.38, 1.76, None),     # ← 가장 좁습니다
+    "S3": (0.43, 1.48, 0.68),
+    "S4": (1.10, 0.45, 0.58),     # 문 쪽으로 81도 돌아선 채 잰 값
+    "S5": (0.56, 0.63, None),
+}
+
+# 제자리에서 돌려면 사방으로 이만큼 (m).
+#   몸통 0.70 × 0.31 → 중심에서 모서리까지 0.383. 여유 0.10 을 더합니다.
+TURN_RADIUS = 0.383
+TURN_NEED = TURN_RADIUS + 0.10
+
+# 앞으로 출발하려면 이만큼은 비어야 합니다 (m). avoid_test 의 GUARD_FRONT.
+START_NEED = 0.90
+
+
+def narrowest(sid):
+    """그 지점에서 가장 좁은 쪽 (m). 못 재면 None.
+
+    ※ 이 값은 **그날 어디에 세웠는지**에 달렸습니다. 복도의 성질이 아닙니다.
+    """
+    seen = [d for d in CLEARANCE.get(sid, ()) if d is not None]
+    return min(seen) if seen else None
+
+
+def corridor_half(sid):
+    """복도 가운데에 섰을 때의 좌우 여유 (m). 못 재면 None.
+
+    ★ 이쪽이 복도의 성질입니다 ★
+    왼·오른 각각은 세운 자리에 따라 달라지지만, 둘의 합은 복도 폭이라
+    어디에 세우든 같습니다. 그래서 '여기서 돌 수 있는가' 는 합의 절반으로
+    판단합니다.
+
+    실제로 이걸 헷갈려서 한 번 틀린 결론을 냈습니다 —
+    왼 0.38 / 오른 1.76 을 보고 "회전 불가" 라고 했는데,
+    복도는 2.14 m 였고 로봇이 한쪽 벽에 붙어 있었을 뿐입니다.
+    """
+    left, right = CLEARANCE.get(sid, (None, None, None))[:2]
+    if left is None or right is None:
+        return None
+    return (left + right) / 2
+
+
 CURRICULUM = [
     ("하이테크 과정 (전반기)", "전반기 입학", "301호 강의실",
      "프로그래밍 기초, 머신비전, 클라우드, AI 모델링"),
@@ -472,11 +650,110 @@ def estimate_seconds(text):
         + text.count(".") * PERIOD_PAUSE
 
 
+_MEASURED = None
+
+
+def measured():
+    """voices.py 가 실제로 재둔 길이 {key: 초}. 없으면 빈 사전.
+
+    ★ 있으면 추정보다 이쪽을 씁니다 ★
+    어림값으로 "25초를 넘었다/아니다" 를 따지는 건 의미가 없습니다.
+    파일을 만들어 재본 값이 있으면 그걸 봐야 합니다.
+    """
+    global _MEASURED
+    if _MEASURED is None:
+        _MEASURED = {}
+        try:
+            import json
+            from pathlib import Path
+            import config
+            p = Path(config.AUDIO_DIR) / "durations.json"
+            if p.exists():
+                _MEASURED = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return _MEASURED
+
+
+def _line_seconds(line):
+    """토막 하나의 멘트 길이 (초)와 그것이 실측인지. 동작·쉼은 뺀 값."""
+    m = measured().get(line.key)
+    if m is not None:
+        return float(m), True
+    return estimate_seconds(line.text), False
+
+
+def seconds_for(step):
+    """이 구간에 걸리는 시간 (초)와 그것이 실측인지. (초, 실측여부)
+
+    ★ 멘트만이 아니라 동작과 쉼까지 더합니다 ★
+    토막을 내고 동작을 넣으면 총 시간은 오히려 늘어납니다. 그걸 숨기면
+    안 됩니다. 대신 '한 토막의 길이' 를 따로 봅니다 (longest_line).
+    """
+    lines = getattr(step, "lines", None)
+    if not lines:
+        m = measured().get(step.key)
+        if m is not None:
+            return float(m), True
+        return estimate_seconds(step.text), False
+
+    total = 0.0
+    all_real = True
+    for l in lines:
+        secs, real = _line_seconds(l)
+        total += secs + l.pause + GESTURE_SECONDS.get(l.gesture, 0.0)
+        all_real = all_real and real
+    return total, all_real
+
+
+def longest_line(step):
+    """쉬지 않고 이어지는 말의 최대 덩어리 (초, 토막). 없으면 (0, None).
+
+    ★ 지루함을 만드는 건 지점의 총 길이가 아니라 이 값입니다 ★
+    """
+    lines = getattr(step, "lines", None) or []
+    best, who = 0.0, None
+    for l in lines:
+        secs, _real = _line_seconds(l)
+        if secs > best:
+            best, who = secs, l
+    return best, who
+
+
+def find(key):
+    """이 오디오 키가 어느 구간의 어느 토막인지. (구간, 토막) 또는 (None, None)."""
+    for s in SCENARIO:
+        for l in getattr(s, "lines", None) or []:
+            if l.key == key:
+                return s, l
+        if getattr(s, "key", None) == key:
+            return s, None
+    return None, None
+
+
+def ordered_keys():
+    """음성을 만들 순서대로의 키 목록 (코스 순, 토막 순)."""
+    out = []
+    for s in SCENARIO:
+        for l in getattr(s, "lines", None) or []:
+            if l.text.strip():
+                out.append(l.key)
+        if not getattr(s, "lines", None) and s.text.strip():
+            out.append(s.key)
+    return out
+
+
 def phrases():
     """key → 멘트.  TTS 로 만들 것 전부입니다."""
     out = {}
     for s in SCENARIO:
-        out[s.key] = s.text
+        lines = getattr(s, "lines", None)
+        if lines:
+            for l in lines:
+                if l.text.strip():
+                    out[l.key] = l.text
+        elif s.text.strip():        # M4 처럼 말 없는 구간은 음성도 없습니다
+            out[s.key] = s.text
     out.update(OPTIONAL)
     for key, (_situation, text, _action) in EXCEPTIONS.items():
         out[key] = text
@@ -511,12 +788,20 @@ def check(verbose=True):
     """시나리오가 스스로 앞뒤가 맞는지 봅니다. 돌려주는 값: 문제 목록."""
     problems = []
 
+    # ★ 보는 것은 '한 토막' 입니다 ★
+    #   지점의 총 길이가 아니라, 쉬지 않고 이어지는 말의 덩어리를 봅니다.
+    #   동작을 사이에 넣어 나눈 지점은 총 길이가 오히려 늘지만, 방문객이
+    #   느끼는 지루함은 덩어리 크기가 만듭니다.
     for s in stops():
-        est = estimate_seconds(s.text)
-        if est > MENT_MAX_SECONDS:
+        chunk, line = longest_line(s)
+        if chunk > MENT_MAX_SECONDS:
+            _secs, real = _line_seconds(line)
+            how = "실측" if real else "추정"
+            where = f" ({line.key})" if len(s.lines) > 1 else ""
             problems.append(
-                f"{s.sid} 멘트가 깁니다 — 추정 {est:.0f}초 "
-                f"(문서 기준 {MENT_MAX_SECONDS:.0f}초 이내)")
+                f"{s.sid} 에 쉬지 않고 이어지는 말이 깁니다{where} — "
+                f"{how} {chunk:.0f}초 (기준 {MENT_MAX_SECONDS:.0f}초). "
+                f"토막을 나누고 사이에 동작을 넣으면 됩니다")
 
     missing = unmeasured()
     if missing:
@@ -525,7 +810,7 @@ def check(verbose=True):
             + ", ".join(m.sid for m in missing)
             + "  → 줄자로 재서 scenario.py 의 meters 에 적으세요")
 
-    keys = [s.key for s in SCENARIO] + list(OPTIONAL) + list(EXCEPTIONS)
+    keys = ordered_keys() + list(OPTIONAL) + list(EXCEPTIONS)
     dup = {k for k in keys if keys.count(k) > 1}
     if dup:
         problems.append(f"오디오 파일 이름이 겹칩니다: {sorted(dup)}")
@@ -533,10 +818,45 @@ def check(verbose=True):
     if bad:
         problems.append(f"오디오 파일 이름에 영문/숫자/밑줄만 쓰세요: {bad}")
 
+    # ★ 다른 곳의 멘트와 이름이 겹치면 안 됩니다 ★
+    # 키가 곧 파일 이름이고, 파일 이름이 곧 로봇에 올라가는 이름입니다.
+    # 겹치면 서로 덮어쓰고, 로봇이 엉뚱한 문장을 말하면서 로그는 정상입니다.
+    try:
+        import config as _c
+        mine = phrases()
+        clash = [k for k in mine
+                 if k in _c.PHRASES and _c.PHRASES[k] != mine[k]]
+        if clash:
+            problems.append(
+                f"config.PHRASES 에 같은 이름의 다른 문장이 있습니다: {clash}. "
+                f"한쪽 이름을 바꾸세요 — 파일이 서로 덮어씁니다")
+    except Exception:
+        pass
+
     # 문서 원칙: 출발 전에는 반드시 예고 멘트
     for m in moves():
-        if not m.text.strip():
+        if not m.text.strip() and not m.reposition:
             problems.append(f"{m.sid} 에 이동 예고 멘트가 없습니다")
+
+    # ── 실측이 말해주는 것 ──
+    #
+    # ★ 복도 폭만 씁니다. 왼·오른 각각은 안 씁니다 ★
+    #   실측은 리모컨으로 몰면서 세운 자리에서 잰 것이라, 한쪽에 치우쳐
+    #   섰으면 그쪽이 좁게 나옵니다. 그건 복도의 성질이 아니라 그날의
+    #   주차 위치입니다. 반면 **합(복도 폭)은 어디에 세우든 같습니다.**
+    #   그래서 판정은 '가운데로 섰을 때' 를 기준으로 합니다.
+    for s in stops():
+        half = corridor_half(s.sid)
+        if half is None or s.face != "door":
+            continue
+        if half < TURN_NEED:
+            problems.append(
+                f"{s.sid}({s.place}) 는 복도가 좁아 제자리 회전이 어렵습니다 — "
+                f"가운데로 서도 {half:.2f} m (필요 {TURN_NEED:.2f} m). "
+                f"발을 돌리지 말고 몸통만 기울여 가리키세요")
+
+    # 정면은 세운 자리에 달린 값이라 '문제' 가 아니라 '주의' 로만 남깁니다.
+    # (문을 가리키려고 바짝 붙였을 수 있습니다)
 
     if verbose:
         print()
@@ -554,14 +874,16 @@ def timetable():
     print(f" {TITLE}")
     print(f" {ROUTE}")
     print("=" * 70)
+    any_real = bool(measured())
+    head = "실측" if any_real else "추정"
     print(f"{_pad('구간', 6)}{_pad('종류', 6)}{_pad('장소', 24)}"
-          f"{_pad('추정', 7, right=True)}{_pad('문서', 7, right=True)}"
+          f"{_pad(head, 7, right=True)}{_pad('문서', 7, right=True)}"
           f"{_pad('거리', 9, right=True)}")
     print("-" * 70)
 
     total_est = total_doc = 0.0
     for s in SCENARIO:
-        est = estimate_seconds(s.text)
+        est, real = seconds_for(s)
         doc = s.doc_seconds or 0
         total_est += est + (QA_PAUSE if isinstance(s, Stop) else 0)
         total_doc += doc
@@ -573,7 +895,13 @@ def timetable():
                 total_est += walk
         else:
             dist = "—"
-        mark = "  ←" if est > MENT_MAX_SECONDS else ""
+        chunk = longest_line(s)[0] if isinstance(s, Stop) else 0.0
+        parts = len(getattr(s, "lines", []) or [])
+        mark = "  ←" if chunk > MENT_MAX_SECONDS else ""
+        if parts > 1:
+            mark += f"  {parts}토막"
+        if not real:
+            mark += "  (추정)"
         print(f"{_pad(s.sid, 6)}{_pad(s.kind, 6)}{_pad(s.place, 24)}"
               f"{_pad(f'{est:.0f}초', 7, right=True)}"
               f"{_pad(f'{doc:.0f}초', 7, right=True)}"
@@ -628,8 +956,22 @@ def show_reality():
 
 def show_text(tts=False):
     for s in SCENARIO:
+        lines = getattr(s, "lines", None) or []
+        if not s.text.strip():
+            continue
+        if len(lines) > 1:
+            total, real = seconds_for(s)
+            print(f"\n[{s.sid}]  {total:.0f}초 ({'실측' if real else '추정'}) "
+                  f"— {len(lines)}토막, 동작 포함")
+            for l in lines:
+                secs, r = _line_seconds(l)
+                act = f"  ⟨{l.gesture}⟩" if l.gesture else ""
+                print(f"\n  [{l.key}]  {secs:.0f}초{act}")
+                print("  " + (for_tts(l.text) if tts else l.text))
+            continue
         t = for_tts(s.text) if tts else s.text
-        print(f"\n[{s.sid} / {s.key}]  약 {estimate_seconds(s.text):.0f}초")
+        secs, real = seconds_for(s)
+        print(f"\n[{s.sid} / {s.key}]  {secs:.0f}초 ({'실측' if real else '추정'})")
         print(t)
     print("\n── 선택 ──")
     for k, t in OPTIONAL.items():

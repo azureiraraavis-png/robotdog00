@@ -378,6 +378,116 @@ def explain_error(exc):
 
 
 # ═════════════════════════════════════════════════════════════
+# 장애물 회피
+# ═════════════════════════════════════════════════════════════
+#
+# ★ 이걸 통째로 잘못 알고 있었습니다 ★
+#
+# 처음에는 sport 명령표의 SwitchAvoidMode(MCF 2058)를 SPORT_MOD 토픽으로
+# 보냈습니다. 코드 0 이 돌아왔고, 그런데 로봇의 거동은 조금도 안 바뀌었고,
+# 그래서 "내장 회피는 동작하지 않는다" 고 결론지었습니다.
+#
+# 나중에 리모컨 라벨에서 'Avoidance ON = X' 를 보고 라이브러리를 다시
+# 뒤져보니, **회피는 전용 서비스를 따로 갖고 있었습니다.**
+#
+#     rt/api/obstacles_avoid/request
+#         1001 SWITCH_SET  {"enable": bool}
+#         1002 SWITCH_GET  {}  →  {"enable": bool}
+#         1003 MOVE        {"x","y","yaw","mode"}
+#
+# 우리는 다른 문에 대고 노크하고 있었습니다.
+#
+# ★ 그리고 여기엔 SWITCH_GET 이 있습니다 ★
+#   이게 결정적입니다. 전에는 코드 0 말고 확인할 방법이 없었는데, 이제
+#   **켜졌는지 로봇에게 물어볼 수 있습니다.** 코드가 아니라 상태를 봅니다.
+#   회피 실험에서 배운 것이 바로 그것이었습니다 — 받아들였다는 말과
+#   실제로 그렇게 되었다는 것은 다릅니다.
+
+AVOID_API = {
+    "SWITCH_SET": 1001,
+    "SWITCH_GET": 1002,
+    "MOVE": 1003,
+    "USE_REMOTE_COMMAND_FROM_API": 1004,
+}
+
+
+async def _avoid_call(conn, api_id, parameter=None):
+    """회피 서비스에 한 번 보냅니다. (코드, 응답)"""
+    payload = {"api_id": api_id}
+    if parameter is not None:
+        payload["parameter"] = parameter
+    try:
+        reply = await conn.datachannel.pub_sub.publish_request_new(
+            RTC_TOPIC["OBSTACLES_AVOID"], payload)
+        return status_code(reply), reply
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _avoid_enabled_from(reply):
+    """응답에서 enable 값을 캡니다. 못 찾으면 None."""
+    def dig(obj, depth=0):
+        if depth > 4:
+            return None
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in ("enable", "enabled", "on") and isinstance(v, (bool, int)):
+                    return bool(v)
+                got = dig(v, depth + 1)
+                if got is not None:
+                    return got
+        elif isinstance(obj, str):
+            try:
+                return dig(json.loads(obj), depth + 1)
+            except Exception:
+                return None
+        return None
+    return dig(reply)
+
+
+async def avoid_get(conn, verbose=True):
+    """회피가 켜져 있는가. True / False / None(모름)."""
+    code, reply = await _avoid_call(conn, AVOID_API["SWITCH_GET"], {})
+    if code != 0:
+        if verbose:
+            print(f"[회피] 상태를 물어봤지만 코드 {code} — 이 서비스가 없는 것 같습니다")
+        return None
+    on = _avoid_enabled_from(reply)
+    if verbose:
+        shown = {True: "켜짐", False: "꺼짐", None: "응답에 enable 이 없음"}[on]
+        print(f"[회피] 지금 상태: {shown}")
+    return on
+
+
+async def avoid_set(conn, on=True, verify=True, verbose=True):
+    """회피를 켜거나 끕니다. 돌려주는 값: 정말로 그렇게 되었는지 (True/False/None)
+
+    ★ 코드 0 을 믿지 않습니다 ★
+    켠 뒤에 다시 물어봅니다. 이게 이 함수의 존재 이유입니다.
+    """
+    code, _reply = await _avoid_call(
+        conn, AVOID_API["SWITCH_SET"], {"enable": bool(on)})
+    if verbose:
+        print(f"[회피] {'켜기' if on else '끄기'} 요청 → 코드 {code}")
+    if code != 0:
+        return None
+    if not verify:
+        return None
+    await asyncio.sleep(0.5)
+    got = await avoid_get(conn, verbose=False)
+    if verbose:
+        if got is None:
+            print("[회피] ※ 확인 못 했습니다 (응답에 상태가 없습니다)")
+        elif got == bool(on):
+            print(f"[회피] 확인됨 — 정말로 {'켜졌습니다' if got else '꺼졌습니다'}")
+        else:
+            print(f"[회피] ★ 요청과 다릅니다 ★ "
+                  f"{'켜기' if on else '끄기'}를 보냈는데 지금 "
+                  f"{'켜짐' if got else '꺼짐'} 입니다")
+    return got
+
+
+# ═════════════════════════════════════════════════════════════
 # 모션 모드
 # ═════════════════════════════════════════════════════════════
 
@@ -576,7 +686,7 @@ async def sport(conn, name, parameter=None, timeout=SPORT_TIMEOUT):
     except asyncio.TimeoutError:
         print(f"\n[명령] '{name}' 응답이 {timeout:.0f}초 안에 오지 않았습니다.")
         print("       연결이 끊겼을 가능성이 큽니다. 로봇 상태를 눈으로 확인하세요.")
-        print("       필요하면 리모컨의 P 버튼을 두 번 눌러 힘을 빼세요.\n")
+        print("       필요하면 힘을 빼세요 — 게임패드 L2+B, 동반 리모컨 P 두 번.\n")
         return None
 
 
@@ -1090,7 +1200,7 @@ async def ensure_locomotion(conn, probe=None, tries=3, verbose=True):
     if verbose:
         print(f"[자세] ★ 이동 준비 실패 ★  현재 {probe.mode_name()}")
         print("       조이스틱 신호를 보내도 로봇이 무시할 수 있습니다.")
-        print("       리모컨으로 한 번 세운 뒤 다시 시도하거나, mode_test.py 로 확인하세요.")
+        print("       조종 장치로 한 번 세운 뒤 다시 시도하거나, mode_test.py 로 확인하세요.")
     return False
 
 
@@ -1236,7 +1346,10 @@ async def announce(speaker, phrase_key, verbose=True):
 
 
 async def emergency_damp(conn):
-    """비상 정지. 힘을 빼고 그 자리에 주저앉습니다. (리모컨 P 버튼 두 번과 같은 동작)"""
+    """비상 정지. 힘을 빼고 그 자리에 주저앉습니다.
+
+    손으로 하는 같은 동작: 게임패드 L2+B, 또는 동반 리모컨 P 두 번.
+    """
     print("\n[비상] 댐핑 — 로봇을 내려앉힙니다.")
     try:
         # 비상 경로에서는 표 조회 실패 위험을 없애려고 번호를 직접 씁니다.

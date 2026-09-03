@@ -42,7 +42,7 @@
       (어제 사진 찍은 그 자리 — 지도 범위 밖으로 나올 만큼 트인 곳)
     □ 부드럽고 가벼운 장애물 — 빈 종이상자, 쿠션
       ★ 유리문·벽·사람 앞에서 하지 마세요 ★
-    □ 리모컨 손에 (P 두 번 = 힘 빼기)
+    □ 조종 장치 손에 (힘 빼기: 게임패드 L2+B, 동반 리모컨 P 두 번)
     □ 배터리 50% 이상
 
   먼저 .\\run look.py 로 그 자리가 어떻게 보이는지 확인하고 오세요.
@@ -248,20 +248,39 @@ def show(label, r):
 
 
 async def enable_avoid(on=True):
-    """회피 모드를 켜거나 끕니다. 파라미터 형식이 문서화돼 있지 않아 몇 가지 시도합니다."""
-    last = None
-    for label, param in (("{'data': bool}", {"data": bool(on)}),
-                         ("{'data': int}", {"data": 1 if on else 0}),
-                         ("(파라미터 없음)", None)):
-        try:
-            reply = await common.sport(conn, "SwitchAvoidMode", param)
-        except KeyError:
-            return None, "명령표에 없음"
-        last = common.status_code(reply)
-        print(f"      {label:18} → 코드 {last}")
-        if last == 0:
-            return label, last
-    return None, last
+    """회피를 켜고, **정말로 켜졌는지 로봇에게 물어봅니다.**
+
+    ★ 1차 실험의 치명적인 결함이 여기 있었습니다 ★
+      그때는 sport 명령표의 SwitchAvoidMode 를 SPORT_MOD 토픽으로 보냈고,
+      코드 0 을 받고는 "켜졌다" 고 적었습니다. 그리고 로봇이 상자로
+      걸어 들어가는 걸 보고 "회피가 동작하지 않는다" 고 결론지었습니다.
+
+      그런데 회피에는 **전용 서비스**가 따로 있었습니다
+      (rt/api/obstacles_avoid/request). 우리는 다른 문에 노크하고 있었고,
+      그 결론은 "회피가 안 된다" 가 아니라 "우리가 안 켰다" 였을 수 있습니다.
+
+      그 서비스에는 SWITCH_GET 이 있습니다. 이제 물어볼 수 있습니다.
+      켜졌다는 확인 없이는 이 실험을 시작하지 않습니다 —
+      **안 켠 채로 재면 무엇을 재든 뜻이 없습니다.**
+
+    돌려주는 값: (설명, 확인된 상태)
+    """
+    got = await common.avoid_set(conn, on, verify=True, verbose=True)
+    if got is True:
+        return "obstacles_avoid 서비스", True
+    if got is False:
+        return None, False
+
+    # 전용 서비스가 확인을 못 해주면, 옛 경로도 한 번 눌러봅니다.
+    # (확인이 안 된다는 것은 그대로 적습니다 — 성공으로 치지 않습니다)
+    print("      전용 서비스로 확인이 안 됩니다. 옛 경로(sport)도 눌러봅니다.")
+    try:
+        reply = await common.sport(conn, "SwitchAvoidMode", {"data": bool(on)})
+        code = common.status_code(reply)
+        print(f"      SwitchAvoidMode → 코드 {code}")
+    except KeyError:
+        print("      SwitchAvoidMode 는 이 모드의 명령표에 없습니다")
+    return None, None
 
 
 async def run(conn_):
@@ -351,15 +370,32 @@ async def run(conn_):
     print("\n" + "=" * 66)
     print(" A. 회피 모드를 코드로 켤 수 있는가")
     print("=" * 66)
-    form, code = await enable_avoid(True)
-    if form is None:
-        print("\n  ✘ 어떤 형식으로도 받아들여지지 않았습니다.")
-        print("    코드로는 못 켭니다. 리모컨 옆면 2 버튼(두 번=켜기)으로만 가능합니다.")
-        print("\n    그래도 B·C 는 의미가 있습니다 — 리모컨으로 켜고 진행하시겠습니까?")
-        if not await common.confirm("리모컨으로 회피를 켰습니까?"):
-            return
+    form, confirmed = await enable_avoid(True)
+    if confirmed is True:
+        print(f"\n  ✔ 회피가 켜진 것을 로봇에게 확인받았습니다 ({form})")
     else:
-        print(f"\n  ✔ '{form}' 형식으로 켜졌습니다 (코드 {code})")
+        print("\n  ✘ 켜졌다는 확인을 못 받았습니다.")
+        print("    ★ 이 상태로 재면 아무 뜻이 없습니다 ★")
+        print("    1차 실험이 정확히 이랬습니다 — 안 켠 채로 재놓고")
+        print("    '회피가 동작하지 않는다' 고 결론지었습니다.")
+        print()
+        print("    손으로 켜실 수 있습니다:")
+        print("      · 게임패드   ★ X ★         (끄기는 Y 를 3초 길게)")
+        print("      · 동반 리모컨 옆면 2 두 번   (끄기는 한 번)")
+        
+        if not await common.confirm("조종 장치로 회피를 켰습니까?"):
+            print("\n    중단합니다. 켜지 않고 재는 것은 시간 낭비입니다.")
+            return
+        # 손으로 켰다면 그것도 확인해 봅니다
+        again = await common.avoid_get(conn, verbose=True)
+        if again is True:
+            print("    ✔ 손으로 켠 것이 확인됩니다.")
+        elif again is False:
+            print("    ★ 여전히 꺼져 있다고 나옵니다. 다시 눌러보세요.")
+            if not await common.confirm("그래도 진행할까요?"):
+                return
+        else:
+            print("    ※ 확인은 안 되지만, 사람이 눌렀다니 진행합니다.")
     await asyncio.sleep(2.0)
 
     # ── B. 대조군 — 앞이 트인 상태 ───────────────────────────
@@ -372,7 +408,7 @@ async def run(conn_):
     print("   로봇이 향하는 쪽에 사람이 없는지 눈으로 확인하세요.")
     print("   라이다는 사람을 '장애물' 로 볼 뿐, 사람인지는 모릅니다.")
     if not await common.confirm(
-            "로봇 앞이 비어 있고, **사람이 없으며**, 리모컨을 들고 계십니까?"):
+            "로봇 앞이 비어 있고, **사람이 없으며**, 조종 장치를 들고 계십니까?"):
         return
     base = await approach(probe, eyes)
     show("대조군", base)
@@ -395,7 +431,7 @@ async def run(conn_):
     print(" 로봇 앞 약 1.5~2 m 에 부드럽고 가벼운 장애물을 놓으세요.")
     print(" 빈 종이상자나 쿠션. ★ 유리문·벽·사람은 절대 안 됩니다 ★")
     print(f" 우리 쪽 안전장치가 앞 {GUARD_FRONT} m 에서 먼저 멈춥니다.")
-    if not await common.confirm("장애물을 놓았고, 리모컨을 들고 계십니까?"):
+    if not await common.confirm("장애물을 놓았고, 조종 장치를 들고 계십니까?"):
         return
 
     c = eyes.clearance()
@@ -460,7 +496,7 @@ async def run(conn_):
         print(" 이 경우 복도 안내는 이렇게 갑니다.")
         print("   · 로봇의 회피에 기대지 않는다")
         print("   · 대신 우리가 라이다로 보고 멈춘다 (이 실험에서 실제로 동작했습니다)")
-        print("   · 또는 리모컨 자동 추종으로 사람이 앞서 걷는다")
+        print("   · 또는 동반 리모컨의 자동 추종으로 사람이 앞서 걷는다")
     else:
         print(" 판정이 애매합니다. 두어 번 더 돌려보세요.")
         print(" 장애물을 더 크고 높은 것으로 바꾸면 더 확실합니다.")
@@ -478,7 +514,7 @@ async def main():
     print(__doc__.split("준비물")[0])
 
     if not await common.confirm(
-        "앞으로 4m 가 트여 있고, 부드러운 장애물과 리모컨을 준비했습니까?"
+        "앞으로 4m 가 트여 있고, 부드러운 장애물과 조종 장치를 준비했습니까?"
     ):
         print("취소했습니다.")
         return
@@ -500,7 +536,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n중단됨 — 로봇을 멈추고 연결을 닫았습니다.")
-        print("로봇이 멈추지 않으면 리모컨의 P 버튼을 두 번 누르세요.")
+        print("로봇이 멈추지 않으면 게임패드 L2+B, 또는 동반 리모컨 P 두 번.")
     except Exception as e:
         common.explain_error(e)
         sys.exit(1)

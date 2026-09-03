@@ -8,7 +8,7 @@
     □ 사방 2m 이상 트인 평평한 바닥
     □ 발끝의 비닐 포장 제거
     □ 배터리 50% 이상
-    □ 리모컨을 든 사람이 옆에 대기 (P 버튼 두 번 = 힘 빼기)
+    □ 조종 장치를 든 사람이 옆에 대기 (힘 빼기: 게임패드 L2+B, 동반 리모컨 P 두 번)
     □ 사람·전선·유리·계단 없음
 
     python 02_move_test.py
@@ -100,7 +100,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n중단됨 — 로봇을 멈추고 연결을 닫았습니다.")
-        print("로봇이 멈추지 않으면 리모컨의 P 버튼을 두 번 누르세요.")
+        print("로봇이 멈추지 않으면 게임패드 L2+B, 또는 동반 리모컨 P 두 번.")
     except Exception as e:
         common.explain_error(e)
         sys.exit(1)

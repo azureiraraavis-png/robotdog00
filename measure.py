@@ -56,9 +56,19 @@ import perception
 
 LOG = Path(__file__).parent / "measure_log.txt"
 
-# 로봇이 제자리에서 돌려면 이만큼은 비어야 합니다 (m).
-#   몸통 0.70 × 0.31 → 대각선 0.77. 여유를 두어 0.90.
-TURN_NEED = 0.90
+# ── 제자리 회전에 필요한 여유 ────────────────────────────────
+#
+# ★ 처음에 '좌우 합' 으로 판정했는데, 그건 틀렸습니다 ★
+#   실측에서 왼 0.38 m / 오른 1.76 m 인 지점이 나왔습니다. 합은 2.14 m 라
+#   널찍해 보이지만, **로봇은 자기 중심으로 돕니다.** 왼쪽 0.38 m 가
+#   전부입니다. 합으로 보면 이런 한쪽으로 치우친 자리를 통과시킵니다.
+#
+#   그래서 합이 아니라 **가장 좁은 쪽**으로 봅니다.
+#
+# 몸통 0.70 × 0.31 → 중심에서 모서리까지 √(0.35² + 0.155²) = 0.383 m
+# 발이 뻗는 것과 자세 흔들림을 감안해 0.10 m 를 더합니다.
+TURN_RADIUS = 0.383
+TURN_NEED = TURN_RADIUS + 0.10      # 사방으로 이만큼은 비어야 합니다 (m)
 
 
 class Point:
@@ -83,6 +93,47 @@ def turn(a, b):
     return (d + 180) % 360 - 180
 
 
+def bearing(a, b):
+    """a 에서 b 를 바라보는 방향 (도). 지도 기준."""
+    return math.degrees(math.atan2(b.pose[1] - a.pose[1],
+                                   b.pose[0] - a.pose[0]))
+
+
+def off_axis(points, i):
+    """i 번째 지점에서 로봇이 **가는 방향에서 몇 도 돌아서 있었는가**.
+
+    ★ 이게 왜 중요한가 ★
+    좌우 여유는 로봇 기준으로 잽니다. 로봇이 복도를 따라 서 있으면
+    '왼 + 오른' 이 복도 폭입니다. 그런데 문 쪽으로 몸을 돌린 채 찍으면
+    같은 숫자가 **복도를 따라 앞뒤로 잰 거리**가 됩니다. 전혀 다른 값인데
+    생김새가 똑같아서 알아채기 어렵습니다.
+
+    다행히 검산할 수 있습니다. 복도에서는 **가는 방향이 곧 복도 방향**이니,
+    로봇이 그 방향을 보고 있었는지 확인하면 됩니다.
+
+    돌려주는 값: 어긋난 각도(0~180). 못 구하면 None.
+    """
+    prev_p = points[i - 1] if i > 0 else None
+    next_p = points[i + 1] if i + 1 < len(points) else None
+
+    # 가는 방향: 이전 지점에서 온 방향을 우선 쓰고, 없으면 다음 지점 쪽
+    if prev_p is not None and gap(prev_p, points[i]) > 0.3:
+        course = bearing(prev_p, points[i])
+    elif next_p is not None and gap(points[i], next_p) > 0.3:
+        course = bearing(points[i], next_p)
+    else:
+        return None      # 앞뒤로 거의 안 움직여서 방향을 못 정합니다
+
+    d = abs((points[i].yaw_deg() - course + 180) % 360 - 180)
+    # 뒤돌아 선 것(180도)은 괜찮습니다 — 복도 축과는 여전히 나란하니
+    # 좌우가 서로 바뀔 뿐 폭은 같습니다. 그래서 축에서 벗어난 각도로 봅니다.
+    return min(d, 180.0 - d)
+
+
+# 이 각도를 넘게 돌아서 있으면 '복도 폭' 으로 읽지 않습니다 (도)
+OFF_AXIS_LIMIT = 30.0
+
+
 def show(points):
     if not points:
         print("\n기록된 지점이 없습니다.")
@@ -99,39 +150,133 @@ def show(points):
     out(" 실측 결과")
     out("=" * 72)
     out(f"{'지점':16}{'구간거리':>10}{'누적':>9}{'방향변화':>10}"
-        f"{'복도폭':>9}{'왼':>7}{'오른':>7}")
+        f"{'좌우합':>9}{'왼':>7}{'오른':>7}   {'자세':<6}")
     out("-" * 72)
 
     total = 0.0
+    axis = []            # 복도 축과 나란히 서서 잰 지점만
     for i, p in enumerate(points):
         if i == 0:
-            seg = turned = 0.0
             seg_s = seg_t = "—"
         else:
             seg = gap(points[i - 1], p)
-            turned = turn(points[i - 1], p)
             total += seg
             seg_s = f"{seg:.2f} m"
-            seg_t = f"{turned:+.0f}°"
+            seg_t = f"{turn(points[i - 1], p):+.0f}°"
         c = p.clear
         w = c.width()
+        d = off_axis(points, i)
+        if d is None:
+            tag = "?"
+        elif d <= OFF_AXIS_LIMIT:
+            tag = "복도"
+            axis.append(p)
+        else:
+            tag = f"{d:.0f}°돌아섬"
         out(f"{common_pad(p.name, 16)}{seg_s:>10}{f'{total:.2f} m':>9}{seg_t:>10}"
             f"{(f'{w:.2f} m' if w else '—'):>9}"
             f"{(f'{c.left:.2f}' if c.left else '—'):>7}"
-            f"{(f'{c.right:.2f}' if c.right else '—'):>7}")
+            f"{(f'{c.right:.2f}' if c.right else '—'):>7}   {tag:<6}")
 
     out("-" * 72)
     out(f" 총 이동 거리 {total:.2f} m")
 
+    # ── 폐합오차 — 줄자 없이 주행거리계를 검산하는 법 ──
+    #
+    # 출발점으로 돌아와 같은 이름으로 한 번 더 찍으면, 주행거리계가
+    # 말하는 두 지점 사이 거리가 곧 누적 오차입니다.
+    # ★ 절대 길이를 몰라도 오차를 알 수 있습니다 ★
+    out()
+    closed = False
+    for i, p in enumerate(points):
+        for j in range(i + 1, len(points)):
+            if points[j].name == p.name:
+                err = gap(p, points[j])
+                walked = sum(gap(points[k - 1], points[k])
+                             for k in range(i + 1, j + 1))
+                out(f" ★ 폐합오차 — '{p.name}' 으로 돌아왔습니다 ★")
+                out(f"     돌아온 거리 {walked:.2f} m,  어긋남 {err:.2f} m")
+                if walked > 0.5:
+                    out(f"     누적 오차 {err / walked * 100:.1f}%")
+                    if err / walked < 0.03:
+                        out("     → 믿을 만합니다. '거리로 걷기' 를 이 값으로 가도 됩니다.")
+                    else:
+                        out("     → 큽니다. 긴 구간을 열린 루프로 가면 안 됩니다.")
+                closed = True
+                break
+        if closed:
+            break
+    if not closed:
+        out(" ※ 폐합오차를 못 쟀습니다.")
+        out("   출발점으로 정확히 돌아와 **같은 이름**으로 한 번 더 찍으면,")
+        out("   줄자 없이도 주행거리계가 얼마나 흐르는지 알 수 있습니다.")
+
     # ── 경고 ──
     out()
-    tight = [p for p in points
-             if p.clear.width() is not None and p.clear.width() < TURN_NEED]
+    turned_pts = [p for i, p in enumerate(points)
+                  if (off_axis(points, i) or 0) > OFF_AXIS_LIMIT]
+    if turned_pts:
+        out(" ★ 복도 폭으로 읽으면 안 되는 지점 ★")
+        for p in turned_pts:
+            out(f"     {p.name} — 가는 방향에서 돌아선 채로 쟀습니다")
+        out("   이 지점의 '좌우합' 은 복도 폭이 아니라 복도를 따라 잰 거리입니다.")
+        out("   폭이 필요하면 복도 방향으로 세우고 다시 찍으세요.")
+
+    def narrowest(p):
+        """사방 중 가장 좁은 쪽 (m). 못 재면 None."""
+        seen = [d for d in (p.clear.left, p.clear.right, p.clear.front)
+                if d is not None]
+        return min(seen) if seen else None
+
+    # ★ 세운 자리와 복도 자체를 구별합니다 ★
+    #
+    # 처음에는 '가장 좁은 쪽' 만 보고 "회전 불가" 라고 찍었습니다. 틀렸습니다.
+    # 왼 0.38 / 오른 1.76 은 복도가 좁다는 뜻이 아니라, 로봇이 한쪽 벽에
+    # 붙어 서 있었다는 뜻입니다. 가운데로 서면 양쪽 1.07 m 씩입니다.
+    #
+    #   왼·오른 **각각**  → 그때 어디에 세웠는지에 달림. 못 믿습니다.
+    #   왼+오른 **합**    → 복도 폭. 어디에 세우든 같습니다. 믿습니다.
+    #
+    # 그래서 두 가지를 따로 말합니다.
+    #   "지금 세운 자리에서 바로 돌 수 있는가"  (당장의 문제)
+    #   "가운데로 서면 돌 수 있는가"            (복도의 문제)
+    tight, cramped = [], []
+    for p in points:
+        d = narrowest(p)
+        w = p.clear.width()
+        if d is None:
+            continue
+        half = (w / 2) if w is not None else None
+        if half is not None and half < TURN_NEED:
+            cramped.append((p, half))       # 복도 자체가 좁습니다
+        elif d < TURN_NEED:
+            tight.append((p, d, half))      # 치우쳐 섰을 뿐입니다
+
+    if cramped:
+        out(" ★ 복도 자체가 좁아 회전이 어려운 지점 ★")
+        for p, half in cramped:
+            out(f"     {common_pad(p.name, 14)}가운데로 서도 {half:.2f} m "
+                f"(필요 {TURN_NEED:.2f} m)")
+        out("   여기서는 발을 돌리지 말고 **몸통만 기울여** 가리키세요 (Euler).")
+        out("   바닥 공간이 전혀 필요 없습니다.")
+
     if tight:
-        out(f" ★ 제자리 회전이 어려운 지점 (폭 {TURN_NEED:.2f} m 미만) ★")
-        for p in tight:
-            out(f"     {p.name} — {p.clear.width():.2f} m")
-        out("   여기서는 문 쪽으로 몸을 돌리는 동작을 넣지 마세요.")
+        out(" ※ 치우쳐 세워서 지금은 못 도는 지점 (복도는 넉넉합니다)")
+        for p, d, half in tight:
+            half_s = f"{half:.2f}" if half is not None else "—"
+            out(f"     {common_pad(p.name, 14)}지금 {d:.2f} m  →  "
+                f"가운데로 서면 {half_s} m")
+        out("   돌기 전에 옆걸음으로 가운데를 잡으면 됩니다.")
+        out("   (왼·오른 각각은 어디에 세웠는지에 달렸고, 그 합만이 복도 폭입니다)")
+
+    near = [p for p in points if p.clear.front is not None and p.clear.front < 1.0]
+    if near:
+        out(" ※ 정면이 1 m 안에 막힌 지점: "
+            + ", ".join(f"{p.name}({p.clear.front:.2f}m)" for p in near))
+        out("   여기서 앞으로 출발하려면 우리 안전장치(0.90 m)에 바로 걸립니다.")
+        out("   문을 가리키려고 바짝 붙인 것이라면 괜찮습니다 — 다만 출발은")
+        out("   뒤로 물러나거나 몸을 돌린 뒤에 해야 합니다.")
+
     blind = [p for p in points if p.clear.width() is None]
     if blind:
         out(" ※ 폭을 못 잰 지점: " + ", ".join(p.name for p in blind))
@@ -177,6 +322,13 @@ async def run(conn):
     print(" 로봇은 ★ 리모컨으로 ★ 모세요. 이 프로그램은 이동 명령을 보내지 않습니다.")
     print(" 정차 지점에 도착할 때마다 Enter 를 누르고 이름을 적으세요.")
     print(" 끝내려면 이름 자리에 q 를 넣으세요.")
+    print()
+    print(" ★ 두 가지만 지켜주세요 ★")
+    print("   1. 찍을 때는 **복도를 따라** 서 있어야 합니다.")
+    print("      문 쪽으로 돌린 채 찍으면 '복도 폭' 자리에 엉뚱한 값이 들어갑니다.")
+    print("      (돌아선 것은 자동으로 표시되니, 표에서 확인하실 수 있습니다)")
+    print("   2. 마지막에 **출발점으로 돌아와 같은 이름으로 한 번 더** 찍으세요.")
+    print("      줄자 없이도 주행거리계가 얼마나 흐르는지 알 수 있습니다.")
     print()
 
     points = []
