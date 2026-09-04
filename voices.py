@@ -108,7 +108,16 @@ def play(path):
 
 
 async def build(refresh=False):
-    """멘트를 전부 만들고 길이를 잽니다. 돌려주는 값: {key: (wav경로, 초)}"""
+    """멘트를 전부 만들고 길이를 잽니다.
+
+    돌려주는 값: ({key: (wav경로, 초)}, 새로 만든 키들)
+
+    ★ 두 번째 값이 중요합니다 ★
+      바뀐 것을 지역에서 다시 만드는 것만으로는 부족합니다. 로봇에 있는
+      같은 이름의 옛 파일도 갈아치워야 합니다. 그러지 않으면 화면에는
+      새 문장이, 스피커에서는 옛 문장이 나옵니다.
+      이 목록을 common.upload_all(replace=...) 에 그대로 넘기세요.
+    """
     out_dir = Path(config.AUDIO_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -160,7 +169,7 @@ async def build(refresh=False):
         {k: scenario.for_tts(t) for k, t in phrases.items()},
         ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n{DURATIONS.name} 에 길이를, {TEXTS.name} 에 문장을 저장했습니다.")
-    return made
+    return made, set(stale) | set(unknown)
 
 
 def report(made):
@@ -224,7 +233,7 @@ async def main():
           f"   음량보정 {'켜짐' if config.TTS_NORMALIZE else '꺼짐'}")
     print()
 
-    made = await build(refresh=refresh)
+    made, _changed = await build(refresh=refresh)
     report(made)
 
     if not do_play:

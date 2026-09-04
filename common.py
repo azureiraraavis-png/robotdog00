@@ -739,9 +739,22 @@ async def move(conn, x=0.0, y=0.0, z=0.0, duration=1.0):
     x = max(-lim, min(lim, x))
     y = max(-lim, min(lim, y))
     z = max(-yaw, min(yaw, z))
+
+    # ★ 자를 때는 자른다고 말합니다 ★
+    #   여기가 조용히 잘라내고 있었습니다. -167도 회전을 4.5초로 시켰는데
+    #   3.0초로 잘려서 112도만 돌았고, 로그에는 "3.0초" 라고만 찍혔습니다.
+    #   시킨 것과 한 것이 다른데 로그를 봐도 모릅니다. 한도 자체는 옳습니다 —
+    #   말을 안 한 것이 틀렸습니다.
+    if duration > config.MAX_MOVE_DURATION + 1e-6:
+        print(f"[이동] ※ {duration:.1f}초를 시켰지만 "
+              f"{config.MAX_MOVE_DURATION:.1f}초로 자릅니다 "
+              f"(config.MAX_MOVE_DURATION). 더 필요하면 나눠서 보내세요.")
+        if abs(z) > 0.05:
+            print("       회전이라면 common.turn_by 를 쓰세요 — 나눠 보내고 "
+                  "실제로 돈 각도를 재서 멈춥니다.")
     duration = min(duration, config.MAX_MOVE_DURATION)
 
-    print(f"[이동] 전진={x} 게걸음={y} 회전={z} / {duration}초")
+    print(f"[이동] 전진={x} 게걸음={y} 회전={z} / {duration:.1f}초")
     deadline = time.time() + duration
     try:
         while time.time() < deadline:
@@ -753,6 +766,116 @@ async def move(conn, x=0.0, y=0.0, z=0.0, duration=1.0):
             joystick(conn, 0.0, 0.0, 0.0)
             await asyncio.sleep(0.02)
         await stop(conn)
+
+
+YAW_STICK = 0.4          # 안내에서 쓰는 회전 세기. 천천히 돕니다.
+
+
+def stick_to_yaw_rate(stick):
+    """스틱 값 → 회전 각속도 (rad/s). 실측 0.8 → 1.30 rad/s."""
+    return abs(stick) * getattr(config, "STICK_TO_YAW", 1.63)
+
+
+async def turn_by(conn, degrees, probe=None, stick=None, verbose=True):
+    """도 단위로 돕니다 (+ 가 왼쪽). 돌려주는 값: 실제로 돈 각도.
+
+    ★ 시간으로 돌면 안 됩니다 ★
+
+      common.move(z=..., duration=...) 로 도는 것이 지금까지의 방식이었고,
+      두 군데서 새고 있었습니다.
+
+      1. move 는 duration 을 MAX_MOVE_DURATION(3.0초)으로 자릅니다.
+         스틱 0.4 에서 3초면 112도입니다. **그보다 큰 회전은 전부
+         112도가 되고 있었습니다.** -167도도, +130도도, +166도도요.
+         로그에는 "3.0초" 라고만 찍혀서 알 수가 없었습니다.
+
+      2. 잘리지 않았더라도, 시간으로 도는 것은 스틱↔각속도 환산표를
+         믿는 것입니다. 그 표는 스틱 0.8 에서 한 번 잰 값을 0.4 까지
+         직선으로 늘린 것입니다. 배터리·바닥·자세에 따라 달라집니다.
+
+    그래서 이렇게 합니다.
+
+      · 3초로 잘리지 않게 **50Hz 로 계속 보냅니다** (move 를 안 거칩니다)
+      · probe 가 있으면 로봇이 보고하는 회전 속도를 적분해서
+        **실제로 돈 만큼** 돌고 멈춥니다 — 환산표가 필요 없어집니다
+      · probe 가 없으면 어림 시간으로 돌되, 어림이라고 말합니다
+      · 어느 쪽이든 상한 시간을 넘기면 멈춥니다 (제자리 회전 무한루프 방지)
+
+    ※ 적분값은 이 회전 하나 동안만 씁니다. 몇 초짜리라 흐를 틈이 없습니다.
+      (한 코스 전체의 누적 오차와는 다른 이야기입니다)
+    """
+    target = math.radians(abs(degrees))
+    if target < math.radians(2.0):
+        return 0.0
+
+    stick = abs(stick if stick is not None else YAW_STICK)
+    stick = min(stick, config.MAX_YAW_STICK)
+    sign = 1.0 if degrees > 0 else -1.0
+    z = sign * stick
+
+    ramp = getattr(config, "YAW_RAMP_SECONDS", 0.5)
+    est = ramp + target / max(0.05, stick_to_yaw_rate(stick))
+    limit = min(est * 2.5 + 1.0, 25.0)
+
+    live = probe is not None and probe.yaw_speed is not None
+    if verbose:
+        how = "실제로 돈 각도를 재면서" if live else f"어림 {est:.1f}초 동안 (재지 못합니다)"
+        print(f"[회전] {degrees:+.0f}도 — 스틱 {z:+.1f}, {how}")
+
+    turned = 0.0
+    t0 = last = time.time()
+    hit = False
+    try:
+        while True:
+            joystick(conn, **stick_from_intent(0.0, 0.0, z))
+            await asyncio.sleep(0.02)
+            now = time.time()
+            dt, last = now - last, now
+
+            if probe is not None and probe.yaw_speed is not None:
+                # 시킨 방향의 성분만 셉니다 — 반대쪽 잡음은 서로 지웁니다
+                turned += probe.yaw_speed * sign * dt
+                if turned >= target:
+                    hit = True
+                    break
+            elif now - t0 >= est:
+                turned = target
+                hit = True
+                break
+
+            if now - t0 >= limit:
+                break
+    finally:
+        # ★ 멈추라고 한 뒤에도 로봇은 조금 더 돕니다 ★
+        #   여기를 재지 않으면 '몇 도 돌았는가' 를 늘 적게 셉니다. 문 쪽을
+        #   가리킬 때는 2~3도가 아무것도 아니지만, 0.70 m 문틀로 들어갈
+        #   때는 여유 0.19 m 를 갉아먹습니다. 그러니 재둡니다.
+        #   (지금은 재기만 합니다. 얼마나 되는지 알고 나서 빼겠습니다)
+        tail = 0.0
+        t_stop = last_s = time.time()
+        while time.time() - t_stop < 0.5:
+            joystick(conn, 0.0, 0.0, 0.0)
+            await asyncio.sleep(0.02)
+            now = time.time()
+            dt_s, last_s = now - last_s, now
+            if probe is not None and probe.yaw_speed is not None:
+                tail += probe.yaw_speed * sign * dt_s
+        await stop(conn)
+
+    took = time.time() - t0
+    got = math.degrees(turned) * sign
+    tail_deg = math.degrees(tail) * sign
+    if verbose:
+        if not hit:
+            print(f"[회전] ★ {limit:.0f}초가 지나 멈춥니다 — {got:+.0f}도까지 "
+                  f"돌았습니다 (시킨 값 {degrees:+.0f}도) ★")
+            print("       발이 미끄러지거나 무언가에 걸린 것일 수 있습니다.")
+        else:
+            extra = (f"  (+ 멈추면서 {tail_deg:+.0f}도 더 → 합계 "
+                     f"{got + tail_deg:+.0f}도)") if live and abs(tail_deg) >= 0.5 else ""
+            print(f"[회전] {got:+.0f}도 · {took:.1f}초"
+                  + ("" if live else "  (잰 값이 아니라 어림입니다)") + extra)
+    return got + tail_deg
 
 
 def stick_to_speed(stick):
@@ -1980,14 +2103,32 @@ async def hush(hub, verbose=True):
 async def upload_all(conn, paths, replace=False):
     """모든 안내 멘트를 올리고 {key: uuid} 를 돌려줍니다.
 
-    replace=True 면 로봇에 있는 것을 지우고 새로 올립니다.
-    (음량 보정을 켰거나 멘트 문구를 바꿨을 때)
+    replace 는 세 가지로 줄 수 있습니다.
+        False        이미 있으면 그대로 씁니다 (빠름)
+        True         전부 지우고 새로 올립니다
+        {"a", "b"}   **이 키들만** 새로 올립니다  ← 대개 이걸 씁니다
+
+    ★ 세 번째가 왜 필요한가 ★
+      멘트 문구를 고치면 지역 mp3 는 새로 만들어집니다. 그런데 로봇에는
+      같은 이름의 옛 파일이 그대로 있고, replace 가 아니면 그걸 계속
+      씁니다. 화면에는 새 문장이 찍히는데 스피커에서는 옛 문장이
+      나옵니다 — 로그가 멀쩡해서 알아채기 어렵습니다. 실제로 당했습니다.
+
+      그렇다고 매번 전부 다시 올릴 수는 없습니다. 21개에 10분입니다.
+      그래서 **바뀐 것만** 지목해 올립니다. voices.build() 가 무엇이
+      바뀌었는지 알려주므로, 그 목록을 그대로 넘기면 됩니다.
     """
     hub = make_audio_hub(conn)
     await set_play_once(hub)          # ★ 올리기 전에 반복부터 끕니다 ★
     uuids = {}
     for key, path in paths.items():
-        uuids[key] = await upload_phrase(hub, path, replace=replace)
+        if isinstance(replace, bool):
+            want = replace
+        else:
+            want = key in (replace or ())
+        if want and not isinstance(replace, bool):
+            print(f"[음성] {key} — 문장이 바뀌어 로봇의 것을 새로 올립니다")
+        uuids[key] = await upload_phrase(hub, path, replace=want)
     return hub, uuids
 
 

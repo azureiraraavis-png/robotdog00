@@ -10,7 +10,7 @@
     걷기는 아직 못 정한 것들에 걸려 있습니다.
       · 문 통과를 좌우 보며 가운데 맞추기로 해야 하는데 (주행거리계 오차가
         문틀 여유의 두 배라서) 그 부품이 아직 없습니다
-      · S5 를 방 안 어디서 할지, 회전을 어디서 할지가 미정입니다
+      · S5 마무리 자리는 방 안으로 정해졌지만, 그 자리를 아직 안 쟀습니다
 
     반면 **말하기와 동작은 지금 다 정해져 있습니다.** 그런데 한 번도
     돌려본 적이 없습니다. 토막(Line) 구조도, 동작 삽입도, 파일 20개
@@ -141,8 +141,8 @@ async def do_stop(robot, step, timer, allow_turns):
     if step.face == "door" and step.door_deg is not None:
         if allow_turns:
             print(f"   ⟨문 쪽으로 {step.door_deg:+.0f}도 회전⟩")
-            await common.move(robot["conn"], z=_yaw_stick(step.door_deg),
-                              duration=_yaw_seconds(step.door_deg))
+            await common.turn_by(robot["conn"], step.door_deg,
+                                 probe=robot.get("probe"))
         else:
             print(f"   (문 쪽으로 {step.door_deg:+.0f}도 — 제자리 모드라 건너뜁니다)")
         await common.light_on(robot["conn"])
@@ -154,28 +154,23 @@ async def do_stop(robot, step, timer, allow_turns):
 
     if pointing:
         await common.light_off(robot["conn"])
-        if allow_turns:
-            print(f"   ⟨복도 쪽으로 되돌리기⟩")
-            await common.move(robot["conn"], z=_yaw_stick(-step.door_deg),
-                              duration=_yaw_seconds(step.door_deg))
+        if not getattr(step, "face_back", True):
+            # 이 문으로 들어갈 것이므로 본 채로 둡니다 (S4 → M4)
+            print("   (문을 본 채로 둡니다 — 이 문으로 들어갑니다)")
+        elif allow_turns:
+            print("   ⟨복도 쪽으로 되돌리기⟩")
+            await common.turn_by(robot["conn"], -step.door_deg,
+                                 probe=robot.get("probe"))
 
     print(f"   … 질의응답 {scenario.QA_PAUSE:.0f}초")
     await asyncio.sleep(scenario.QA_PAUSE)
 
 
-# 회전 속도: 스틱 0.4 에서 약 0.65 rad/s (실측 rx=0.8 → 1.30 rad/s).
-# 제자리 모드에서는 천천히 돕니다.
-YAW_STICK = 0.4
-YAW_RATE = 0.65
-
-
-def _yaw_stick(deg):
-    return YAW_STICK if deg > 0 else -YAW_STICK
-
-
-def _yaw_seconds(deg):
-    import math
-    return min(6.0, abs(math.radians(deg)) / YAW_RATE)
+# ★ 회전은 common.turn_by 가 합니다 ★
+#   여기에 스틱↔각속도 환산표(YAW_STICK / YAW_RATE)를 두고 시간으로
+#   돌리고 있었는데, common.move 가 3초에서 자르는 바람에 112도가 넘는
+#   회전은 전부 112도가 되고 있었습니다. 로그에는 "3.0초" 라고만
+#   찍혔습니다. turn_by 는 나눠 보내고, 실제로 돈 각도를 재서 멈춥니다.
 
 
 async def do_move(robot, step, allow_turns):
@@ -190,15 +185,31 @@ async def do_move(robot, step, allow_turns):
         await robot["hub"].play_by_uuid(robot["uuids"][step.key])
         await asyncio.sleep(scenario.seconds_for(step)[0] + 0.3)
 
-    bits = []
+    # ── 출발 방향 잡기 ──
+    #
+    # ★ 여기가 비어 있었습니다 ★
+    #   allow_turns 를 받아놓고 쓰지 않았습니다. 그래서 --turns 를 줘도
+    #   정차점의 '문 쪽으로 돌기' 만 돌고 이동 구간은 한 번도 돌지 않았습니다.
+    #   S2·S3·S4 가 도니까 도는 것처럼 보였을 뿐입니다.
     if step.turn_deg:
-        bits.append(f"{step.turn_deg:+.0f}도 회전")
+        if allow_turns:
+            print(f"   ⟨출발 방향 {step.turn_deg:+.0f}도 회전⟩")
+            await common.turn_by(robot["conn"], step.turn_deg,
+                                 probe=robot.get("probe"))
+        else:
+            print(f"   (출발 방향 {step.turn_deg:+.0f}도 — 제자리 모드라 건너뜁니다)")
+
+    if getattr(step, "align", False):
+        print("   ⟨복도와 나란히 맞추기⟩  ※ 아직 안 만들었습니다 (라이다)")
+
+    bits = []
     if step.meters:
         bits.append(f"{step.meters:.2f} m 이동")
     if getattr(step, "narrow", False):
         bits.append("★ 좁은 통로 — 좌우 보며 가운데 맞추기 ★")
-    print(f"   ⟨{' · '.join(bits) if bits else '자리 고쳐 잡기'}⟩")
-    print("     (제자리 모드라 실제로 가지는 않습니다)")
+    if bits:
+        print(f"   ⟨{' · '.join(bits)}⟩")
+        print("     (제자리 모드라 실제로 가지는 않습니다)")
     await asyncio.sleep(1.0)
 
 
@@ -206,7 +217,7 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None):
     import common
     import safety
     import voices
-    made = await voices.build(refresh=refresh)
+    made, changed = await voices.build(refresh=refresh)
     paths = {k: p for k, (p, _s) in made.items()}
 
     await common.prepare_motion(conn)
@@ -219,7 +230,11 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None):
     await common.set_volume(conn)
 
     print("\n[준비] 멘트를 로봇에 올립니다...")
-    hub, uuids = await common.upload_all(conn, paths, replace=refresh)
+    if changed and not refresh:
+        print(f"       문장이 바뀐 {len(changed)}개는 로봇의 것도 갈아치웁니다: "
+              f"{', '.join(sorted(changed))}")
+    hub, uuids = await common.upload_all(
+        conn, paths, replace=True if refresh else changed)
     print(f"[준비] 완료 — {len(uuids)}개")
 
     print("\n[준비] 자세 확인")
@@ -227,7 +242,7 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None):
         print("일으켜 세우지 못했습니다. 중단합니다.")
         return
 
-    robot = {"conn": conn, "hub": hub, "uuids": uuids,
+    robot = {"conn": conn, "hub": hub, "uuids": uuids, "probe": probe,
              "posture": common.Posture(conn, probe=probe)}
     robot["posture"].state = "stand"
     timer = Timer()
@@ -286,6 +301,8 @@ def dry_run(start_at=None):
             bits = []
             if step.turn_deg:
                 bits.append(f"{step.turn_deg:+.0f}도")
+            if getattr(step, "align", False):
+                bits.append("벽과 나란히")
             if step.meters:
                 bits.append(f"{step.meters:.2f} m")
             if getattr(step, "narrow", False):
