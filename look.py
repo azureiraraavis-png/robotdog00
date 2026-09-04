@@ -158,27 +158,35 @@ def summarize(points):
         lines.append("그 높이에 아무것도 없습니다 — 트여 있거나, 라이다가 못 보고 있습니다.")
         return lines
 
-    x, y = band[:, 0], band[:, 1]
+    # ★ 여기서 직접 계산하지 않습니다 ★
+    #
+    # 예전에는 look.py 가 앞·좌·우를 자기 손으로 다시 계산했습니다.
+    # perception.clearance_from() 과 **같은 일을 하는 두 번째 구현**이었고,
+    # 결국 사고가 났습니다 — 문틀에서 '앞' 이 잘못 나오는 버그를
+    # perception 쪽만 고치고 여기는 옛 코드 그대로 남았습니다.
+    # 같은 자리를 두 도구로 재면 다른 값이 나오는 상태였던 것입니다.
+    #
+    # 재는 법은 한 군데에만 둡니다. 재는 법이 바뀌면 모두가 같이 바뀝니다.
+    c = perception.clearance_from(band)
 
-    front = band[(x > 0.1) & (np.abs(y) < 0.35)]      # 몸통 폭만큼의 앞쪽
-    if len(front):
-        lines.append(f"정면(폭 0.7m): 가장 가까운 것 {front[:, 0].min():.2f} m")
-    else:
-        lines.append("정면(폭 0.7m): 범위 안에 아무것도 없음")
+    def near(v):
+        return f"가장 가까운 것 {v:.2f} m" if v is not None else "가까운 것 없음"
 
-    for label, mask in (("왼쪽", (y > 0.1) & (np.abs(x) < 0.5)),
-                        ("오른쪽", (y < -0.1) & (np.abs(x) < 0.5))):
-        side = band[mask]
-        if len(side):
-            lines.append(f"{label}: 가장 가까운 것 {np.abs(side[:, 1]).min():.2f} m")
-        else:
-            lines.append(f"{label}: 가까운 것 없음")
+    lines.append(f"정면(코앞부터, 폭 {perception.FRONT_HALF_WIDTH * 2:.1f}m):"
+                 f" {near(c.front)}")
+    lines.append(f"왼쪽: {near(c.left)}")
+    lines.append(f"오른쪽: {near(c.right)}")
 
-    left = band[(y > 0.1) & (np.abs(x) < 0.5)]
-    right = band[(y < -0.1) & (np.abs(x) < 0.5)]
-    if len(left) and len(right):
-        width = np.abs(left[:, 1]).min() + np.abs(right[:, 1]).min()
+    width = c.width()
+    if width is not None:
         lines.append(f"→ 로봇 높이에서의 통로 폭 약 {width:.2f} m")
+        half = width / 2
+        if half < perception.TURN_NEED:
+            lines.append(f"   ★ 여기서는 제자리 회전이 안 됩니다 ★")
+            lines.append(f"     가운데로 서도 {half:.2f} m"
+                         f" (회전에 사방 {perception.TURN_NEED:.2f} m 필요)")
+            lines.append(f"     지나갈 수는 있습니다 — 몸통 폭이 0.31 m 이니")
+            lines.append(f"     양옆 {(width - 0.31) / 2:.2f} m 씩 남습니다. 똑바로만 가세요.")
 
     # 바닥 아래로 내려간 점 = 반들거리는 바닥의 거울 반사
     below = int((points[:, 2] < -0.05).sum())

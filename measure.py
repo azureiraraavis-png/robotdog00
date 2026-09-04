@@ -70,6 +70,17 @@ LOG = Path(__file__).parent / "measure_log.txt"
 TURN_RADIUS = 0.383
 TURN_NEED = TURN_RADIUS + 0.10      # 사방으로 이만큼은 비어야 합니다 (m)
 
+# 이보다 덜 움직였으면 '제자리에서 돌기만 한 것' 으로 봅니다 (m).
+#
+# ★ 문 각도를 재는 방법입니다 ★
+#   한 자리에서 두 번 찍으면 됩니다 — 복도 방향으로 한 번, 문을 본 채로
+#   한 번. 그 사이의 방향변화가 곧 '문을 보려면 몇 도 돌아야 하는가' 입니다.
+#
+#   왜 따로 재야 하냐면, 지점과 지점 사이의 방향변화에는 '문 쪽으로 돌기'
+#   와 '다시 복도 쪽으로 돌기' 가 섞여 있어서 문 각도만 뽑을 수 없기
+#   때문입니다. 섞이기 전에 재는 것이 유일한 방법입니다.
+IN_PLACE = 0.30
+
 
 class Point:
     def __init__(self, name, pose, clear):
@@ -155,14 +166,21 @@ def show(points):
 
     total = 0.0
     axis = []            # 복도 축과 나란히 서서 잰 지점만
+    spins = []           # 제자리 회전 (앞지점, 뒷지점, 각도) — 문 각도입니다
     for i, p in enumerate(points):
         if i == 0:
             seg_s = seg_t = "—"
         else:
             seg = gap(points[i - 1], p)
-            total += seg
-            seg_s = f"{seg:.2f} m"
-            seg_t = f"{turn(points[i - 1], p):+.0f}°"
+            turned = turn(points[i - 1], p)
+            if seg < IN_PLACE:
+                # 거의 안 움직이고 방향만 바뀐 것 = 제자리 회전
+                spins.append((points[i - 1].name, p.name, turned))
+                seg_s = "제자리"
+            else:
+                total += seg
+                seg_s = f"{seg:.2f} m"
+            seg_t = f"{turned:+.0f}°"
         c = p.clear
         w = c.width()
         d = off_axis(points, i)
@@ -285,8 +303,16 @@ def show(points):
     out()
     out(" scenario.py 에 옮길 값")
     for i in range(1, len(points)):
-        out(f"   {points[i-1].name} → {points[i].name}"
-            f"   meters={gap(points[i-1], points[i]):.2f}")
+        d = gap(points[i - 1], points[i])
+        if d >= IN_PLACE:
+            out(f"   {points[i-1].name} → {points[i].name}"
+                f"   meters={d:.2f}  turn_deg={turn(points[i-1], points[i]):+.0f}")
+    if spins:
+        out()
+        out("   ★ 문 각도 (Stop 의 door_deg) ★")
+        for before, after, deg in spins:
+            out(f"   {before} → {after}   door_deg={deg:+.0f}")
+        out("     + 가 왼쪽입니다. 복도 방향에서 문을 보기까지 돈 각도입니다.")
 
     out()
     out(" ※ 이 거리는 라이다 주행거리계 값입니다. 줄자와 비교해 보세요.")
