@@ -776,7 +776,8 @@ def stick_to_yaw_rate(stick):
     return abs(stick) * getattr(config, "STICK_TO_YAW", 1.63)
 
 
-async def turn_by(conn, degrees, probe=None, stick=None, verbose=True):
+async def turn_by(conn, degrees, probe=None, stick=None, verbose=True,
+                  settle=0.6, trace=None):
     """도 단위로 돕니다 (+ 가 왼쪽). 돌려주는 값: 실제로 돈 각도.
 
     ★ 시간으로 돌면 안 됩니다 ★
@@ -822,19 +823,44 @@ async def turn_by(conn, degrees, probe=None, stick=None, verbose=True):
         how = "실제로 돈 각도를 재면서" if live else f"어림 {est:.1f}초 동안 (재지 못합니다)"
         print(f"[회전] {degrees:+.0f}도 — 스틱 {z:+.1f}, {how}")
 
+    # ── 새 표본이 왔을 때만 적분합니다 ──
+    last_count = probe.yaw_count if probe is not None else 0
+    last_stamp = probe.yaw_stamp if probe is not None else None
+    samples = 0
+
+    def take():
+        """상태 메시지가 새로 왔으면 그것이 덮는 시간만큼만 더합니다 (rad)."""
+        nonlocal last_count, last_stamp, samples
+        if probe is None or probe.yaw_count == last_count:
+            return 0.0
+        stamp, speed = probe.yaw_stamp, probe.yaw_speed
+        step = 0.0
+        if last_stamp is not None and stamp is not None and speed is not None:
+            # 오래 끊겼다 온 표본은 그 사이를 대표하지 못합니다. 잘라둡니다.
+            step = speed * sign * min(stamp - last_stamp, 0.20)
+        if trace is not None and stamp is not None and speed is not None:
+            # ★ 표본을 통째로 남깁니다 ★
+            #   '왜 이렇게 됐나' 를 나중에 따지려면 요약이 아니라 원본이
+            #   있어야 합니다. turn_test.py 가 이걸 그림으로 그립니다.
+            trace.append((stamp, speed * sign, cutting))
+        last_count, last_stamp = probe.yaw_count, stamp
+        samples += 1
+        return step
+
     turned = 0.0
-    t0 = last = time.time()
+    cutting = False        # 명령을 끊은 뒤인가 (trace 표시용)
+    t0 = time.time()
     hit = False
+    t_end = None
     try:
         while True:
             joystick(conn, **stick_from_intent(0.0, 0.0, z))
             await asyncio.sleep(0.02)
             now = time.time()
-            dt, last = now - last, now
 
-            if probe is not None and probe.yaw_speed is not None:
+            if live:
                 # 시킨 방향의 성분만 셉니다 — 반대쪽 잡음은 서로 지웁니다
-                turned += probe.yaw_speed * sign * dt
+                turned += take()
                 if turned >= target:
                     hit = True
                     break
@@ -846,36 +872,44 @@ async def turn_by(conn, degrees, probe=None, stick=None, verbose=True):
             if now - t0 >= limit:
                 break
     finally:
+        # ★ 여기서 시계를 멈춥니다 ★
+        #   지난번에 이 아래 관찰 구간까지 시간에 넣는 바람에, 회전 일곱 개가
+        #   전부 0.46초씩 느려진 것처럼 보였습니다. 없던 변화를 만든 것은
+        #   로봇이 아니라 제가 넣은 측정이었습니다.
+        t_end = time.time()
+
         # ★ 멈추라고 한 뒤에도 로봇은 조금 더 돕니다 ★
         #   여기를 재지 않으면 '몇 도 돌았는가' 를 늘 적게 셉니다. 문 쪽을
         #   가리킬 때는 2~3도가 아무것도 아니지만, 0.70 m 문틀로 들어갈
         #   때는 여유 0.19 m 를 갉아먹습니다. 그러니 재둡니다.
         #   (지금은 재기만 합니다. 얼마나 되는지 알고 나서 빼겠습니다)
-        tail = 0.0
-        t_stop = last_s = time.time()
-        while time.time() - t_stop < 0.5:
+        overrun = 0.0      # 멈추라고 한 뒤 더 밀려 도는 각도
+        cutting = True
+        t_stop = time.time()
+        while time.time() - t_stop < settle:
             joystick(conn, 0.0, 0.0, 0.0)
             await asyncio.sleep(0.02)
-            now = time.time()
-            dt_s, last_s = now - last_s, now
-            if probe is not None and probe.yaw_speed is not None:
-                tail += probe.yaw_speed * sign * dt_s
+            overrun += take()
         await stop(conn)
 
-    took = time.time() - t0
+    took = (t_end or time.time()) - t0
     got = math.degrees(turned) * sign
-    tail_deg = math.degrees(tail) * sign
+    overrun_deg = math.degrees(overrun) * sign
+    rate = samples / took if took > 0 else 0.0
     if verbose:
         if not hit:
             print(f"[회전] ★ {limit:.0f}초가 지나 멈춥니다 — {got:+.0f}도까지 "
                   f"돌았습니다 (시킨 값 {degrees:+.0f}도) ★")
             print("       발이 미끄러지거나 무언가에 걸린 것일 수 있습니다.")
         else:
-            extra = (f"  (+ 멈추면서 {tail_deg:+.0f}도 더 → 합계 "
-                     f"{got + tail_deg:+.0f}도)") if live and abs(tail_deg) >= 0.5 else ""
+            extra = (f"  (+ 멈추면서 {overrun_deg:+.0f}도 밀림 → 합계 "
+                     f"{got + overrun_deg:+.0f}도)") if live and abs(overrun_deg) >= 0.5 else ""
             print(f"[회전] {got:+.0f}도 · {took:.1f}초"
                   + ("" if live else "  (잰 값이 아니라 어림입니다)") + extra)
-    return got + tail_deg
+        if live and rate < 15.0:
+            print(f"       ※ 상태 메시지가 초당 {rate:.0f}개뿐입니다 "
+                  f"({samples}개). 감속 구간의 밀림 값은 덜 믿으세요.")
+    return got + overrun_deg
 
 
 def stick_to_speed(stick):
@@ -1044,6 +1078,8 @@ class StateProbe:
         self.gait = None
         self.velocity = None            # [vx, vy, vz] m/s
         self.yaw_speed = None
+        self.yaw_stamp = None           # 그 값이 도착한 시각
+        self.yaw_count = 0              # 몇 번째 값인가 (새 값 판별용)
         self.fields = None              # 상태 메시지에 실제로 있던 항목 이름들
         self.raw = None                 # 마지막 상태 메시지 통째로
         self.modes_seen = set()
@@ -1090,6 +1126,14 @@ class StateProbe:
         y = data.get("yaw_speed")
         if isinstance(y, (int, float)):
             self.yaw_speed = float(y)
+            # ★ 언제 온 값인지 같이 적어둡니다 ★
+            #   각속도를 적분할 때, 우리 루프가 도는 횟수(50Hz)로 세면 안
+            #   됩니다. 상태 메시지가 그보다 드물게 오면 **같은 값을 여러 번**
+            #   세게 됩니다. 속도가 일정할 때는 티가 안 나지만, 급히 느려지는
+            #   구간에서는 마지막 빠른 값이 그대로 늘어나 부풀려집니다.
+            #   그래서 '새 값이 왔을 때만, 그 값이 덮는 시간만큼' 셉니다.
+            self.yaw_stamp = time.time()
+            self.yaw_count += 1
 
     async def read(self, seconds=1.5):
         loop = asyncio.get_running_loop()
