@@ -1254,6 +1254,8 @@ class Posture:
         self.conn = conn
         self.probe = probe if probe is not None else StateProbe(conn)
         self.state = "unknown"
+        # 마지막으로 stand_and_wait 를 거쳤는가. 자세를 바꾸면 풀립니다.
+        self.walk_ready = False
 
     def can_move(self):
         """지금 이동 명령이 먹히는 상태인지.
@@ -1285,6 +1287,30 @@ class Posture:
         if self.state == "stand" and self.probe.mode_is_useful() and self.can_move():
             return True
 
+        # ★ mode 를 못 믿는 기체에서도 건너뛸 길 ★
+        #
+        # 위 조건은 이 기체에서 **한 번도 참이 된 적이 없습니다.** mode 가
+        # 늘 0 이라 mode_is_useful() 이 거짓이기 때문입니다. 그래서 서 있는
+        # 로봇을 앉힐 때도 매번 StandUp 부터 다시 했고, guide.py 실측에서
+        # 앉기 하나가 7.0초로 나왔습니다 (일어서기 3.5 + 앉기 3.5).
+        #
+        # mode 는 못 믿어도 **몸높이는 믿을 수 있습니다.** 그리고 걷기가
+        # 풀리는 것은 앉거나 엎드린 뒤였지, 그냥 서 있다가 그런 적은
+        # 없었습니다. 그래서 두 가지가 모두 참일 때만 건너뜁니다.
+        #
+        #   1. 마지막으로 제대로 일으켜 세운 뒤로 자세를 안 바꿨다 (walk_ready)
+        #   2. 지금 실제로 서 있는 높이다 (측정값)
+        #
+        # 둘 중 하나라도 아니면 예전처럼 StandUp 을 거칩니다. 건너뛰기가
+        # 틀리면 '서 있는데 못 걷는' 상태가 되는데, 그건 우리가 이미
+        # 한 번 겪어본 고약한 버그입니다.
+        if self.state == "stand" and getattr(self, "walk_ready", False):
+            h = await self.probe.read()
+            if h is not None and h > StateProbe.STANDING:
+                if verbose:
+                    print(f"[자세] 이미 서 있습니다 (몸높이 {h:.3f} m) — 그대로 씁니다")
+                return True
+
         exit_cmd = self.EXIT_COMMAND.get(self.state)
         if exit_cmd and exit_cmd != "StandUp":
             if verbose:
@@ -1295,6 +1321,7 @@ class Posture:
         # 어느 경로로 왔든 여기를 지납니다 (StandUp → 안정 → BalanceStand)
         await stand_and_wait(self.conn, probe=self.probe, verbose=verbose)
         self.state = "stand"
+        self.walk_ready = True      # 제대로 일으켜 세웠습니다
         return True
 
     async def _report(self, label, verbose=True):
@@ -1337,6 +1364,7 @@ class Posture:
         await sport(self.conn, "Sit")
         await asyncio.sleep(3)
         self.state = "sit"
+        self.walk_ready = False
         await self._report("앉았습니다", verbose)
 
     async def lie(self, verbose=True):
@@ -1348,6 +1376,7 @@ class Posture:
         await sport(self.conn, "StandDown")
         await asyncio.sleep(3)
         self.state = "lie"
+        self.walk_ready = False
         await self._report("엎드렸습니다", verbose)
 
     async def damp(self, verbose=True):
@@ -1355,6 +1384,7 @@ class Posture:
         await emergency_damp(self.conn)
         await asyncio.sleep(1.0)
         self.state = "damp"
+        self.walk_ready = False
 
 
 async def announce(speaker, phrase_key, verbose=True):
