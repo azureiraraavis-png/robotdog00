@@ -1,47 +1,53 @@
 # -*- coding: utf-8 -*-
 """
-리모컨 버튼 배치 알아내기 — 리모컨이 스스로 가르쳐주게 합니다.
+리모컨 버튼 값 실시간 관찰 — 누르는 대로 화면에 뜹니다.
 
-  ★ 이 스크립트는 로봇에게 아무것도 보내지 않습니다 (듣기만 합니다) ★
+  ★ 로봇에게 아무것도 보내지 않습니다. 듣기만 합니다 ★
 
-  ── 왜 필요한가 ──
-    리모컨 라벨:
+  ── 무엇을 찾는가 ──
+    게임패드 라벨:  Searchlight Switch = L2 + SELECT
 
-        Function            Button
-        Searchlight Switch  L2 + SELECT
-        Avoidance ON        X
-        Avoidance OFF       Y (3초 길게)
-        Buzzer Switch       F1 (세 번)
+    전방 서치라이트는 **모션 명령이 아니라 컨트롤러 기능**입니다. 그래서
+    라이브러리 명령표 어디에도 없습니다. 그런데 우리는 이미 컨트롤러와
+    같은 통로를 씁니다 — rt/wirelesscontroller.  joystick() 이 매번
+    보내는 메시지에 `keys` 칸이 있고, 지금은 0 으로 비워 둡니다.
 
-    전방 라이트는 **모션 명령이 아니라 리모컨 기능**입니다. 그래서 VUI 를
-    아무리 찔러도 안 나왔고, 라이브러리 어디에도 라이트 명령이 없습니다.
-
-    그런데 우리는 이미 리모컨과 같은 통로를 씁니다 — rt/wirelesscontroller.
-    joystick() 이 매번 보내는 메시지에 **`keys` 칸이 있고 0 으로 비워 둡니다.**
-    버튼은 거기에 실립니다.
+    그 칸에 어떤 값이 라이트인지만 알면, 음성 명령에 붙일 수 있습니다.
+    "불 켜줘" 로요.
 
   ── 짐작하지 않습니다 ──
-    "L2 는 0x20 이겠지" 하고 만들어 보내면 안 됩니다. 라벨을 보세요 —
-    R1+A 는 **Jump Forward** 입니다. 비트를 잘못 짚으면 실내에서 뜁니다.
-    그래서 리모컨에게 물어봅니다.
+    라벨을 보세요. R1+A 는 **Jump Forward** 입니다. 16비트 중 2비트
+    조합이 120가지고 그중 하나가 실내 점프입니다. 배치를 모르는 채로
+    값을 만들어 보내는 일은 하지 않습니다.
 
-  ── 1차 실패에서 배운 것 ──
-    처음에는 "3초 동안 신호가 오나" 를 먼저 확인하고, 안 오면 멈추게
-    했습니다. 그런데 그 3초 동안 **아무도 버튼을 안 누르고 있었습니다.**
-    리모컨은 눌릴 때만 값을 보내는 듯한데, 눌러보라고 하기도 전에
-    포기한 것입니다. 관측 도구가 관측 대상을 막고 있었습니다.
+    대신 컨트롤러가 스스로 말하게 합니다. 누르면 값이 흐르고, 우리는 봅니다.
 
-    이번에는 먼저 눌러보게 하고, 끝까지 아무것도 못 들었을 때만 그렇게
-    보고합니다. 그리고 **듣는 곳을 두 군데로** 늘렸습니다.
-        rt/wirelesscontroller        — 조이스틱과 같은 통로
-        rt/lf/lowstate 의 원본 바이트 — 리모컨 패킷이 통째로 실려 옵니다
+  ── 1차 시도가 실패한 이유 ──
+    두 번 헛돌았습니다.
+      1) 버튼을 누르라고 하기 **전에** 3초를 기다리고 "신호 없음" 판정.
+         아무도 안 누르는 동안 값이 올 리가 없었습니다.
+      2) 그다음엔 8개 버튼 × 4초 강제 대기. 그런데 그때 게임패드는
+         **방전되어 로봇과 연결조차 안 되어 있었습니다.**
+         실험이 실패한 게 아니라 성립하지 않았습니다.
+
+    그래서 이번엔 묻지 않습니다. 그냥 켜 두고 **누르는 대로 보여줍니다.**
+    아무 때나 Ctrl+C 로 끝내면 됩니다.
+
+  ★ 먼저 확인하세요 ★
+    게임패드가 **충전되어 있고 로봇과 연결**되어 있어야 합니다.
+    확인하는 가장 쉬운 방법: 게임패드로 로봇을 조금 움직여 보세요.
+    움직이면 연결된 것이고, 그럼 값도 흐를 것입니다.
 
   쓰는 법
 
-      .\\run keys_test.py
+      .\\run keys_test.py            90초 동안 관찰 (Ctrl+C 로 언제든 종료)
+      .\\run keys_test.py 300        시간을 늘려서
 
-    ★ 리모컨 전원을 켜고 로봇과 연결된 상태여야 합니다 ★
-    시키는 버튼만 누르세요 — 전부 로봇을 움직이지 않는 것들입니다.
+    눌러볼 것 (전부 로봇을 움직이지 않습니다)
+      L2 · SELECT · X · Y · A · B  를 하나씩
+      그다음 ★ L2 + SELECT ★ — 라이트가 켜질 것입니다
+
+    값이 뜨면 무엇을 눌렀는지 함께 적어두세요. 그 짝이 곧 배치표입니다.
 """
 
 import asyncio
@@ -54,32 +60,26 @@ from unitree_webrtc_connect.constants import RTC_TOPIC
 
 import common
 
-MAP_FILE = Path(__file__).parent / "keys_map.json"
-LOG = Path(__file__).parent / "keys_test_log.txt"
-
-# 눌러볼 버튼. ★ 전부 로봇을 움직이지 않는 것들입니다 ★
-ASK = [
-    ("아무거나", "아무 버튼이나 몇 번 눌러보세요 — 듣기가 되는지부터 봅니다"),
-    ("L2", "왼쪽 뒤 큰 버튼 L2 를 누른 채로"),
-    ("SELECT", "SELECT 를 누른 채로"),
-    ("X", "X 를 누른 채로  (회피 켜기 — 움직이지 않습니다)"),
-    ("Y", "Y 를 누른 채로  (회피 끄기)"),
-    ("A", "A 를 누른 채로"),
-    ("B", "B 를 누른 채로"),
-    ("L2+SELECT", "★ L2 와 SELECT 를 함께 — 라이트가 켜질 것입니다 ★"),
-]
-
-WATCH = 4.0        # 한 버튼당 지켜보는 시간 (초)
+LOG = Path(__file__).parent / "keys_log.txt"
+DEFAULT_SECONDS = 90.0
+QUIET_NOTE = 8.0        # 이만큼 조용하면 한 줄 알려줍니다 (초)
 
 
-class Ears:
-    """리모컨 상태를 듣습니다. 두 군데를 동시에. 보내지는 않습니다."""
+def bits(value):
+    """켜진 비트를 사람이 읽게. 0x0028 → '0x0008 + 0x0020'"""
+    on = [1 << i for i in range(16) if value & (1 << i)]
+    return " + ".join(f"0x{b:04X}" for b in on) if on else "—"
+
+
+class Monitor:
+    """두 곳을 동시에 듣습니다. 보내지 않습니다."""
 
     def __init__(self, conn):
-        self.seen = []          # (시각, 출처, keys 값)
-        self.raw = []           # (시각, 원본 바이트 hex)
+        self.rows = []          # (경과초, 출처, 값)
         self.last = {}
-        self.heard = set()      # 어느 토픽에서 메시지가 오긴 했는가
+        self.heard = set()
+        self.started = time.time()
+        self.quiet_since = time.time()
 
         conn.datachannel.pub_sub.subscribe(
             RTC_TOPIC["WIRELESS_CONTROLLER"], self._on_wireless)
@@ -90,7 +90,12 @@ class Ears:
         if self.last.get(source) == keys:
             return
         self.last[source] = keys
-        self.seen.append((time.time(), source, int(keys)))
+        t = time.time() - self.started
+        self.rows.append((t, source, keys))
+        self.quiet_since = time.time()
+        mark = "  ← 무언가 눌렸습니다" if keys else "  (뗌)"
+        print(f"  {t:6.1f}초  [{source:9}]  0x{keys:04X} ({keys:5d})"
+              f"   {bits(keys):28}{mark}")
 
     def _on_wireless(self, message):
         self.heard.add("wirelesscontroller")
@@ -99,13 +104,6 @@ class Ears:
             self._note("wireless", int(data["keys"]))
 
     def _on_lowstate(self, message):
-        """lowstate 안에 리모컨 패킷이 통째로 실려 옵니다.
-
-        이름이 펌웨어마다 조금씩 다릅니다 (wireless_remote / wirelessRemote).
-        버튼은 보통 3~4번째 바이트에 16비트로 들어 있습니다. 하지만
-        **그것조차 짐작하지 않습니다** — 원본을 그대로 찍어두고,
-        눌렀을 때 어느 바이트가 변하는지 눈으로 봅니다.
-        """
         self.heard.add("lowstate")
         data = message.get("data")
         if not isinstance(data, dict):
@@ -119,128 +117,92 @@ class Ears:
         except (TypeError, ValueError):
             return
         if len(raw) >= 4:
-            keys = raw[2] | (raw[3] << 8)          # 흔한 배치. 확인은 눈으로.
-            self._note("lowstate", keys)
-        hexed = raw[:8].hex(" ")
-        if not self.raw or self.raw[-1][1] != hexed:
-            self.raw.append((time.time(), hexed))
+            self._note("lowstate", raw[2] | (raw[3] << 8))
 
-    def collect(self, since):
-        """since 이후에 본 0 이 아닌 값들. {출처: [값...]}"""
-        out = {}
-        for t, src, k in self.seen:
-            if t >= since and k:
-                out.setdefault(src, []).append(k)
-        return out
-
-    def raw_since(self, since):
-        return [h for t, h in self.raw if t >= since]
+    def pressed(self):
+        """0 이 아닌, 실제로 눌린 값들."""
+        return sorted({k for _t, _s, k in self.rows if k})
 
 
-def bits(value):
-    on = [1 << i for i in range(16) if value & (1 << i)]
-    return " + ".join(f"0x{b:04X}" for b in on) if on else "—"
+async def run(conn, seconds):
+    print("=" * 74)
+    print(" 리모컨 버튼 값 실시간 관찰")
+    print("=" * 74)
+    print(" ★ 로봇에게 아무것도 보내지 않습니다 ★")
+    print()
+    print(" 눌러보세요 (전부 로봇을 움직이지 않습니다):")
+    print("   L2 · SELECT · X · Y · A · B  를 하나씩")
+    print("   그다음  ★ L2 + SELECT ★  — 라이트가 켜질 것입니다")
+    print()
+    print(" ⚠ R1+A 는 앞으로 점프입니다. 누르지 마세요.")
+    print()
+    print(f" {seconds:.0f}초 동안 봅니다. 다 됐으면 Ctrl+C.")
+    print("-" * 74)
 
-
-async def run(conn):
-    lines = []
-
-    def out(s=""):
-        print(s)
-        lines.append(s)
-
-    ears = Ears(conn)
-    await asyncio.sleep(1.0)
-
-    out("=" * 72)
-    out(" 리모컨 버튼 배치 알아내기")
-    out("=" * 72)
-    out(" ★ 로봇에게 아무것도 보내지 않습니다. 듣기만 합니다 ★")
-    out(" ★ 리모컨 전원이 켜져 있어야 합니다 ★")
-    out()
-
-    found = {}
-    for name, how in ASK:
-        print("-" * 72)
-        print(f" [{name}]  {how}")
-        input(f"     Enter 를 누르고, {WATCH:.0f}초 동안 버튼을 누르고 계세요: ")
-        start = time.time()
-        print(f"     {WATCH:.0f}초 동안 봅니다...")
-        await asyncio.sleep(WATCH)
-
-        got = ears.collect(start)
-        raws = ears.raw_since(start)
-
-        if not got:
-            note = ""
-            if raws:
-                note = f"   (원본은 바뀌었습니다: {' | '.join(raws[:3])})"
-            out(f" {name:12} — 값이 안 잡혔습니다{note}")
-            continue
-
-        # 두 출처 중 비트가 가장 많이 켜진 값을 대표로
-        best_src, best = None, 0
-        for src, vals in got.items():
-            v = max(vals, key=lambda x: bin(x).count("1"))
-            if bin(v).count("1") > bin(best).count("1"):
-                best_src, best = src, v
-        if name != "아무거나":
-            found[name] = best
-        out(f" {name:12} = 0x{best:04X} ({best})   {bits(best)}   [{best_src}]")
+    mon = Monitor(conn)
+    deadline = time.time() + seconds
+    try:
+        while time.time() < deadline:
+            await asyncio.sleep(0.3)
+            quiet = time.time() - mon.quiet_since
+            if quiet > QUIET_NOTE:
+                left = deadline - time.time()
+                if not mon.rows:
+                    print(f"       …아직 아무 값도 안 옵니다 "
+                          f"(남은 {left:.0f}초)  ← 게임패드가 로봇과 "
+                          f"연결되어 있는지 확인해 주세요")
+                mon.quiet_since = time.time()
+    except KeyboardInterrupt:
+        print("\n  (끝냅니다)")
 
     # ── 정리 ──
-    out()
-    out("=" * 72)
-    out(" 정리")
-    out("=" * 72)
-
-    if not ears.heard:
-        out(" ★ 두 토픽 어디에서도 메시지가 오지 않았습니다 ★")
-        out("   리모컨 전원이 꺼져 있었거나, 이 펌웨어가 리모컨 상태를")
-        out("   내보내지 않는 것입니다.")
-        out("   후자라면 이 방법으로는 배치를 알 수 없습니다. 짐작해서 보내는")
-        out("   것은 하지 않습니다 — R1+A 가 Jump Forward 입니다.")
+    print("-" * 74)
+    lines = ["=" * 74, " 본 값들", "=" * 74]
+    if not mon.heard:
+        lines.append(" 두 토픽 어디에서도 메시지가 오지 않았습니다.")
     else:
-        out(f" 메시지가 온 곳: {', '.join(sorted(ears.heard))}")
+        lines.append(f" 메시지가 온 곳: {', '.join(sorted(mon.heard))}")
 
-    combo = found.get("L2+SELECT")
-    l2, sel = found.get("L2"), found.get("SELECT")
-    if combo:
-        out()
-        out(f" 전방 라이트 = keys 0x{combo:04X} ({combo})")
-        if l2 and sel:
-            expect = l2 | sel
-            ok = "맞습니다" if expect == combo else "★ 단순 OR 가 아닙니다 ★"
-            out(f"   L2(0x{l2:04X}) | SELECT(0x{sel:04X}) = 0x{expect:04X}  → {ok}")
-        out()
-        out(" 이 값을 joystick() 의 keys 에 실으면 리모컨을 누른 것과 같습니다.")
-        out(" 다만 **한 번 보내고 바로 0 으로 돌려야** 합니다 — 계속 눌린 것으로")
-        out(" 보이면 토글이 계속 뒤집힙니다.")
-    elif ears.heard:
-        out()
-        out(" L2+SELECT 값을 못 잡았습니다.")
-        out(" 잡힌 값이 있다면 그것만이라도 보여주세요 — 배치를 읽어보겠습니다.")
+    got = mon.pressed()
+    if got:
+        lines.append("")
+        lines.append(" 눌린 값 (누른 순서대로):")
+        for t, src, k in mon.rows:
+            if k:
+                lines.append(f"   {t:6.1f}초  0x{k:04X} ({k:5d})   "
+                             f"{bits(k)}   [{src}]")
+        lines.append("")
+        lines.append(" ★ 무엇을 눌렀는지 옆에 적어두세요 ★")
+        lines.append("   그 짝이 배치표입니다. 두 비트가 켜진 값이 L2+SELECT 입니다.")
+        singles = [k for k in got if bin(k).count("1") == 1]
+        doubles = [k for k in got if bin(k).count("1") == 2]
+        if singles:
+            lines.append(f"   한 비트짜리: {', '.join(f'0x{k:04X}' for k in singles)}")
+        if doubles:
+            lines.append(f"   두 비트짜리: {', '.join(f'0x{k:04X}' for k in doubles)}"
+                         f"   ← 조합키. 라이트가 이 안에 있습니다")
+    elif mon.heard:
+        lines.append("")
+        lines.append(" 메시지는 오는데 버튼 값은 0 뿐이었습니다.")
+        lines.append(" 이 토픽에는 버튼이 안 실리거나, 컨트롤러가 로봇에")
+        lines.append(" 연결되어 있지 않은 것입니다.")
+        lines.append("")
+        lines.append(" 확인하는 법: 게임패드로 로봇을 조금 움직여 보세요.")
+        lines.append(" 안 움직이면 연결이 안 된 것이고, 그러면 이 실험은 성립하지 않습니다.")
 
-    if found:
-        MAP_FILE.write_text(json.dumps(found, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
-        out(f"\n {MAP_FILE.name} 에 저장했습니다.")
-
+    for l in lines:
+        print(l)
     LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n{LOG.name} 에 저장했습니다.")
 
 
 async def main():
-    print("=" * 72)
-    print(" 리모컨 버튼 배치 알아내기  ★ 듣기만 합니다 ★")
-    print("=" * 72)
-    print(" 로봇은 엎드려 있어도 됩니다. 시키는 버튼만 누르세요 —")
-    print(" 전부 로봇을 움직이지 않는 것들입니다.")
-    print()
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    seconds = float(args[0]) if args else DEFAULT_SECONDS
 
     conn = await common.connect()
     try:
-        await run(conn)
+        await run(conn, seconds)
     finally:
         await common.disconnect(conn)
 

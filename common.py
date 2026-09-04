@@ -1297,6 +1297,31 @@ class Posture:
         self.state = "stand"
         return True
 
+    async def _report(self, label, verbose=True):
+        """자세를 바꾼 뒤 **실제 몸높이를 읽어서** 알립니다.
+
+        ★ 왜 이걸 따로 만들었나 ★
+        sit() 과 lie() 는 먼저 stand() 를 거칩니다. 그런데 그 stand() 만
+        자기 결과를 찍고, 정작 앉거나 엎드린 것은 아무 말이 없었습니다.
+        그래서 로그가 이렇게 나왔습니다.
+
+            ▶ 명령: sit
+            [자세] 일어섰습니다        ← 앉으라고 했는데 일어섰다고?
+
+        로봇은 제대로 앉았습니다. **로그만 반대로 읽혔습니다.**
+        이 프로젝트에서 몇 번이나 당한 그 함정입니다 — 화면에 뜬 말과
+        실제로 벌어진 일이 다른 것. 그러니 마지막에 한 번 더 재서 찍습니다.
+        """
+        h = await self.probe.read()
+        if verbose:
+            shown = f"{h:.3f} m" if h is not None else "읽지 못함"
+            print(f"[자세] {label} (몸높이 {shown})")
+        if h is not None and h > StateProbe.STANDING:
+            print(f"       ★ 명령은 보냈는데 아직 서 있는 높이입니다 "
+                  f"({h:.3f} m) ★")
+            return False
+        return True
+
     async def sit(self, verbose=True):
         """앉힙니다.
 
@@ -1312,6 +1337,7 @@ class Posture:
         await sport(self.conn, "Sit")
         await asyncio.sleep(3)
         self.state = "sit"
+        await self._report("앉았습니다", verbose)
 
     async def lie(self, verbose=True):
         if self.state == "lie":
@@ -1322,6 +1348,7 @@ class Posture:
         await sport(self.conn, "StandDown")
         await asyncio.sleep(3)
         self.state = "lie"
+        await self._report("엎드렸습니다", verbose)
 
     async def damp(self, verbose=True):
         """힘 빼기. 이후에는 일으켜 세워야 이동 명령이 먹습니다."""
@@ -1540,8 +1567,97 @@ class Speaker:
 
 
 # ═════════════════════════════════════════════════════════════
-# 볼륨
+# VUI — 볼륨과 전방 라이트
 # ═════════════════════════════════════════════════════════════
+#
+# rt/api/vui/request 는 문서가 없습니다. 번호를 훑고 응답을 읽어 알아냈습니다
+# (light_test.py). 알아낸 규칙이 하나 있고, 그게 전부를 설명합니다.
+#
+#   ★ 홀수가 설정, 짝수가 조회입니다 ★
+#
+#   그리고 **코드 100 은 '그런 명령 없음' 이 아니라 '파라미터가 잘못됨'** 입니다.
+#   빈 파라미터로 훑었더니 홀수(설정)가 전부 100 을 뱉었고, 그걸 "없는
+#   명령" 으로 읽는 바람에 한참 헤맸습니다. 짝수(조회)가 돌려준 항목
+#   이름이 곧 홀수에 넣을 이름이었습니다.
+#
+#       1005 에 {"color": "white"} → 100.   항목은 color 가 아니라 brightness 였습니다.
+#
+VUI_API = {
+    "SET_ENABLE": 1001, "GET_ENABLE": 1002,          # 무엇의 enable 인지는 미확인
+    "SET_VOLUME": 1003, "GET_VOLUME": 1004,          # 0~10
+    "SET_BRIGHTNESS": 1005, "GET_BRIGHTNESS": 1006,  # 0~10 ★ 전방 라이트 ★
+    "GET_ENABLE_2": 1010,                            # 또 다른 enable (미확인)
+}
+# 1008 · 1009 · 1012 는 **응답을 주지 않습니다.** 무응답 명령입니다.
+#   (라이브러리에도 전례가 있습니다 — 회피 서비스 MOVE 옆의 no-reply)
+#   시간 제한 없이 부르면 그 자리에서 멈추니, 손대려면 wait_for 를 쓰세요.
+VUI_NO_REPLY = (1008, 1009, 1012)
+
+
+async def _vui(conn, api_id, parameter=None, timeout=3.0):
+    """VUI 에 한 번 보냅니다. (코드, 알맹이).  못 받으면 (None, None)."""
+    payload = {"api_id": api_id}
+    if parameter is not None:
+        payload["parameter"] = parameter
+    try:
+        reply = await asyncio.wait_for(
+            conn.datachannel.pub_sub.publish_request_new(
+                RTC_TOPIC["VUI"], payload), timeout=timeout)
+    except Exception:
+        return None, None
+    inner = (reply or {}).get("data", {}).get("data")
+    if isinstance(inner, str):          # ★ 안쪽 data 는 JSON 문자열입니다 ★
+        try:
+            inner = json.loads(inner)
+        except Exception:
+            inner = None
+    return status_code(reply), inner
+
+
+async def get_brightness(conn):
+    """전방 라이트 밝기 (0~10). 못 읽으면 None."""
+    _code, inner = await _vui(conn, VUI_API["GET_BRIGHTNESS"], {})
+    return inner.get("brightness") if isinstance(inner, dict) else None
+
+
+async def set_brightness(conn, level, verify=True, verbose=True):
+    """전방 라이트를 켜거나 끕니다 (0~10). 돌려주는 값: 실제 밝기 또는 None.
+
+    ★ 켜졌다는 말이 아니라 켜진 상태를 확인합니다 ★
+    회피에서 코드 0 만 믿었다가 크게 틀렸습니다. 여기서는 올린 뒤
+    다시 읽습니다. 눈으로 볼 수 없는 곳에서도 확인이 됩니다.
+    """
+    level = max(0, min(10, int(level)))
+    code, _ = await _vui(conn, VUI_API["SET_BRIGHTNESS"], {"brightness": level})
+    if code != 0:
+        if verbose:
+            print(f"[라이트] 밝기 {level} 요청 → 코드 {code} (실패)")
+        return None
+    if not verify:
+        if verbose:
+            print(f"[라이트] 밝기 {level}")
+        return level
+    await asyncio.sleep(0.4)
+    now = await get_brightness(conn)
+    if verbose:
+        if now == level:
+            print(f"[라이트] 밝기 {level} — 확인됨")
+        else:
+            print(f"[라이트] ★ 요청 {level} 인데 실제로는 {now} 입니다 ★")
+    return now
+
+
+async def light_on(conn, level=None, verbose=True):
+    """전방 라이트를 켭니다."""
+    if level is None:
+        level = getattr(config, "LIGHT_LEVEL", 10)
+    return await set_brightness(conn, level, verbose=verbose)
+
+
+async def light_off(conn, verbose=True):
+    """전방 라이트를 끕니다."""
+    return await set_brightness(conn, 0, verbose=verbose)
+
 
 async def set_volume(conn, level=None, verbose=True):
     """로봇 스피커 볼륨을 맞춥니다 (0~10)."""

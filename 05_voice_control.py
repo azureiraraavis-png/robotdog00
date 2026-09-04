@@ -95,6 +95,15 @@ class Robot:
             await common.stop(self.conn)
             return
 
+        # ★ 라이트는 자세와 무관합니다 ★
+        # 서 있든 엎드려 있든 켜집니다. 일으켜 세울 이유가 없습니다.
+        if action == "light_on":
+            await common.light_on(self.conn)
+            return
+        if action == "light_off":
+            await common.light_off(self.conn)
+            return
+
         if action == "sit":
             await self.posture.sit()
             return
