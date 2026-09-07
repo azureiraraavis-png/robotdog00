@@ -31,7 +31,8 @@
       .\\run guide.py --from S3    중간부터
       .\\run guide.py --dry        로봇 없이 순서만 봅니다
 
-      .\\run guide.py --manual --ears   음성 인식도 켤 수 있게 (기본은 잠금)
+      .\\run guide.py --manual --no-ears  음성 인식을 아예 잠급니다
+                                       (기본은 열려 있고, 메뉴에서 켭니다)
       .\\run guide.py --manual     ★ 사람이 몰고 로봇이 안내합니다 ★
                                   휴대폰 주소가 뜹니다. 조종판으로 몰고,
                                   "도착했습니다" 도 휴대폰으로.
@@ -192,10 +193,13 @@ async def drive_loop(robot, hand):
             if not moving:
                 moving = True
                 since = time.time()
-                which = hand.drive[0]
+                which = set()
                 if not robot["posture"].can_move() and not warned:
                     warned = True
                     print("     ※ 지금 자세로는 안 걷습니다 — 메뉴에서 '일어서기'")
+            # 한 번 누르는 동안 조합이 바뀔 수 있습니다 (앞으로 → 앞으로+좌회전).
+            # 무엇을 눌렀는지는 모아서 한 줄로 적습니다.
+            which.update(hand.holding())
         elif moving:
             # 손을 뗐거나 소식이 끊겼습니다. 확실히 멈춥니다.
             for _ in range(3):
@@ -208,7 +212,7 @@ async def drive_loop(robot, hand):
             #   줄 수를 세는 것보다 **얼마나 짧게 끊겼는지**가 중요합니다.
             held = time.time() - since
             note = "   ★ 끊겼습니다" if held < 0.6 else ""
-            print(f"   ⟨조종⟩ {which or '?'} {held:.1f}초{note}")
+            print(f"   ⟨조종⟩ {'+'.join(sorted(which)) or '?'} {held:.1f}초{note}")
             moving = False
             warned = False
         await asyncio.sleep(0.02)
@@ -251,10 +255,61 @@ async def serve_jobs(robot, hand):
                 elif job == "light_off":
                     await common.light_off(conn)
                     hand.flag(light=False)
+                elif job in ("vol_up", "vol_down"):
+                    await set_volume(robot, hand,
+                                     +1 if job == "vol_up" else -1)
                 elif job == "mic":
                     await toggle_ears(robot, hand)
             except Exception as e:
                 print(f"   ※ 메뉴 '{job}' 를 못 했습니다: {type(e).__name__}: {e}")
+
+
+async def set_volume(robot, hand, step):
+    """음량을 한 칸 올리거나 내립니다 (0~10).
+
+    ★ 설명 도중에도 됩니다 ★
+      다리를 쓰지 않습니다. 그리고 음량은 **그때 고쳐야 쓸모가
+      있습니다** — 복도가 울린다는 걸 아는 순간은 로봇이 말하고 있는
+      순간이고, 설명이 끝날 때까지 기다리라는 것은 고치지 말라는 말과
+      같습니다.
+
+    ★ 지금 값을 로봇에게 묻고 나서 움직입니다 ★
+      우리가 마지막으로 보낸 값을 기억해 두었다가 거기서 더하면,
+      다른 데서(앱이나 게임패드로) 바뀐 순간부터 화면의 숫자가
+      거짓말을 시작합니다. 물어보는 값이 하나 더 오가는 것뿐입니다.
+    """
+    import common
+    now = await common.get_volume(robot["conn"])
+    if now is None:
+        now = robot.get("volume")
+    if now is None:
+        import config
+        now = getattr(config, "SPEAKER_VOLUME", 7)
+        print("   ※ 지금 음량을 못 읽어서 설정값에서 시작합니다")
+    want = max(0, min(10, int(now) + step))
+    got = await common.set_volume(robot["conn"], want, verbose=False)
+    if got is None:
+        print(f"   ⟨음량⟩ 바꾸지 못했습니다 (지금 {now}/10)")
+        return
+    robot["volume"] = got
+    hand.flag(volume=got)
+    edge = ""
+    if got == now and step:
+        edge = " — 여기가 끝입니다"
+    print(f"   ⟨음량⟩ {now} → {got} / 10{edge}")
+
+
+async def read_volume(robot, hand):
+    """시작할 때 한 번, 지금 음량을 읽어 화면에 띄웁니다."""
+    import common
+    got = await common.get_volume(robot["conn"])
+    if got is None:
+        print("[준비] 음량을 못 읽었습니다 — 메뉴에는 '—' 로 뜹니다")
+        return
+    robot["volume"] = got
+    if hand:
+        hand.flag(volume=got)
+    print(f"[준비] 음량 {got}/10")
 
 
 async def toggle_ears(robot, hand):
@@ -268,7 +323,9 @@ async def toggle_ears(robot, hand):
     ears = robot.get("ears")
     if ears is not None:                       # 켜져 있으면 끕니다
         robot["ears"] = None
-        ears["task"].cancel()
+        for key in ("task", "gate"):
+            if ears.get(key):
+                ears[key].cancel()
         try:
             ears["listener"].stop()
         except Exception:
@@ -290,9 +347,48 @@ async def toggle_ears(robot, hand):
     listener.start()
     await asyncio.to_thread(listener.calibrate)
     task = asyncio.ensure_future(ear_loop(robot, hand, listener))
-    robot["ears"] = {"listener": listener, "task": task}
+    gate = asyncio.ensure_future(ear_gate(hand, listener))
+    robot["ears"] = {"listener": listener, "task": task, "gate": gate}
     hand.flag(mic="on")
     print("   ⟨음성 인식 켜짐 — PC 마이크로 듣습니다⟩")
+    print("     ※ 로봇이 말하거나 도는 동안에는 스스로 귀를 막습니다.")
+
+
+async def ear_gate(hand, listener):
+    """로봇이 말하거나 도는 동안에는 귀를 막습니다.
+
+    ★ 버튼만 잠가서는 모자랍니다 ★
+      메뉴의 '음성 인식' 을 안내 중에 못 누르게 하는 것은 쉽습니다.
+      그런데 **기다릴 때 켜두고 안내를 시작하면** 그 뒤로는 계속
+      켜져 있습니다. 그동안 로봇은 스피커로 말하고, PC 마이크는
+      그 소리를 주워 담습니다.
+
+      실제로 걸릴 만한 말이 대본에 있습니다 — S1 의 "지금부터
+      … 안내해 드리겠습니다" 에 '안내' 가 들어 있고, 그것이
+      '다음' 으로 번역됩니다. 로봇이 자기 말로 자기 안내를
+      넘기게 됩니다.
+
+      stt.Listener 에 pause()/resume() 가 이미 있습니다. 로봇이
+      자기 말을 다시 듣는 것을 막으려고 만들어 둔 것입니다.
+      여기가 그것을 쓸 자리입니다.
+
+    ※ resume() 은 그동안 들어온 소리를 버립니다 — 안 버리면 막아둔
+      동안 쌓인 로봇 목소리가 풀리는 순간 한꺼번에 들어옵니다.
+    """
+    deaf = False
+    try:
+        while True:
+            want = not hand.state.get("waiting")
+            if want != deaf:
+                deaf = want
+                if want:
+                    listener.pause()
+                else:
+                    listener.resume()          # drain=True — 쌓인 것은 버립니다
+                hand.flag(mic="deaf" if want else "on")
+            await asyncio.sleep(0.15)
+    except asyncio.CancelledError:
+        raise
 
 
 async def ear_loop(robot, hand, listener):
@@ -592,12 +688,17 @@ async def do_move(robot, step, allow_turns, hand=None):
 
 
 async def run(conn, refresh=False, allow_turns=False, start_at=None,
-              hand=None):
+              hand=None, course=None):
     import common
+    import courses
     import safety
-    import voices
-    made, changed = await voices.build(refresh=refresh)
-    paths = {k: p for k, (p, _s) in made.items()}
+
+    # ★ 코스가 메뉴에 안 뜨는 이유는 여기서 말합니다 ★
+    #   폴더에 course_*.py 를 두면 저절로 코스가 되는데, 못 읽었거나
+    #   아직 초안이면 조용히 사라집니다. 시연 30분 전에 그걸 찾고
+    #   있을 수는 없습니다.
+    for note in courses.report():
+        print(f"[코스] {note}")
 
     await common.prepare_motion(conn)
     await safety.set_auto_recovery(conn, False)
@@ -608,20 +709,12 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
     await probe.read()
     await common.set_volume(conn)
 
-    print("\n[준비] 멘트를 로봇에 올립니다...")
-    if changed and not refresh:
-        print(f"       문장이 바뀐 {len(changed)}개는 로봇의 것도 갈아치웁니다: "
-              f"{', '.join(sorted(changed))}")
-    hub, uuids = await common.upload_all(
-        conn, paths, replace=True if refresh else changed)
-    print(f"[준비] 완료 — {len(uuids)}개")
-
     print("\n[준비] 자세 확인")
     if not await common.ensure_standing(conn, probe=probe, ask=False):
         print("일으켜 세우지 못했습니다. 중단합니다.")
         return
 
-    robot = {"conn": conn, "hub": hub, "uuids": uuids, "probe": probe,
+    robot = {"conn": conn, "hub": None, "uuids": {}, "probe": probe,
              "posture": common.Posture(conn, probe=probe)}
     robot["posture"].state = "stand"
     timer = Timer()
@@ -630,33 +723,87 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
     robot["busy"] = False
     robot["turning"] = False    # 지금 스스로 도는 중인가 (메뉴가 봅니다)
     robot["turned"] = set()     # 이 구간에서 이미 끝낸 회전
+    robot["volume"] = None      # 로봇에게 물어보기 전까지는 모릅니다
     jobs = asyncio.ensure_future(serve_jobs(robot, hand)) if hand else None
     wheel = asyncio.ensure_future(drive_loop(robot, hand)) if hand else None
     if hand:
         hand.flag(posture="stand", light=False,
                   mic="off" if hand.ears else "held")
+    await read_volume(robot, hand)
 
-    print()
-    print("=" * 70)
-    print(f" {scenario.TITLE}")
-    print(f" {scenario.ROUTE}")
-    print("=" * 70)
+    if hand:
+        hand.show(courses=[c.brief() for c in courses.all_courses()])
+
+    steps = []
+
+    async def load_course(want):
+        """코스를 갈아 끼우고, **그 코스의 멘트만** 만들어 올립니다.
+
+        ★ 왜 여기서 올리는가 ★
+          예전에는 프로그램을 켜자마자 올렸습니다. 코스가 하나일 때는
+          그게 맞습니다. 둘이 되면 **고른 다음**이라야 합니다 —
+          안 할 안내의 멘트를 올리느라 기다릴 이유가 없습니다.
+          (21개에 10분이 걸린 적이 있습니다)
+
+          이미 로봇에 있는 파일은 다시 안 올립니다. 그래서 코스를
+          왔다 갔다 해도 느린 것은 처음 한 번뿐입니다.
+        """
+        nonlocal steps
+        import voices
+        scenario.use(want)
+        print()
+        print("=" * 70)
+        print(f" {scenario.TITLE}")
+        print(f" {scenario.ROUTE}")
+        print("=" * 70)
+        if hand:
+            hand.show(sid="", place=want.name, button="…",
+                      detail="멘트를 만들고 로봇에 올립니다…",
+                      course={"id": want.id, "name": want.name},
+                      can_pick=False, done=False, index=0, total=1)
+        made, changed = await voices.build(refresh=refresh)
+        paths = {k: p for k, (p, _s) in made.items()}
+        print("\n[준비] 멘트를 로봇에 올립니다...")
+        if changed and not refresh:
+            print(f"       문장이 바뀐 {len(changed)}개는 로봇의 것도 "
+                  f"갈아치웁니다: {', '.join(sorted(changed))}")
+        robot["hub"], robot["uuids"] = await common.upload_all(
+            conn, paths, replace=True if refresh else changed)
+        print(f"[준비] 완료 — {len(robot['uuids'])}개")
+
+        steps = list(scenario.SCENARIO)
+        if start_at:
+            idx = next((i for i, s in enumerate(steps)
+                        if s.sid == start_at), None)
+            if idx is None:
+                print(f" ※ {start_at} 라는 구간이 없습니다. 처음부터 갑니다.")
+            else:
+                steps = steps[idx:]
+        robot["facing"] = None
+        robot["turned"] = set()
+
+    await load_course(course or courses.default())
     if not allow_turns:
         print(" ★ 제자리 모드 — 걷지도 돌지도 않습니다 ★")
     else:
         print(" ★ 회전 포함 — 사방 0.5 m 이상 비어 있어야 합니다 ★")
 
-    steps = list(scenario.SCENARIO)
-    if start_at:
-        idx = next((i for i, s in enumerate(steps) if s.sid == start_at), None)
-        if idx is None:
-            print(f" ※ {start_at} 라는 구간이 없습니다. 처음부터 갑니다.")
-        else:
-            steps = steps[idx:]
-
     # ★ 앞으로만 갈 수 있는 for 문이었습니다 ★
     #   그래서 '다시' 를 눌러도 되돌아갈 자리가 없었습니다. 번호로 돌면
     #   같은 자리에 머무를 수도, 처음으로 갈 수도 있습니다.
+    async def switch_course():
+        """휴대폰에서 고른 코스로 갈아 끼웁니다. 못 하면 None."""
+        want = courses.get(getattr(hand, "course_want", None))
+        if want is None:
+            print(f"\n ※ '{getattr(hand, 'course_want', None)}' 라는 코스가 "
+                  f"없습니다. 코스를 그대로 둡니다.")
+            return None
+        if scenario.ACTIVE is not None and want.id == scenario.ACTIVE.id:
+            return want
+        print(f"\n ⟨코스 바꾸기⟩ {scenario.TITLE} → {want.name}")
+        await load_course(want)
+        return want
+
     async def ready():
         """시작 신호를 기다립니다.
 
@@ -667,20 +814,34 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
 
           **시작하는 때는 사람이 정합니다.** 여기서 기다리는 동안에도
           조종판과 메뉴는 그대로 씁니다 — 오히려 그때 필요합니다.
+
+        ★ 코스를 고를 수 있는 자리는 여기와 끝 화면뿐입니다 ★
+          안내 도중에 대본을 갈아 끼우면, 로봇은 다른 안내의 3번
+          구간부터 이어서 합니다. 그건 안내가 아닙니다.
         """
         if hand is None:
             return "go"
-        hand.show(sid="", place="준비됐습니다",
-                  detail="로봇을 시작 위치(엘리베이터 앞)에 세우고, "
-                         "방문객이 모이면 '안내 시작'.",
-                  button="안내 시작", done=False, index=0, total=len(steps))
-        print()
-        print("=" * 70)
-        print(" 준비됐습니다 — 휴대폰에서 '안내 시작' 을 누르면 시작합니다")
-        print(" 그 전에 조종판으로 로봇을 시작 위치까지 몰 수 있습니다.")
-        print(" (메뉴에서 일어서기·라이트도 씁니다)")
-        print("=" * 70)
-        return await hand.wait()
+        while True:
+            hand.show(sid="", place="준비됐습니다",
+                      detail="로봇을 시작 위치(엘리베이터 앞)에 세우고, "
+                             "방문객이 모이면 '안내 시작'.",
+                      button="안내 시작", done=False, index=0,
+                      total=len(steps), can_pick=True)
+            print()
+            print("=" * 70)
+            print(f" 준비됐습니다 — {scenario.TITLE}")
+            print(" 휴대폰에서 '안내 시작' 을 누르면 시작합니다.")
+            print(" 그 전에 조종판으로 로봇을 시작 위치까지 몰 수 있습니다.")
+            print(" (메뉴에서 코스 고르기·일어서기·라이트도 씁니다)")
+            print("=" * 70)
+            act = await hand.wait(allow=("go", "again", "restart",
+                                         "end", "course"))
+            if act != "course":
+                hand.show(can_pick=False)
+                return act
+            picked = await switch_course()
+            if picked is None:
+                continue
 
     stop_asked = False
     restarting = False
@@ -767,12 +928,24 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
         print(" 안내가 끝났습니다. 휴대폰에서 '처음부터' 를 누르면 다시 합니다.")
         print(" (끝내려면 메뉴의 '프로그램 종료' 또는 여기서 Ctrl+C)")
         print("=" * 70)
-        hand.show(sid="끝", place="안내가 끝났습니다",
-                  detail="다음 방문객이 오면 '처음부터' → 로봇을 데려다 놓고 "
-                         "'안내 시작'. '다시' 는 마지막 인사만 한 번 더.",
-                  button="처음부터", done=True,
-                  index=len(steps), total=len(steps))
-        act = await hand.wait()
+        # 끝 화면에서도 코스를 고를 수 있습니다 — 다음 무리에게 다른
+        # 안내를 하는 일이 실제로 생깁니다.
+        while True:
+            hand.show(sid="끝", place="안내가 끝났습니다",
+                      detail="다음 방문객이 오면 '처음부터' → 로봇을 데려다 놓고 "
+                             "'안내 시작'. '다시' 는 마지막 인사만 한 번 더. "
+                             "메뉴에서 다른 코스를 고를 수도 있습니다.",
+                      button="처음부터", done=True, can_pick=True,
+                      index=len(steps), total=len(steps))
+            act = await hand.wait(allow=("go", "again", "restart",
+                                         "end", "course"))
+            if act != "course":
+                hand.show(can_pick=False)
+                break
+            if await switch_course() is not None:
+                # 코스가 바뀌었으니 마지막 인사만 다시 할 수는 없습니다
+                act = "go"
+                break
         if act in ("stop", "end"):
             break
         if act == "again":
@@ -792,7 +965,9 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
         if t:
             t.cancel()
     if robot.get("ears"):
-        robot["ears"]["task"].cancel()
+        for _k in ("task", "gate"):
+            if robot["ears"].get(_k):
+                robot["ears"][_k].cancel()
         try:
             robot["ears"]["listener"].stop()
         except Exception:
@@ -854,6 +1029,26 @@ def _start_at(args):
     return None
 
 
+def _pick_course(args):
+    """--course <이름> 으로 처음 코스를 정합니다.
+
+    휴대폰에서도 고를 수 있지만, PC 에서 바로 시작하는 경우와
+    dry_run 에는 이 길이 필요합니다.
+    """
+    import courses
+    if "--course" not in args:
+        return courses.default()
+    i = args.index("--course")
+    cid = args[i + 1] if i + 1 < len(args) else ""
+    got = courses.get(cid)
+    if got is None:
+        names = ", ".join(c.id for c in courses.all_courses())
+        print(f" ※ '{cid}' 라는 코스가 없습니다. 있는 것: {names}")
+        print("   기본 코스로 갑니다.")
+        return courses.default()
+    return got
+
+
 async def main():
     import common
     args = sys.argv[1:]
@@ -887,8 +1082,12 @@ async def main():
         if "--pin" in args:
             i = args.index("--pin")
             pin = args[i + 1] if i + 1 < len(args) else None
-        # 음성 인식은 --ears 를 붙일 때만 엽니다 (기본 잠금)
-        hand = remote.Remote(pin=pin, ears=("--ears" in args))
+        # ★ 음성 인식은 이제 기본으로 열려 있습니다 ★
+        #   휴대폰 앱이 나올 때까지 잠가뒀던 것인데, 마이크가 PC 에
+        #   있다는 사실은 그대로지만 **PC 옆에 사람이 있을 때는 쓸모가
+        #   있습니다.** 잠가두면 그 경우까지 막습니다.
+        #   켜고 끄는 것은 메뉴에서 하고, 아예 못 켜게 하려면 --no-ears.
+        hand = remote.Remote(pin=pin, ears=("--no-ears" not in args))
         if not await hand.start():
             print(" 리모컨을 못 띄웠습니다. 중단합니다.")
             return
@@ -903,7 +1102,7 @@ async def main():
     conn = await common.connect()
     try:
         await run(conn, refresh=refresh, allow_turns=allow_turns,
-                  start_at=start_at, hand=hand)
+                  start_at=start_at, hand=hand, course=_pick_course(args))
     finally:
         print("\n정리합니다...")
         try:
@@ -923,6 +1122,10 @@ if __name__ == "__main__":
     # ★ --dry 는 로봇 라이브러리 없이 돌아갑니다 ★
     #   순서를 확인하는 일은 어디서든 되어야 합니다.
     if "--dry" in sys.argv[1:]:
+        import courses as _c
+        for _n in _c.report():
+            print(f"[코스] {_n}")
+        scenario.use(_pick_course(sys.argv[1:]))
         dry_run(_start_at(sys.argv[1:]))
         sys.exit(0)
     try:

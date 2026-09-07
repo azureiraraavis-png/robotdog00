@@ -84,7 +84,8 @@ PORT = 8765
 
 # 메뉴에서 시킬 수 있는 것들. 여기 없는 이름은 받지 않습니다 —
 # 주소창에 아무 말이나 쳐서 로봇을 움직이게 두지 않으려고요.
-JOBS = ("stand", "sit", "lie", "light_on", "light_off", "mic")
+JOBS = ("stand", "sit", "lie", "light_on", "light_off", "mic",
+        "vol_up", "vol_down")
 
 # ★ 그중 다리를 쓰는 것 ★
 #   설명·회전 중에는 받지 않습니다. 로봇은 다리가 한 벌뿐이라, 도는
@@ -94,6 +95,17 @@ JOBS = ("stand", "sit", "lie", "light_on", "light_off", "mic")
 #   라이트·음성 인식·프로그램 종료는 여기 없습니다 — 언제든 됩니다.
 #   메뉴를 통째로 잠그는 것이 아니라, 다리를 쓰는 셋만 잠급니다.
 MOTION_JOBS = ("stand", "sit", "lie")
+
+# ★ 기다리는 중에만 받는 것들 ★
+#   위의 셋에 '음성 인식' 이 붙습니다. 이유는 다릅니다 — 다리를 다투는
+#   것이 아니라, **로봇이 말하는 동안 켜면 자기 말을 듣습니다.**
+#   대본의 "지금부터 … 안내해 드리겠습니다" 에 '안내' 가 들어 있고,
+#   그것이 '다음' 으로 번역됩니다. 로봇이 자기 말로 자기 안내를 넘깁니다.
+#
+#   ※ 켜둔 채로 안내가 시작되는 경우는 이것으로 안 막힙니다. 그때는
+#     guide.ear_gate 가 마이크를 잠시 막습니다 (stt.Listener.pause).
+#     버튼을 잠그는 것과 귀를 막는 것은 다른 일입니다 — 둘 다 합니다.
+WAIT_ONLY_JOBS = MOTION_JOBS + ("mic",)
 
 # ── 조종판 ──
 #   drive.py 와 **같은 배치, 같은 뜻**입니다. 두 벌을 따로 두면 언젠가
@@ -169,6 +181,27 @@ header{padding:16px 4px 12px;display:flex;align-items:center;gap:10px}
 .mfull.on{background:var(--go)}
 .mfull.on .st{color:#cfe9de}
 .danger{background:var(--stop)!important}
+/* 코스 목록 — 한 줄이 아니라 한 칸입니다. 고르는 데 쓰는 것을 다 적습니다 */
+.course{display:block;width:100%;text-align:left;background:var(--again);border:0;
+        border-radius:12px;padding:14px 16px;margin-bottom:8px;color:#fff;
+        font-family:inherit;font-size:15px;line-height:1.5}
+.course.on{background:var(--go)}
+.course:disabled{opacity:1}                 /* 지금 코스는 흐려지지 않습니다 */
+.course.on:disabled{opacity:1}
+.course:disabled:not(.on){opacity:.4}       /* 안내 중이라 못 고르는 것만 흐리게 */
+.cname{font-weight:600;font-size:16px}
+.ctag{float:right;font-weight:400;font-size:12px;color:var(--dim)}
+.course.on .ctag{color:#cfe9de}
+.cfacts{font-size:13px;color:#cbd5db;margin-top:5px;font-variant-numeric:tabular-nums}
+.course.on .cfacts{color:#dff0e8}
+.croute{font-size:12px;color:var(--dim);margin-top:3px}
+.csub{font-size:12px;color:var(--dim);margin-top:5px;line-height:1.5}
+.course.on .croute,.course.on .csub{color:#a9cfbf}
+/* 음량 — 가운데는 버튼이 아니라 지금 값을 보여주는 자리입니다 */
+.vol{display:flex;align-items:center;justify-content:center;background:var(--bg);
+     border-radius:12px;min-width:96px;margin-bottom:8px;font-weight:600;
+     font-size:15px;letter-spacing:.02em}
+.vol b{font-size:22px;margin-right:3px}
 .hint{font-size:12px;color:var(--dim);line-height:1.55;margin:2px 4px 10px}
 .hint code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:11px}
 h1{font-size:15px;margin:0;font-weight:600;letter-spacing:-.01em}
@@ -236,6 +269,10 @@ button:disabled{opacity:.4}
 <div id=menu>
   <div id=grip></div>
 
+  <div class=mh>안내 코스</div>
+  <div id=courses></div>
+  <p class=hint id=coursehint></p>
+
   <div class=mh>자세</div>
   <div class=mrow>
     <button class=legs data-job=stand>일어서기</button>
@@ -243,6 +280,15 @@ button:disabled{opacity:.4}
     <button class=legs data-job=lie>엎드리기</button>
   </div>
   <p class=hint id=legshint></p>
+
+  <div class=mh>안내 음량</div>
+  <div class=mrow>
+    <button data-job=vol_down>줄이기 −</button>
+    <div class=vol id=volst>—</div>
+    <button data-job=vol_up>키우기 +</button>
+  </div>
+  <p class=hint>로봇 스피커의 음량입니다. 설명 도중에도 바꿉니다 —
+     복도가 울리거나 방문객이 많을 때 바로 고칠 수 있어야 합니다.</p>
 
   <div class=mh>전방 라이트</div>
   <div class=mrow>
@@ -357,50 +403,98 @@ veil.onclick=()=>sheet(false);
      120ms 마다 보내는데 한 번이 그보다 오래 걸리면 요청이 쌓입니다.
      쌓이면 느려지고, 느려지면 더 쌓입니다. 앞의 것이 안 끝났으면
      이번 것은 거릅니다 — 거른 것이 쌓이면 DEADMAN 이 알아서 멈춥니다. */
-let holding=null, beat=null, inflight=false, sent=0, lost=0, rtt=0;
+/* ★ 손가락 하나가 아니라 여럿입니다 ★
+     예전에는 눌린 키를 holding 하나에 담았습니다. 그래서 앞으로
+     가면서 도는 것이 안 됐습니다 — 두 번째 손가락이 첫 번째를
+     밀어냈습니다. 진짜 컨트롤러는 그렇지 않습니다.
 
-function press(k,el){
-  if(holding===k) return;
-  release();
-  holding=k; sent=0; lost=0;
-  if(el) el.classList.add('hot');
-  const send=()=>{
-    if(inflight) return;                  /* 앞의 것이 아직 안 끝났습니다 */
-    inflight=true; const t0=performance.now();
-    fetch('/drive/'+k,{method:'POST'})
-      .then(()=>{ sent++; rtt=Math.round(performance.now()-t0); })
-      .catch(()=>{ lost++; })
-      .finally(()=>{ inflight=false; });
-  };
-  send(); beat=setInterval(send,120);
+     이제 **손가락(pointerId)마다** 어느 키를 짚고 있는지 적어둡니다.
+     한 손가락이 떨어져도 다른 손가락은 그대로입니다. 보낼 때는
+     눌린 키를 다 붙여서 보냅니다 ("wa" = 앞으로 + 좌회전).
+
+   ★ 놓친 손가락에 대비합니다 ★
+     떼는 신호를 놓치면 로봇이 계속 갑니다. 심장박동은 화면이
+     보내는 것이라 DEADMAN 도 안 도와줍니다. 그래서 한 키를
+     30초 넘게 붙들고 있으면 화면이 스스로 놓습니다. 이 복도에서
+     제일 긴 구간이 3.6 m 니까, 30초는 정상적인 주행이 아닙니다. */
+const NAMES={w:'앞으로',s:'뒤로',q:'게걸음 왼쪽',e:'게걸음 오른쪽',
+             a:'좌회전',d:'우회전'};
+let held=new Map();        /* 손가락 → 키 */
+let since=new Map();       /* 키 → 처음 눌린 시각 */
+let beat=null, inflight=false, sent=0, lost=0, rtt=0;
+const HOLD_MAX=30000;
+
+function combo(){ return [...new Set(held.values())].sort().join(''); }
+
+function send(){
+  if(inflight) return;                    /* 앞의 것이 아직 안 끝났습니다 */
+  inflight=true; const t0=performance.now();
+  fetch('/drive/'+(combo()||'-'),{method:'POST'})
+    .then(()=>{ sent++; rtt=Math.round(performance.now()-t0); })
+    .catch(()=>{ lost++; })
+    .finally(()=>{ inflight=false; });
+}
+function paint(){
+  const on=new Set(held.values());
+  document.querySelectorAll('[data-k]').forEach(b=>{
+    b.classList.toggle('hot', on.has(b.dataset.k));
+  });
+}
+function grab(id,k){
+  if(held.get(id)===k) return;
+  if(held.size===0){ sent=0; lost=0; }
+  held.set(id,k);
+  if(!since.has(k)) since.set(k,performance.now());
+  paint();
+  send();
+  if(!beat) beat=setInterval(()=>{
+    /* 너무 오래 붙들고 있는 키는 놓습니다 */
+    const now=performance.now();
+    for(const [i,k2] of [...held]){
+      if(now-(since.get(k2)||now) > HOLD_MAX) held.delete(i);
+    }
+    if(held.size===0){ release(); return; }
+    send();
+  },120);
+}
+function drop(id){
+  if(!held.has(id)) return;
+  const k=held.get(id);
+  held.delete(id);
+  if(![...held.values()].includes(k)) since.delete(k);
+  paint();
+  if(held.size===0) release(); else send();
 }
 function release(){
   if(beat){ clearInterval(beat); beat=null; }
-  if(holding){
-    holding=null;
-    fetch('/drive/-',{method:'POST'}).catch(()=>{});
-  }
+  held.clear(); since.clear();
   inflight=false;
-  document.querySelectorAll('.key.hot').forEach(e=>e.classList.remove('hot'));
+  paint();
+  fetch('/drive/-',{method:'POST'}).catch(()=>{});
 }
 document.querySelectorAll('[data-k]').forEach(b=>{
   b.addEventListener('pointerdown', e=>{
     if(b.disabled) return;
     e.preventDefault();
     try{ b.setPointerCapture(e.pointerId); }catch(_){}   /* 이 손가락을 끝까지 */
-    press(b.dataset.k,b);
+    grab(e.pointerId,b.dataset.k);
   });
-  b.addEventListener('lostpointercapture',release);
+  b.addEventListener('lostpointercapture', e=>drop(e.pointerId));
 });
-/* 놓는 것은 창 전체에서 — 버튼 밖에서 떨어져도, 전화가 와도 */
-['pointerup','pointercancel','touchend','touchcancel','mouseup']
-  .forEach(ev=>window.addEventListener(ev,release));
+/* 놓는 것은 창 전체에서 — 버튼 밖에서 떨어져도, 전화가 와도.
+   손가락마다 따로 놓습니다: 한 손가락이 떨어져도 나머지는 그대로. */
+['pointerup','pointercancel'].forEach(ev=>
+  window.addEventListener(ev, e=>drop(e.pointerId)));
+/* 화면을 벗어나는 일은 통째로 놓습니다 — 어느 손가락인지 알 수 없습니다 */
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) release(); });
 window.addEventListener('blur',release);
 window.addEventListener('pagehide',release);
 
 document.querySelectorAll('[data-job]').forEach(b=>{
-  b.onclick=()=>{ hit('/job/'+b.dataset.job); if(b.dataset.job!=='mic') sheet(false); };
+  /* 메뉴를 닫지 않는 것들 — 잇달아 누르는 버튼입니다 */
+  const STAY=['mic','vol_up','vol_down'];
+  b.onclick=()=>{ hit('/job/'+b.dataset.job);
+                  if(!STAY.includes(b.dataset.job)) sheet(false); };
 });
 $('endm').onclick=()=>{
   if(confirm('프로그램을 종료합니까? 로봇을 정리하고 PC 의 프로그램이 끝납니다.')){
@@ -414,11 +508,108 @@ $('endm').onclick=()=>{
    되돌릴 수 있는 일이라 확인이 필요 없기도 합니다 ('다음' 이나 '다시'
    를 누르면 이어집니다). 확인은 되돌릴 수 없는 쪽에만 붙입니다. */
 $('stop').onclick   =()=>hit('/stop');
+/* ★ 코스 목록은 PC 가 정합니다 ★
+   화면에 코스를 적어두면 courses.py 와 두 벌이 되고, 언젠가 한쪽만
+   고쳐집니다. 여기는 온 대로 그립니다.
+   ※ 0.6초마다 다시 그리면 누르는 순간 버튼이 갈립니다. 달라졌을
+     때만 그립니다. */
+/* ★ 목록은 접어둡니다 — 평소에는 지금 코스 한 칸만 ★
+   코스가 넷만 되어도 메뉴 아래쪽 절반이 코스로 덮입니다. 자세도,
+   음량도, 라이트도 화면 밖으로 밀려납니다. 복도에서 한 손으로
+   쓰는 화면에서 스크롤이 늘어나는 것은 그 자체로 비용입니다.
+
+   그래서 평소에는 **지금 하는 코스 한 칸**만 둡니다. 그것을 누르면
+   저장된 것이 모두 펼쳐집니다. 하나를 고르면 다시 접힙니다.
+
+   ※ 코스가 하나뿐이거나 안내 중일 때는 펼칠 것도, 고를 것도
+     없으므로 누르는 시늉을 하지 않습니다. 눌러보고 아는 것보다
+     안 눌리는 편이 낫습니다. */
+let courseSig='', courseOpen=false, lastState=null;
+
+function toggleCourses(){
+  courseOpen = !courseOpen;
+  courseSig = '';                     /* 다시 그리게 합니다 */
+  if(lastState) drawCourses(lastState);
+}
+
+function courseCard(c, cur, lock, expandable){
+  const me = c.id===cur;
+  const b=document.createElement('button');
+  b.className='course'+(me?' on':'');
+  /* 지금 코스는 '펼치기' 로 눌립니다. 나머지는 '고르기' 로. */
+  b.disabled = me ? !expandable : lock;
+
+  const head=document.createElement('div');
+  head.className='cname';
+  head.textContent=c.name;
+  const tag=document.createElement('span');
+  tag.className='ctag';
+  if(me) tag.textContent = expandable ? (courseOpen?'접기 ▴':'바꾸기 ▾') : '지금 이것';
+  else   tag.textContent = lock ? '' : '고르기';
+  head.appendChild(tag);
+  b.appendChild(head);
+
+  [['cfacts',c.facts],['croute',c.route],['csub',c.subtitle]].forEach(([k,v])=>{
+    if(!v) return;
+    const d=document.createElement('div'); d.className=k; d.textContent=v;
+    b.appendChild(d);
+  });
+
+  b.onclick = me ? toggleCourses
+                 : ()=>{ courseOpen=false; hit('/course/'+c.id); sheet(false); };
+  return b;
+}
+
+function drawCourses(s){
+  lastState = s;
+  const list=s.courses||[], cur=(s.course||{}).id||'', lock=!s.can_pick;
+  const others = list.filter(c=>c.id!==cur);
+  const expandable = !lock && others.length>0;
+  if(!expandable) courseOpen=false;       /* 펼쳐둔 채로 잠기면 접습니다 */
+
+  const sig=JSON.stringify([list,cur,lock,courseOpen]);
+  if(sig===courseSig) return;
+  courseSig=sig;
+
+  const box=$('courses');
+  box.innerHTML='';
+  /* ★ 한 칸에 고를 만큼을 적습니다 ★
+     이름만 적혀 있으면 "이 무리에겐 어느 코스?" 를 못 정합니다.
+     정하는 데 쓰는 것은 몇 분 걸리고 어디를 도는지입니다. */
+  const now = list.filter(c=>c.id===cur);
+  /* 지금 코스를 모르는 동안(올리는 중)에는 있는 대로 다 보여줍니다 */
+  (now.length ? now : list).forEach(c=>
+    box.appendChild(courseCard(c, cur, lock, expandable)));
+  if(courseOpen) others.forEach(c=>
+    box.appendChild(courseCard(c, cur, lock, expandable)));
+
+  $('coursehint').textContent = lock
+    ? '안내 중에는 코스를 바꾸지 않습니다. 준비 화면이나 끝 화면에서 고르세요.'
+    : (!others.length
+        ? '아직 코스가 하나입니다. course_example.py 를 복사해서 만듭니다.'
+        : courseOpen
+          ? '시간은 멘트와 쉼만 더한 것입니다 — 걷는 시간은 사람에게 달렸으니 '
+            + '빠졌습니다. 고르면 그 코스의 멘트를 로봇에 올립니다.'
+          : '누르면 저장된 코스 ' + list.length + '개가 모두 뜹니다.');
+}
+/* ★ '못 닿았다' 와 '그리다 터졌다' 를 갈라놓습니다 ★
+   둘을 한 catch 로 묶어놨다가 하루를 날렸습니다. 화면을 그리는 코드가
+   첫 줄에서 터졌는데, 잡아서 '못 닿았다' 로 셌습니다. 초록 점은 멀쩡히
+   켜져 있고, 코스 목록도 음량도 그냥 비어 있었습니다 — 아무 데도
+   오류가 안 보였습니다.
+
+   가져오는 것과 그리는 것은 다른 일입니다. 다르게 잡습니다. */
 async function poll(){
+  let s;
   try{
     const r=await fetch('/state',{cache:'no-store'});
-    const s=await r.json();
-    miss=0; $('dot').className='on';
+    s=await r.json();
+  }catch(e){
+    if(++miss>2){ $('dot').className='off'; $('msg').textContent='PC 에 닿지 않습니다'; }
+    return;
+  }
+  miss=0; $('dot').className='on';
+  try{
     $('sid').textContent = s.done ? '끝' : (s.sid||'—');
     $('place').textContent = s.place||'—';
     $('detail').textContent = s.detail||'';
@@ -446,18 +637,22 @@ async function poll(){
     /* 조종판은 버튼과 같은 규칙입니다 — 설명·동작 중에는 못 몹니다.
        그때 몰면 로봇이 자기 회전과 우리 조종을 동시에 받습니다. */
     $('pad').classList.toggle('off', !s.waiting);
-    if(!s.waiting && holding) release();
+    if(!s.waiting && held.size) release();
     /* ★ 누르고 있는 버튼은 건드리지 않습니다 ★
        disabled 를 다시 매기면 브라우저가 그 손가락을 놓아버립니다.
-       그러면 한 번 보내고 끝나는 것처럼 보입니다. */
+       그러면 한 번 보내고 끝나는 것처럼 보입니다.
+       (이제 손가락이 여럿이라 눌린 키가 여럿일 수 있습니다) */
+    const on=new Set(held.values());
     document.querySelectorAll('[data-k]').forEach(b=>{
-      if(b.dataset.k===holding) return;
+      if(on.has(b.dataset.k)) return;
       b.disabled = !s.waiting;
     });
     $('padnote').textContent = !s.waiting
       ? '설명 중에는 못 몹니다. 몰려면 먼저 멈춤.'
-      : (holding ? '보낸 신호 '+sent+'회 · 왕복 '+rtt+'ms'+(lost?' · 놓침 '+lost:'')
-                 : '누르고 있는 동안 갑니다. 손을 떼면 멈춥니다.');
+      : (held.size
+          ? [...on].map(k=>NAMES[k]||k).join(' + ')
+            + ' · 신호 '+sent+'회 · 왕복 '+rtt+'ms'+(lost?' · 놓침 '+lost:'')
+          : '누르고 있는 동안 갑니다. 두 개를 같이 눌러도 됩니다.');
     $('go').className = s.waiting ? '' : 'busy';
     $('go').textContent = s.waiting ? (s.button||'다음') : '진행 중…';
     const p=$('prog');
@@ -465,21 +660,42 @@ async function poll(){
       p.innerHTML=''; for(let i=0;i<s.total;i++) p.appendChild(document.createElement('i'));
     }
     [...p.children].forEach((el,i)=>{ el.className = i<s.index?'done':(i===s.index?'now':''); });
+    drawCourses(s);
     const f=s.flags||{};
-    const held = f.mic==='held';
-    $('mic').disabled = held;
-    $('micst').textContent = held ? '보류'
-      : ({on:'켜짐', loading:'모델 읽는 중…', off:'꺼짐'}[f.mic]||'꺼짐');
-    $('mic').classList.toggle('on', f.mic==='on');
-    $('michint').innerHTML = held
-      ? '휴대폰 앱이 나올 때까지 <b>보류</b>합니다. 지금 마이크는 PC 에 있어서, '
-        + '복도에서 말해도 안 들립니다. 쓸 준비는 되어 있습니다 — '
-        + 'PC 에서 <code>--ears</code> 를 붙이면 열립니다.'
-      : '★ 마이크는 <b>PC</b> 에 있습니다 ★ 복도에서 말해도 안 들립니다. '
-        + '켜면 "앉아 · 일어서 · 불 켜" 같은 말을 듣고, '
-        + '<b>"다음"</b> 이라고 하면 안내를 넘깁니다.';
+    /* 음량 — 아직 못 읽었으면 '—' 입니다. 짐작해서 숫자를 쓰지 않습니다 */
+    $('volst').innerHTML = (f.volume===null||f.volume===undefined)
+      ? '—' : '<b>'+f.volume+'</b>/10';
+    /* ★ 이름을 조종판의 held 와 겹치지 않게 씁니다 ★
+       여기 있던 `const held` 하나가 poll() 전체를 죽였습니다.
+       let/const 는 함수 맨 위로 끌어올려져 그때까지 못 쓰는 상태가
+       되므로, **아래에 있는 이 한 줄 때문에 위쪽의 held 가 전부**
+       "Cannot access 'held' before initialization" 이 됐습니다.
+       코스 목록도 음량도 그래서 안 그려졌습니다. 화면에는 초록 점만
+       멀쩡히 켜져 있었고요 — catch 가 삼켰습니다. */
+    const micHeld = f.mic==='held';
+    /* ★ 음성 인식도 다리 쓰는 것과 같은 규칙입니다 ★
+       로봇이 말하는 동안 켜면 자기 말을 듣습니다. 그래서 기다릴
+       때만 켜고 끕니다. 켜둔 채로 안내가 시작되면 PC 쪽에서
+       마이크를 잠시 막습니다 — 그때 '잠깐 멈춤' 으로 뜹니다. */
+    $('mic').disabled = micHeld || !s.waiting;
+    $('micst').textContent = micHeld ? '보류'
+      : ({on:'켜짐', deaf:'잠깐 멈춤', loading:'모델 읽는 중…',
+          off:'꺼짐'}[f.mic]||'꺼짐');
+    $('mic').classList.toggle('on', f.mic==='on'||f.mic==='deaf');
+    $('michint').innerHTML = micHeld
+      ? 'PC 에서 <code>--no-ears</code> 로 잠가뒀습니다. 그 옵션을 빼면 열립니다.'
+      : (f.mic==='deaf'
+          ? '지금은 <b>귀를 막고</b> 있습니다 — 로봇이 말하거나 도는 동안에는 '
+            + '자기 목소리를 듣게 되어서요. 기다리는 자리로 오면 다시 듣습니다.'
+          : '★ 마이크는 <b>PC</b> 에 있습니다 ★ 복도에서 말해도 안 들립니다. '
+            + 'PC 옆에 사람이 있을 때 쓰세요. 켜면 "앉아 · 일어서 · 불 켜" 같은 '
+            + '말을 듣고, <b>"다음"</b> 이라고 하면 안내를 넘깁니다. '
+            + '설명 중에는 켜고 끄지 못합니다.');
   }catch(e){
-    if(++miss>2){ $('dot').className='off'; $('msg').textContent='PC 에 닿지 않습니다'; }
+    /* 여기까지 왔다는 것은 PC 와는 잘 통했다는 뜻입니다. 그리는
+       코드가 터진 것이고, 그건 우리 잘못입니다. 숨기지 않습니다. */
+    $('dot').className='off';
+    $('msg').textContent='화면 오류 — '+e;
   }
 }
 poll(); setInterval(poll,600);
@@ -532,7 +748,107 @@ def check_page():
     for job in sorted(set(re.findall(r"data-job=([\w-]+)", body))):
         if job not in JOBS:
             bad.append(f"메뉴의 '{job}' 를 서버가 안 받습니다 (JOBS 에 없음)")
+
+    # 5. 바깥 이름을 함수 안에서 다시 선언하면 안 됩니다
+    #
+    #    ★ 이것 하나가 화면 갱신을 통째로 죽였습니다 ★
+    #      조종판에 `let held = new Map()` 을 만들었는데, poll() 안쪽에
+    #      이미 `const held = f.mic==='held'` 가 있었습니다. let/const 는
+    #      함수 맨 위로 끌어올려져 선언 전까지 못 쓰는 상태가 되므로,
+    #      **아래에 있는 그 한 줄 때문에 위쪽 held 가 전부** 죽었습니다.
+    #      코스 목록도 음량도 안 그려졌는데 초록 점은 멀쩡했습니다.
+    #
+    #    자바스크립트에서 가리기(shadowing)는 문법상 맞습니다. 다만 이
+    #    화면은 함수 몇 개가 바깥 이름을 같이 쓰는 구조라, 여기서는
+    #    거의 언제나 실수입니다. 그리고 틀렸을 때 조용히 죽습니다.
+    #
+    #    ※ 바깥(들여쓰기 없는) 선언만 봅니다. 함수 안쪽끼리 b·p·tag 같은
+    #      이름을 나눠 쓰는 것은 정상입니다.
+    #    ※ 주석과 문자열은 먼저 지웁니다. 안 지웠더니 이 검사를 설명하는
+    #      **주석 자체**를 잡았습니다 (거기 `const held` 라고 적혀 있어서).
+    #      그리고 `const NAMES={w:'앞으로',s:'뒤로'}` 의 s 를 바깥 이름으로
+    #      셌습니다 — 쉼표를 괄호 깊이 없이 잘랐던 탓입니다.
+    clean = _js_bare(script)
+    lines = clean.splitlines()
+    outer = set()
+    for line in lines:
+        if line[:1] in (" ", "\t"):
+            continue
+        outer |= _js_declared(line)
+    raw = script.splitlines()
+    for n, line in enumerate(lines, 1):
+        if line[:1] not in (" ", "\t"):
+            continue
+        for name in sorted(_js_declared(line.lstrip()) & outer):
+            bad.append(
+                f"스크립트 {n}번째 줄이 바깥 이름 '{name}' 를 함수 안에서 "
+                f"다시 선언합니다 — 그 함수에서 바깥 '{name}' 가 통째로 "
+                f"죽습니다: {raw[n - 1].strip()[:50]}")
     return bad
+
+
+def _js_bare(script):
+    """주석과 문자열 속을 공백으로 지웁니다. 줄 수는 그대로 둡니다."""
+    out = []
+    i, n = 0, len(script)
+    while i < n:
+        two = script[i:i + 2]
+        if two == "//":
+            while i < n and script[i] != "\n":
+                out.append(" ")
+                i += 1
+        elif two == "/*":
+            while i < n and script[i:i + 2] != "*/":
+                out.append("\n" if script[i] == "\n" else " ")
+                i += 1
+            out.append("  ")
+            i += 2
+        elif script[i] in "'\"`":
+            q = script[i]
+            out.append(" ")
+            i += 1
+            while i < n and script[i] != q:
+                if script[i] == "\\":
+                    out.append(" ")
+                    i += 1
+                out.append("\n" if script[i:i + 1] == "\n" else " ")
+                i += 1
+            out.append(" ")
+            i += 1
+        else:
+            out.append(script[i])
+            i += 1
+    return "".join(out)
+
+
+def _js_declared(line):
+    """이 줄이 let/const/var 로 만드는 이름들.
+
+    `let a=1, b=2;` 는 둘 다. `const N={x:1,y:2}` 는 N 하나 —
+    쉼표를 깊이 없이 자르면 x 와 y 까지 이름으로 셉니다.
+    """
+    import re
+    m = re.match(r"\s*(?:let|const|var)\s+(.*)", line)
+    if not m:
+        return set()
+    rest, depth, part, parts = m.group(1), 0, [], []
+    for ch in rest:
+        if ch in "{[(":
+            depth += 1
+        elif ch in "}])":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(part))
+            part = []
+        else:
+            part.append(ch)
+    parts.append("".join(part))
+    out = set()
+    for p in parts:
+        got = re.match(r"\s*([A-Za-z_$][\w$]*)\s*(?:[=;]|$)", p)
+        if got:
+            out.add(got.group(1))
+    return out
 
 
 class Remote:
@@ -543,14 +859,17 @@ class Remote:
     로봇 마이크로 바뀌어도, 여기 모양만 맞추면 guide.py 는 그대로입니다.
     """
 
-    def __init__(self, port=PORT, pin=None, ears=False):
+    def __init__(self, port=PORT, pin=None, ears=True):
         self.port = port
         self.pin = pin
-        # ★ 음성 인식은 기본으로 잠급니다 ★
-        #   지금 마이크는 PC 에 있습니다. 복도에서 누르면 whisper 가
-        #   30초 동안 GPU 를 붙들고, 그러고도 아무 일이 안 일어납니다.
-        #   시연 중에 그게 제일 나쁩니다. 코드는 그대로 두고 문만
-        #   닫아둡니다 — guide.py --ears 로 열립니다.
+        # ★ 음성 인식은 이제 열려 있습니다 ★
+        #   한동안 잠가뒀습니다. 마이크가 PC 에 있어서 복도에서 누르면
+        #   whisper 가 GPU 를 붙들고도 아무 일이 안 일어나니까요.
+        #   그런데 **PC 옆에 사람이 있을 때는 쓸모가 있습니다.** 잠가두면
+        #   그 경우까지 막습니다. 아예 못 켜게 하려면 guide.py --no-ears.
+        #
+        #   대신 켜고 끄는 것은 **기다리는 중에만** 됩니다 —
+        #   로봇이 말하는 동안 켜면 자기 말을 듣습니다.
         self.ears = ears
         self.server = None
         self.event = asyncio.Event()
@@ -565,31 +884,62 @@ class Remote:
         self.hits = 0
         self.ignored = 0              # 기다리는 중에 누른 '멈춤' — 흘려보낸 수
         # 화면에 보여줄 것 — guide.py 가 갱신합니다
+        # 고른 코스는 여기 적힙니다. guide.py 가 읽어서 처리합니다.
+        self.course_want = None
         self.state = {"sid": "", "place": "준비 중", "detail": "", "button": "다음",
                       "waiting": False, "done": False, "index": 0, "total": 1,
+                      # ★ 코스는 안내 중에 바꾸지 않습니다 ★
+                      #   중간에 대본을 갈아 끼우면 로봇은 다른 안내의
+                      #   3번 구간부터 시작합니다. 준비 화면과 끝 화면에서만
+                      #   고를 수 있게 guide.py 가 이 값을 켜고 끕니다.
+                      "can_pick": False,
+                      "course": None, "courses": [],
                       "flags": {"mic": "off" if ears else "held",
-                                "light": False, "posture": "?"}}
+                                "light": False, "posture": "?",
+                                # 로봇에서 읽기 전까지는 None 입니다 —
+                                # 짐작한 숫자를 화면에 띄우지 않습니다.
+                                "volume": None}}
         # ★ 메뉴에서 누르는 것들은 '다음' 과 성격이 다릅니다 ★
         #   순서를 넘기는 것이 아니라, 지금 당장 하나 시키는 것입니다.
         #   기다리는 자리를 거치지 않고 따로 흘려보냅니다.
         self.jobs = asyncio.Queue()
-        # (키, 마지막으로 '누르고 있다' 를 들은 시각). guide.py 가 읽습니다.
-        self.drive = (None, 0.0)
+        # 키 → 마지막으로 '누르고 있다' 를 들은 시각. guide.py 가 읽습니다.
+        # ★ 여럿입니다 ★ 앞으로 가면서 도는 것이 되어야 하므로, 눌린
+        #   키를 다 담습니다. 한 개만 담던 때는 두 번째 손가락이 첫
+        #   번째를 밀어냈습니다.
+        self.held = {}
 
     # ── guide.py 가 쓰는 부분 ───────────────────────────────
     def show(self, **kw):
         self.state.update(kw)
+
+    def holding(self):
+        """지금 눌려 있는 키들 (예: "aw"). 없으면 빈 문자열."""
+        now = time.time()
+        return "".join(sorted(k for k, t in self.held.items()
+                              if now - t <= DEADMAN))
 
     def stick(self):
         """지금 눌려 있는 방향. 손을 뗐거나 소식이 끊기면 None.
 
         시간을 여기서 봅니다 — 부르는 쪽마다 따로 재면 언젠가 한 곳이
         빠집니다. **멈추는 판단은 한 군데에만 있어야 합니다.**
+
+        ★ 여러 키를 더합니다 ★
+          예전에는 키 하나만 담아서, 앞으로 가면서 도는 것이 안 됐습니다.
+          축마다 +키와 −키가 하나씩이므로 더한 값은 언제나 -1·0·+1 이고,
+          따로 자를 것이 없습니다. w 와 s 를 같이 누르면 0 — 서로
+          상쇄되어 멈춥니다. 그것이 맞습니다.
         """
-        k, when = self.drive
-        if k is None or time.time() - when > DEADMAN:
+        fx = fy = fz = 0.0
+        for k in self.holding():
+            a, b, c = DRIVE[k]
+            fx += a
+            fy += b
+            fz += c
+        if fx == 0.0 and fy == 0.0 and fz == 0.0:
             return None
-        return DRIVE[k]
+        return (fx, fy, fz)
 
     def flag(self, **kw):
         """메뉴에 보여줄 상태 (음성 인식 켜짐, 라이트, 자세)."""
@@ -738,8 +1088,11 @@ class Remote:
                     "application/json; charset=utf-8", "200 OK")
 
         if path.startswith("/drive/"):
-            k = path[7:]
-            self.drive = (k if k in DRIVE else None, time.time())
+            # 눌린 키가 다 붙어서 옵니다 ("wa" = 앞으로 + 좌회전).
+            # 안 온 키는 뗀 것입니다 — 통째로 갈아치웁니다. 하나씩
+            # 지우려 들면 지우는 신호를 놓쳤을 때 눌린 채로 남습니다.
+            now = time.time()
+            self.held = {c: now for c in path[7:] if c in DRIVE}
             return b"ok", "text/plain", "200 OK"
 
         if path in ("/go", "/again", "/restart", "/stop", "/end"):
@@ -749,13 +1102,28 @@ class Remote:
             return ((b"ok", "text/plain", "200 OK") if took else
                     (b"idle", "text/plain", "200 OK"))
 
+        if path.startswith("/course/"):
+            cid = path[8:]
+            if not self.state.get("can_pick"):
+                self.ignored += 1
+                return b"idle", "text/plain", "200 OK"
+            known = {c.get("id") for c in self.state.get("courses") or []}
+            if cid not in known:
+                # 주소창에 아무 이름이나 쳐서 고르게 두지 않습니다
+                return b"?", "text/plain", "404 Not Found"
+            if cid == (self.state.get("course") or {}).get("id"):
+                return b"same", "text/plain", "200 OK"
+            self.course_want = cid
+            self._fire("course")
+            return b"ok", "text/plain", "200 OK"
+
         if path.startswith("/job/"):
             job = path[5:]
             if job == "mic" and not self.ears:
                 return b"held", "text/plain", "409 Conflict"
             # 화면이 잠그기 전에 눌린 것이 있을 수 있습니다 (화면은
             # 0.6초마다 갱신됩니다). 거르는 자리는 여기 한 곳입니다.
-            if job in MOTION_JOBS and self.state["waiting"] is False:
+            if job in WAIT_ONLY_JOBS and self.state["waiting"] is False:
                 self.ignored += 1
                 return b"idle", "text/plain", "200 OK"
             if job in JOBS:
@@ -832,8 +1200,29 @@ async def main():
                   "버튼 넷을 다 눌러보세요.",
            waiting=True, index=0, total=3)
 
+    # ★ 코스 목록도 진짜를 채웁니다 ★
+    #   여기서 안 채웠더니 메뉴의 코스 칸이 비어 있었습니다. 화면을
+    #   확인하려고 이걸 띄우는 건데, 정작 확인하려던 자리가 빈 채로
+    #   나왔습니다. 로봇 없이 볼 수 있는 것은 로봇 없이 다 보여야
+    #   합니다 — 그게 이 파일이 혼자 돌아가는 이유입니다.
+    picker = None
+    try:
+        import courses as picker
+        for note in picker.report():
+            print(f" ※ {note}")
+        now = picker.default()
+        r.show(courses=[c.brief() for c in picker.all_courses()],
+               course={"id": now.id, "name": now.name},
+               can_pick=True)
+        print(f" 코스 {len(picker.all_courses())}개를 메뉴에 올렸습니다"
+              f" — 눌러서 골라볼 수 있습니다.")
+        print(" ※ 여기서 고르는 것은 화면 동작만 봅니다."
+              " 로봇에 멘트를 올리지는 않습니다.")
+    except Exception as e:
+        print(f" ※ 코스를 못 읽었습니다: {type(e).__name__}: {e}")
+
     print(" Ctrl+C 로 끝냅니다.")
-    print(" (음성 인식은 잠겨 있습니다 — guide.py --ears 로 열립니다)\n")
+    print(" (음성 인식은 guide.py 에서만 실제로 돕니다 — 여기서는 화면만)\n")
     seen = 0
     try:
         while True:
@@ -842,6 +1231,15 @@ async def main():
                 seen = r.hits
                 stamp = time.strftime("%H:%M:%S")
                 print(f" [{stamp}] '{r.action}' 눌림   (모두 {seen}번)")
+                # 코스를 골랐으면 화면의 '지금 이것' 도 옮겨줍니다.
+                # 안 옮기면 눌러도 아무 일 없는 것처럼 보입니다.
+                if r.action == "course" and picker is not None:
+                    got = picker.get(r.course_want)
+                    if got:
+                        print(f"          → 코스를 '{got.name}' 로 바꿨습니다"
+                              f" (화면만)")
+                        r.show(course={"id": got.id, "name": got.name})
+                    continue
                 r.show(detail=f"{seen}번 눌렸습니다. 잘 오고 있습니다.")
     except KeyboardInterrupt:
         pass

@@ -1023,6 +1023,164 @@ def phrases():
     return out
 
 
+# ─────────────────────────────────────────────────────────────
+# 6.5 코스 — 안내 하나
+#
+#   ★ 왜 courses.py 가 아니라 여기 있는가 ★
+#     코스 파일(course_*.py)은 대본을 적으려면 Line·Move·Stop 이
+#     필요합니다. 그래서 scenario 를 import 합니다. 그런데 Course 가
+#     courses.py 에 있으면 courses 도 import 해야 하고, courses.py 는
+#     코스 파일을 불러오므로 **서로를 부르는 고리**가 됩니다.
+#
+#         courses.py  →  course_short.py  →  courses.py   ★ 터집니다 ★
+#
+#     실제로 그렇게 만들었다가 사이안 님이 코스를 하나 추가하려는
+#     첫 시도에서 터졌습니다. 이제 코스 파일은 scenario 하나만
+#     보면 됩니다. scenario 는 우리 것을 아무것도 import 하지 않으므로
+#     고리가 생길 자리가 없습니다.
+# ─────────────────────────────────────────────────────────────
+
+class Course:
+    """안내 하나. 대본과 이름표입니다."""
+
+    def __init__(self, cid, name, subtitle, steps,
+                 optional=None, route="", audience=""):
+        self.id = cid
+        self.name = name
+        self.subtitle = subtitle      # 메뉴에 한 줄로 뜹니다
+        self.steps = list(steps)
+        self.optional = dict(optional or {})
+        self.route = route
+        self.audience = audience
+
+    def __repr__(self):
+        return f"<Course {self.id} · {len(self.steps)}구간>"
+
+    def spoken_keys(self):
+        """안내 도중에 실제로 나오는 멘트 이름들.
+
+        ※ 말이 없는 구간(M4 처럼 문틀을 지나기만 하는 곳)은 여기
+          없습니다. 잴 것이 없으니까요.
+        """
+        out = []
+        for s in self.steps:
+            lines = getattr(s, "lines", None)
+            if lines:
+                out += [l.key for l in lines if l.text.strip()]
+            elif s.text.strip():
+                out.append(s.key)
+        return out
+
+    def keys(self):
+        """이 코스가 쓰는 오디오 이름 전부 (선택 멘트 포함).
+
+        ※ EXCEPTIONS(돌발 상황 멘트)는 코스와 상관없이 공용이라
+          여기 세지 않습니다. scenario.phrases() 가 따로 넣습니다.
+        """
+        return self.spoken_keys() + list(self.optional)
+
+    def stops(self):
+        return [s for s in self.steps if isinstance(s, Stop)]
+
+    def moves(self):
+        return [s for s in self.steps if isinstance(s, Move)]
+
+    def summary(self):
+        """이 코스가 얼마나 걸리고 얼마나 걷는가.
+
+        ★ 코스를 갈아 끼우지 않고 잽니다 ★
+          seconds_for() 는 구간 하나만 보므로, 지금 코스가
+          무엇이든 상관없이 다른 코스를 잴 수 있습니다. 재려고 코스를
+          바꿨다가 되돌리는 것은 (되돌리기를 한 번 빠뜨리면) 엉뚱한
+          안내를 시작하는 길입니다.
+
+        ★ 실측인지 추정인지 같이 돌려줍니다 ★
+          음성을 아직 안 만든 멘트는 글자 수로 어림합니다. 그 숫자를
+          실측인 것처럼 보여주면, 15~25초 기준을 어림값으로 따지는
+          우스운 일이 됩니다. 화면에 '추정' 이라고 적기 위해 셉니다.
+        """
+        secs = 0.0
+        for s in self.steps:
+            one, _real = seconds_for(s)
+            secs += one
+            if isinstance(s, Stop):
+                secs += QA_PAUSE
+
+        # ★ seconds_for 의 '실측여부' 를 그대로 쓰면 안 됩니다 ★
+        #   말이 없는 구간(M4)은 잴 것이 없어서 늘 False 로 옵니다.
+        #   그걸 세면 **어떤 코스도 영영 '실측' 이 되지 않습니다** —
+        #   실제로 그렇게 만들었다가 여기서 잡았습니다.
+        #   물어야 할 것은 "말하는 멘트 중에 안 잰 것이 있는가" 입니다.
+        m = measured()
+        guessed = [k for k in self.spoken_keys() if k not in m]
+        dist = [m.meters for m in self.moves()]
+        known = [d for d in dist if d]
+        return {
+            "seconds": secs,          # 걷는 시간은 뺀 값입니다
+            "guessed": len(guessed),  # 길이를 아직 안 잰 멘트 수
+            "spoken": len(self.spoken_keys()),
+            "stops": len(self.stops()),
+            "moves": len(dist),
+            "meters": sum(known),
+            "unmeasured": len(dist) - len(known),
+            "ments": len(self.keys()),
+        }
+
+    def brief(self):
+        """메뉴에 보낼 것.
+
+        ★ 이름만 보내면 고를 수가 없습니다 ★
+          "이 무리에게 어느 코스?" 를 정하는 데 필요한 것은 이름이
+          아니라 **몇 분 걸리고 어디를 도는지** 입니다. 목록을 아무리
+          잘 그려도 줄에 그것이 없으면 못 고릅니다.
+        """
+        d = self.summary()
+        # 90초 밑에서는 분으로 적으면 '약 0분' 이 됩니다 — 쓸모없습니다
+        when = (f"약 {d['seconds']:.0f}초" if d["seconds"] < 90
+                else f"약 {d['seconds'] / 60.0:.0f}분")
+        bits = [when + (" (추정)" if d["guessed"] else " (실측)"),
+                f"정차 {d['stops']}곳"]
+        if d["meters"]:
+            m = f"{d['meters']:.1f} m"
+            if d["unmeasured"]:
+                m += f" (+{d['unmeasured']}구간 안 잼)"
+            bits.append(m)
+        # ROUTE 의 ** 는 콘솔에서 힘주어 읽으라는 표시입니다. 화면에서는
+        # 그냥 별표로 보입니다 — 떼고 보냅니다.
+        return {"id": self.id, "name": self.name, "subtitle": self.subtitle,
+                "facts": " · ".join(bits), "route": self.route.replace("*", "")}
+
+
+# ── 지금 어느 코스인가 ───────────────────────────────────────
+#
+# ★ 왜 여기서 갈아 끼우는가 ★
+#   위의 도우미들(phrases, timetable, check, show_text …)이 전부
+#   SCENARIO 라는 이름 하나를 봅니다. 코스가 늘었다고 그 함수들에
+#   전부 인자를 하나씩 더 붙이면, 어딘가 한 곳은 반드시 빠집니다 —
+#   이 저장소에서 이미 여러 번 겪은 모양입니다.
+#
+#   그래서 **이름을 갈아 끼웁니다.** 부르는 쪽은 아무것도 안 바뀝니다.
+#   코스는 한 판에 하나만 돕니다 (사람이 하나를 골라 안내합니다).
+#
+# ※ 건물의 사실(BUILDING · SIGNS · CLEARANCE · ODOMETRY · TURN_MODEL)은
+#   코스와 상관없이 그대로입니다. 갈아 끼우는 것은 대본뿐입니다.
+ACTIVE = None
+
+
+def use(course):
+    """이 코스를 지금 코스로 삼습니다. 돌려주는 값: 그 코스."""
+    global SCENARIO, OPTIONAL, TITLE, ROUTE, AUDIENCE, ACTIVE
+    SCENARIO = list(course.steps)
+    OPTIONAL = dict(course.optional)
+    TITLE = course.name
+    if course.route:
+        ROUTE = course.route
+    if course.audience:
+        AUDIENCE = course.audience
+    ACTIVE = course
+    return course
+
+
 def stops():
     return [s for s in SCENARIO if isinstance(s, Stop)]
 
