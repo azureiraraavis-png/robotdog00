@@ -1391,6 +1391,42 @@ async def enable_joystick(conn, on=True, verbose=True):
         return False
 
 
+def _report_descent(start, pts, label="엎드리기"):
+    """내려가는 데 몇 초 걸렸고 얼마나 급했는지 한 줄로.
+
+    ※ 몸높이가 실제로 변한 구간만 셉니다. '명령을 보내고 3초 잤다' 를
+      '3초 걸렸다' 로 적지 않으려고요 — 한 번 그렇게 적었습니다.
+    """
+    if start is None or len(pts) < 3:
+        return
+    lo = min(h for _t, h in pts)
+    if start - lo < 0.03:
+        return
+    moving = [t for t, h in pts if lo + 0.015 < h < start - 0.015]
+    fast = max(((h1 - h2) / (t2 - t1))
+               for (t1, h1), (t2, h2) in zip(pts, pts[1:]) if t2 > t1)
+
+    # ★ 못 잰 것을 0.0초라고 적지 않습니다 ★
+    #   내려가는 도중의 표본이 두 개도 안 잡히면, 그건 '0초 만에
+    #   내려갔다' 가 아니라 **못 쟀다** 입니다. 실제로 한 판에서
+    #   "내려가는 데 0.0초 (초당 0.00 m)" 가 찍혔는데, 같은 코드가
+    #   다른 자리에서는 1.6초를 냈습니다. 0 을 값처럼 적으면 나중에
+    #   그 0 을 근거로 판단하게 됩니다.
+    if len(moving) < 2 or fast <= 0.0:
+        print(f"[자세] {label} {start:.2f} → {lo:.2f} m · "
+              f"내려가는 모양은 못 쟀습니다 (표본 {len(pts)}개)")
+        return
+
+    took = moving[-1] - moving[0]
+    note = ""
+    if fast > 0.30:
+        note = "   ★ 급합니다"
+    elif took < 0.8:
+        note = "   ★ 빠릅니다"
+    print(f"[자세] {label} {start:.2f} → {lo:.2f} m · 내려가는 데 {took:.1f}초"
+          f" (가장 빠를 때 초당 {fast:.2f} m){note}")
+
+
 class Posture:
     """로봇의 자세를 기억하고, 안전한 순서로 전환합니다.
 
@@ -1535,16 +1571,42 @@ class Posture:
         await self._report("앉았습니다", verbose)
 
     async def lie(self, verbose=True):
+        """엎드립니다 — 그리고 **내려가는 모양을 재서 같이 알려줍니다.**
+
+        ★ 왜 여기서 재는가 ★
+          안내 마지막의 엎드리기가 "철푸덕" 이라는 보고를 받고
+          settle_test.py 로 따로 재봤더니 1.5초에 걸쳐 고르게
+          내려갔습니다 (가장 빠를 때 초당 0.18 m). 부드러웠습니다.
+
+          **같은 명령인데 안내 중에는 다르게 보입니다.** 그러면 원인은
+          명령이 아니라 그때의 상태입니다 — 배터리, 모터 온도, 앞선
+          동작들의 누적. 후보를 골라 추측하는 대신, **일어나는 자리에서
+          재기로 했습니다.** 이제 안내를 한 판 돌릴 때마다 그 판의
+          하강 곡선이 기록됩니다.
+
+          다음에 "철푸덕했다" 는 보고가 오면 그 판의 숫자가 같이 옵니다.
+        """
         if self.state == "lie":
             if verbose:
                 print("     (이미 엎드려 있습니다)")
             return
         await self.stand(verbose=verbose)
+
+        start = self.probe.height
+        pts = []
+        t0 = time.time()
         await sport(self.conn, "StandDown")
-        await asyncio.sleep(3)
+        while time.time() - t0 < 3.0:
+            await asyncio.sleep(0.1)
+            h = self.probe.height
+            if h is not None:
+                pts.append((time.time() - t0, h))
+
         self.state = "lie"
         self.walk_ready = False
         await self._report("엎드렸습니다", verbose)
+        if verbose:
+            _report_descent(start, pts)
 
     async def damp(self, verbose=True):
         """힘 빼기. 이후에는 일으켜 세워야 이동 명령이 먹습니다."""
