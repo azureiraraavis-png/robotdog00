@@ -491,7 +491,56 @@ async def main():
             hand.state["waiting"] = False
             hand.flag(mic="off")
 
-        # ── 9. 조종판은 그대로입니다 ────────────────────────
+        # ── 9. 인사 뒤에 다시 세우는가 ──────────────────────
+        #
+        # ★ 왜 이걸 지키는가 ★
+        #   안내 끝에서만 로봇이 철푸덕 주저앉았습니다. 범인은 인사
+        #   였습니다 — Hello 가 로봇을 '서 있지 않은' 자세로 남기는데
+        #   우리 상태 기계는 여전히 서 있다고 믿어서, 다음 엎드리기의
+        #   stand() 가 "이미 서 있습니다" 하고 건너뛰었습니다.
+        #
+        #       그냥        1.6초
+        #       인사 뒤     0.5초    ← 세 번 다
+        #
+        #   고친 뒤로도 이 한 줄이 지워지면 조용히 되돌아옵니다.
+        #   로봇 없이 지킬 수 있는 자리라 여기서 지킵니다.
+        print()
+        print("─" * 70)
+        print(" 인사 뒤에 '서 있다' 는 믿음을 버리는가")
+        print("─" * 70)
+        import common
+
+        # __init__ 을 건너뜁니다 — disturbed 는 walk_ready 만 만지고,
+        # 진짜 Posture 를 만들려면 연결이 필요합니다.
+        posture = common.Posture.__new__(common.Posture)
+        posture.state = "stand"
+        posture.walk_ready = True
+        posture.disturbed("인사")
+        s.check("인사 뒤에는 믿음을 버립니다", posture.walk_ready, False)
+        s.check("자세 이름은 그대로입니다 (엎드린 건 아니니까)",
+                posture.state, "stand")
+
+        sent = []
+
+        async def fake_sport(conn, cmd, *a, **kw):
+            sent.append(cmd)
+
+        class FakeTimer:
+            async def run(self, name, coro):
+                return await coro
+
+        posture.walk_ready = True
+        real_sport, common.sport = common.sport, fake_sport
+        try:
+            await guide._gesture({"conn": None, "posture": posture},
+                                 "hello", FakeTimer())
+        finally:
+            common.sport = real_sport
+        s.check("인사 명령이 나갑니다", sent, ["Hello"])
+        s.check("안내의 인사도 다시 세우기를 예약합니다",
+                posture.walk_ready, False)
+
+        # ── 10. 조종판은 그대로입니다 ───────────────────────
         print()
         print("─" * 70)
         print(" 조종판")

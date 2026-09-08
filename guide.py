@@ -123,6 +123,10 @@ async def _gesture(robot, name, timer):
     if name == "hello":
         await timer.run(name, common.sport(robot["conn"], "Hello"))
         await asyncio.sleep(1.0)
+        # 인사는 로봇을 '서 있지 않은' 자세로 남깁니다. 그 사실을 여기서
+        # 알려주지 않으면, 다음 엎드리기가 그 자세에서 그대로 떨어집니다
+        # (0.5초 철푸덕). 자세한 내력은 common.Posture.disturbed 에.
+        robot["posture"].disturbed("인사")
     elif name == "sit":
         await timer.run(name, robot["posture"].sit())
     elif name == "stand":
@@ -181,6 +185,10 @@ async def drive_loop(robot, hand):
     warned = False
     since = 0.0
     which = None
+    beats = 0            # 이번 누름 동안 휴대폰이 보낸 신호 수
+    last_beat = 0.0
+    last_end = 0.0       # 앞 누름이 끝난 시각
+    last_keys = ""
     while True:
         want = hand.stick()
         if want is not None and robot.get("busy"):
@@ -194,12 +202,20 @@ async def drive_loop(robot, hand):
                 moving = True
                 since = time.time()
                 which = set()
+                beats = 0
+                last_beat = 0.0
                 if not robot["posture"].can_move() and not warned:
                     warned = True
                     print("     ※ 지금 자세로는 안 걷습니다 — 메뉴에서 '일어서기'")
             # 한 번 누르는 동안 조합이 바뀔 수 있습니다 (앞으로 → 앞으로+좌회전).
             # 무엇을 눌렀는지는 모아서 한 줄로 적습니다.
             which.update(hand.holding())
+            # 휴대폰이 "아직 누르고 있다" 를 몇 번 보냈는지 셉니다.
+            # 시각이 바뀌면 새 신호가 온 것입니다.
+            newest = max(hand.held.values(), default=0.0)
+            if newest > last_beat:
+                last_beat = newest
+                beats += 1
         elif moving:
             # 손을 뗐거나 소식이 끊겼습니다. 확실히 멈춥니다.
             for _ in range(3):
@@ -207,12 +223,32 @@ async def drive_loop(robot, hand):
                 await asyncio.sleep(0.02)
             await common.stop(robot["conn"])
             robot["facing"] = None         # 사람이 몰았으니 방향을 모릅니다
-            # ★ 끝날 때 한 줄만, 대신 얼마나 갔는지 적습니다 ★
-            #   시작할 때마다 찍었더니 한 번 누른 것이 42줄로 나왔습니다.
-            #   줄 수를 세는 것보다 **얼마나 짧게 끊겼는지**가 중요합니다.
-            held = time.time() - since
-            note = "   ★ 끊겼습니다" if held < 0.6 else ""
-            print(f"   ⟨조종⟩ {'+'.join(sorted(which)) or '?'} {held:.1f}초{note}")
+            # ★ 무엇을 재야 하는가 ★
+            #
+            #   처음에는 "0.6초보다 짧으면 끊긴 것" 으로 봤습니다. 그런데
+            #   실제 로그를 보니 짧은 누름이 수십 번 나왔고, 그건 고장이
+            #   아니라 **방향을 살짝 트는 정상적인 조작**이었습니다.
+            #   0.3초짜리 톡톡 치기가 원래 그렇게 생겼습니다.
+            #
+            #   진짜 물어야 할 것은 **한 번 누른 것이 둘로 쪼개졌는가**
+            #   입니다. 그건 길이가 아니라 **앞의 것과의 간격**에 나타납니다.
+            #   손으로 두 번 치면 사이가 뜨고, 신호가 끊겨서 쪼개진 것이면
+            #   거의 붙어 있습니다.
+            #
+            #   그래서 간격을 재고, 휴대폰이 몇 번 신호를 보냈는지도 같이
+            #   적습니다. 0.4초 동안 신호가 3~4번이면 정상이고, 1번뿐이면
+            #   심장박동이 안 온 것입니다.
+            now = time.time()
+            held = now - since
+            keys = "+".join(sorted(which)) or "?"
+            gap = since - last_end if last_end else 99.0
+            note = ""
+            if keys == last_keys and gap < 0.35:
+                note = f"   ★ 앞의 것과 {gap * 1000:.0f}ms — 쪼개졌을 수 있습니다"
+            elif held > 0.3 and beats <= 1:
+                note = "   ★ 신호가 한 번뿐입니다"
+            print(f"   ⟨조종⟩ {keys} {held:.1f}초 · 신호 {beats}회{note}")
+            last_end, last_keys = now, keys
             moving = False
             warned = False
         await asyncio.sleep(0.02)
@@ -249,10 +285,17 @@ async def serve_jobs(robot, hand):
                     await getattr(robot["posture"], job)()
                     hand.flag(posture=job)
                     robot["facing"] = None if job != "stand" else robot.get("facing")
+                # ★ 메뉴에서 누른 것은 다 로그에 남겨야 합니다 ★
+                #   자세는 ⟨메뉴: sit⟩ 으로 남는데 라이트는 안 남겼습니다.
+                #   그래서 S5 에서 라이트가 여섯 번 오르내린 로그를 보고도
+                #   **사람이 누른 것인지 안내가 켠 것인지 알 수가 없었습니다.**
+                #   로그가 있는데 읽을 수 없는 것은 없는 것과 비슷합니다.
                 elif job == "light_on":
+                    print("\n   ⟨메뉴: 라이트 켜기⟩")
                     await common.light_on(conn)
                     hand.flag(light=True)
                 elif job == "light_off":
+                    print("\n   ⟨메뉴: 라이트 끄기⟩")
                     await common.light_off(conn)
                     hand.flag(light=False)
                 elif job in ("vol_up", "vol_down"):

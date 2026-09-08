@@ -1391,17 +1391,17 @@ async def enable_joystick(conn, on=True, verbose=True):
         return False
 
 
-def _report_descent(start, pts, label="엎드리기"):
+def _report_descent(start, pts, label="엎드리기", verbose=True):
     """내려가는 데 몇 초 걸렸고 얼마나 급했는지 한 줄로.
 
     ※ 몸높이가 실제로 변한 구간만 셉니다. '명령을 보내고 3초 잤다' 를
       '3초 걸렸다' 로 적지 않으려고요 — 한 번 그렇게 적었습니다.
     """
     if start is None or len(pts) < 3:
-        return
+        return None
     lo = min(h for _t, h in pts)
     if start - lo < 0.03:
-        return
+        return None
     moving = [t for t, h in pts if lo + 0.015 < h < start - 0.015]
     fast = max(((h1 - h2) / (t2 - t1))
                for (t1, h1), (t2, h2) in zip(pts, pts[1:]) if t2 > t1)
@@ -1413,18 +1413,63 @@ def _report_descent(start, pts, label="엎드리기"):
     #   다른 자리에서는 1.6초를 냈습니다. 0 을 값처럼 적으면 나중에
     #   그 0 을 근거로 판단하게 됩니다.
     if len(moving) < 2 or fast <= 0.0:
+        # ★ '못 쟀다' 로 끝내면 다음에도 똑같이 모릅니다 ★
+        #   못 잰 이유가 두 가지인데 지금까지 둘을 같은 말로 적었습니다.
+        #
+        #     ㄱ. 너무 빨라서 중간이 안 잡혔다   ← 이게 '철푸덕' 입니다
+        #     ㄴ. 높이 값이 아예 안 들어왔다     ← 로봇 상태를 못 받은 것
+        #
+        #   실제로 안내 끝의 엎드리기에서만 이게 나왔습니다. 메뉴에서
+        #   누른 네 번은 다 재졌고요. **구별이 곧 원인입니다.**
+        if not verbose:
+            return None
+        seen = sorted({round(h, 3) for _t, h in pts})
+        span = (pts[-1][0] - pts[0][0]) if len(pts) > 1 else 0.0
+        why = (f"높이가 {len(seen)}가지뿐입니다 ("
+               + " · ".join(f"{h:.2f}" for h in seen[:6])
+               + ("…" if len(seen) > 6 else "") + ")")
+        if len(seen) <= 1:
+            why += " — 로봇 상태를 못 받고 있었습니다"
+        elif len(seen) == 2:
+            why += " — 중간이 통째로 안 잡혔습니다 (아주 빨랐거나 값이 늦게 왔거나)"
         print(f"[자세] {label} {start:.2f} → {lo:.2f} m · "
-              f"내려가는 모양은 못 쟀습니다 (표본 {len(pts)}개)")
-        return
+              f"내려가는 모양은 못 쟀습니다")
+        print(f"       표본 {len(pts)}개 · {span:.1f}초 동안 · {why}")
+        # 값이 어떻게 움직였는지 그대로 보여줍니다. 요약이 못 미더울 때
+        # 이 줄을 보면 됩니다.
+        trace = " ".join(f"{h:.2f}" for _t, h in pts[:14])
+        print(f"       {trace}{' …' if len(pts) > 14 else ''}")
+        return None
 
     took = moving[-1] - moving[0]
-    note = ""
-    if fast > 0.30:
-        note = "   ★ 급합니다"
-    elif took < 0.8:
-        note = "   ★ 빠릅니다"
+    out = {"start": start, "low": lo, "took": took, "fast": fast}
+    if not verbose:
+        return out
+    # ★ 무엇으로 '급하다' 고 하는가 — 여기를 한 번 틀렸습니다 ★
+    #
+    #   처음에는 '가장 빠를 때(m/s)' 로 판정했습니다. 그런데 그 값은
+    #   **이웃한 표본 두 개**로 계산합니다. 높이 값 하나가 늦게 오거나
+    #   튀면 그 한 쌍이 통째로 부풀어서, 멀쩡한 판에도 ★ 가 붙습니다.
+    #
+    #       1.6초에 걸쳐 내려가면서   초당 1.09 m   ← 실제로 나온 값
+    #       1.6초에 걸쳐 내려가면서   초당 1.58 m   ← 이것도
+    #
+    #   물리적으로 말이 안 되는 값입니다. 그런데 요약이 이걸 근거로
+    #   엉뚱한 조건을 범인으로 찍은 적이 있습니다.
+    #
+    #   내려간 시간은 여러 표본에 걸쳐 있어서 하나가 튀어도 안 흔들립니다.
+    #   그래서 **판정은 시간으로** 합니다. 잰 값은 이렇습니다.
+    #
+    #       멀쩡할 때   1.3 ~ 1.7초
+    #       철푸덕      0.5초 (세 번 다)
+    #
+    #   m/s 는 참고로만 적습니다. 늘 울어대는 경보는 없는 것과 같습니다.
+    note = "   ★ 급합니다 — 딛고 내려간 게 아닙니다" if took < 0.9 else ""
     print(f"[자세] {label} {start:.2f} → {lo:.2f} m · 내려가는 데 {took:.1f}초"
-          f" (가장 빠를 때 초당 {fast:.2f} m){note}")
+          f" (참고: 가장 빠를 때 초당 {fast:.2f} m){note}")
+    # ★ 숫자를 돌려줍니다 ★ 화면에만 찍으면 여러 판을 견줄 수가 없습니다.
+    #   lie_test.py 가 조건별로 모아서 표로 만듭니다.
+    return out
 
 
 class Posture:
@@ -1527,6 +1572,43 @@ class Posture:
         self.walk_ready = True      # 제대로 일으켜 세웠습니다
         return True
 
+    def disturbed(self, why=""):
+        """다리를 쓰는 딴 명령이 지나갔습니다 — '서 있다' 는 믿음을 버립니다.
+
+        ★ 왜 이게 있는가 — 잰 값이 시켰습니다 ★
+
+          안내 끝에서만 로봇이 철푸덕 주저앉았습니다. 메뉴에서 누르면
+          1.6초에 걸쳐 곱게 내려가는데, 안내 끝에서는 0.5초에 떨어졌습니다.
+          같은 명령(StandDown)인데 세 배 급했습니다.
+
+          조건을 하나씩 떼어 재보니 범인은 **인사(Hello)** 였습니다.
+
+              그냥        1.6초
+              인사 뒤     0.5초      ← 세 번 다
+              걷고 나서   1.6초
+              기다린 뒤   1.6초
+
+          까닭은 이렇습니다. Hello 는 로봇을 **서 있지 않은 자세**로
+          남깁니다. 그런데 우리 상태 기계는 여전히 state=="stand",
+          walk_ready==True 라고 믿습니다. 그래서 lie() 안의 stand() 가
+          "이미 서 있습니다" 하고 건너뛰고, 인사 자세에서 곧장
+          StandDown 이 나갑니다. 딛고 내려갈 자세가 아니니 떨어집니다.
+
+          고치는 방법을 둘 놓고 같은 자리에서 재봤습니다.
+
+              인사 + BalanceStand 1초    0.5초   — 소용없었습니다
+              인사 + 제대로 다시 세우기   1.6초   ★ 됐습니다
+
+          균형 자세만 다시 잡아주는 싼 쪽은 안 통했습니다. StandUp 부터
+          제대로 거쳐야 합니다. 그래서 여기서는 **믿음만 지웁니다** —
+          다음에 자세를 바꿀 때 stand() 가 알아서 제 길로 갑니다.
+          비용은 그 한 번의 7초뿐이고, 인사 뒤에 자세를 안 바꾸면
+          아예 안 냅니다.
+        """
+        if self.walk_ready and why:
+            print(f"[자세] {why} 뒤라 다시 세우고 갑니다")
+        self.walk_ready = False
+
     async def _report(self, label, verbose=True):
         """자세를 바꾼 뒤 **실제 몸높이를 읽어서** 알립니다.
 
@@ -1595,18 +1677,51 @@ class Posture:
         start = self.probe.height
         pts = []
         t0 = time.time()
+
+        # ★ 재기를 **명령보다 먼저** 시작합니다 ★
+        #
+        #   처음에는 이렇게 짰습니다.
+        #
+        #       t0 = time.time()
+        #       await sport(conn, "StandDown")   ← 여기서 1.1초를 기다림
+        #       while time.time() - t0 < 3.0:    ← t0 는 이미 1.1초 전
+        #
+        #   명령이 돌아오기를 기다리는 동안 **로봇은 이미 내려갔습니다.**
+        #   그래서 표본 20개가 전부 0.07 이었고, 로그는 "높이가 1가지뿐"
+        #   이라고 했습니다. 안내 끝의 엎드리기에서만 그랬는데, 그때만
+        #   명령 왕복이 느렸던 것입니다.
+        #
+        #   ★ 그리고 이게 '철푸덕 0.57 m/s' 도 설명합니다 ★
+        #     내려가는 중간부터 재기 시작하면 첫 두 표본 사이가 크게
+        #     벌어집니다. 그 간격으로 속도를 내면 부풀려집니다.
+        #     그 숫자는 로봇의 성질이 아니라 **재는 방법이 만든 것**
+        #     이었을 수 있습니다. 이 저장소에서 세 번째입니다 —
+        #     재는 방법이 재려던 것을 바꾼 경우.
+        #
+        #   ※ 걸리는 시간은 그대로 3초입니다. 시작만 앞당겼습니다.
+        async def watch():
+            while time.time() - t0 < 3.0:
+                h = self.probe.height
+                if h is not None:
+                    pts.append((time.time() - t0, h))
+                await asyncio.sleep(0.05)
+
+        watcher = asyncio.ensure_future(watch())
+        sent = time.time()
         await sport(self.conn, "StandDown")
-        while time.time() - t0 < 3.0:
-            await asyncio.sleep(0.1)
-            h = self.probe.height
-            if h is not None:
-                pts.append((time.time() - t0, h))
+        took = time.time() - sent
+        await watcher
+        if verbose and took > 0.3:
+            # 이 값이 크면 예전 방식으로는 못 쟀을 자리입니다.
+            print(f"       (명령이 돌아오는 데 {took:.1f}초 걸렸습니다)")
 
         self.state = "lie"
         self.walk_ready = False
         await self._report("엎드렸습니다", verbose)
-        if verbose:
-            _report_descent(start, pts)
+        # 조용히 부를 때도 재둡니다 — 시험이 verbose 없이 여러 번 돌립니다
+        self.last_descent = _report_descent(start, pts, verbose=verbose)
+        if self.last_descent:
+            self.last_descent["command"] = took
 
     async def damp(self, verbose=True):
         """힘 빼기. 이후에는 일으켜 세워야 이동 명령이 먹습니다."""
