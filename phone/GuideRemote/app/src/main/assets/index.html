@@ -9,6 +9,8 @@ body{margin:0;padding:18px calc(16px + env(safe-area-inset-left)) 24px;
      background:#14181d;color:#e8edf1;line-height:1.6;
      font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}
 h1{font-size:18px;margin:0 0 4px}
+.ver{font-size:11px;font-weight:400;color:#14181d;background:#7fe0b0;
+     border-radius:6px;padding:2px 7px;vertical-align:middle;margin-left:6px}
 p.sub{color:#8d979f;font-size:13px;margin:0 0 18px}
 .row{display:flex;gap:10px;align-items:flex-start;background:#1d232a;
      border:1px solid #2c343d;border-radius:12px;padding:12px 14px;margin-bottom:8px}
@@ -23,11 +25,36 @@ h2{font-size:12px;letter-spacing:.12em;color:#8d979f;text-transform:uppercase;
 #verdict.good{background:#215843;border-color:#2f7d5f}
 #verdict.bad{background:#5b241d;border-color:#8f2f26}
 b{color:#fff}
+label{display:block;color:#8d979f;font-size:12px;margin:12px 2px 4px}
+input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #2c343d;
+      background:#11151a;color:#e8edf1;font-size:15px;font-family:inherit}
+button{width:100%;margin-top:14px;padding:14px;border-radius:12px;border:0;
+       background:#2f6d8f;color:#fff;font-size:15px;font-weight:600;
+       font-family:inherit}
+button:disabled{background:#2c343d;color:#6d767e}
+pre{white-space:pre-wrap;word-break:break-all;background:#11151a;
+    border:1px solid #2c343d;border-radius:10px;padding:12px;
+    font-size:11.5px;line-height:1.5;color:#a8b3bb;margin:10px 0 0;
+    max-height:220px;overflow:auto}
+.tick{display:flex;align-items:center;gap:9px;color:#e8edf1;font-size:14px;
+      margin:14px 2px 0}
+.tick input{width:20px;height:20px;accent-color:#2f6d8f}
+#bridge{margin-top:12px;padding:14px;border-radius:12px;
+        background:#1d232a;border:1px solid #2c343d;font-size:14px}
+#bridge.good{background:#215843;border-color:#2f7d5f}
+#bridge.bad{background:#5b241d;border-color:#8f2f26}
 </style></head><body>
 
-<h1>통로가 뚫렸는가</h1>
+<h1>통로가 뚫렸는가 <span class=ver>6판 · 제안 갖추기</span></h1>
 <p class=sub>앱이 빌드되고, 폰에 깔리고, 화면이 뜨고, 화면이 앱과 말할 수
-있는지 — 그것만 봅니다. 로봇은 아직 아무 상관 없습니다.</p>
+있는지 — 그것만 봅니다. 로봇은 아직 아무 상관 없습니다.
+<b>아래로 내리면 '시그널링 다리' 칸이 있습니다.</b></p>
+
+<!-- ★ 제목 옆의 판수 딱지는 장식이 아닙니다 ★
+     페이지를 고쳐 넣었는데 화면이 그대로일 때, '안 들어간 것' 과 '내가
+     안 내려본 것' 이 똑같이 보입니다. 실제로 한 번 그랬습니다.
+     이 딱지가 있으면 맨 위 한 줄로 구별됩니다 — 딱지가 없으면 옛 페이지,
+     있으면 새 페이지인데 안 내려본 것. 고칠 때마다 판수를 올립니다. -->
 
 <h2>확인</h2>
 <div id=list></div>
@@ -114,7 +141,7 @@ if(bad === 0){
   v.className = 'good';
   v.innerHTML = '<b>통로가 뚫렸습니다.</b><br>'
     + '빌드 → 설치 → 실행 → 화면 → 앱까지 다 이어졌습니다.<br>'
-    + '이제 여기에 <b>시그널링 다리</b>를 놓고, 안내 화면을 옮겨오면 됩니다.';
+    + '<b>아래로 내려서 시그널링 다리를 재보세요.</b>';
 }else{
   v.className = 'bad';
   v.innerHTML = '<b>' + bad + '가지가 막혔습니다.</b><br>'
@@ -123,5 +150,79 @@ if(bad === 0){
 }
 
 console.log('통로 확인: ' + (rows.length - bad) + '/' + rows.length + ' 통과');
+</script>
+
+<h2>시그널링 다리</h2>
+<p class=sub>브라우저가 막히던 두 번의 HTTP 를 앱이 대신 합니다.
+<b>먼저 가짜 로봇으로 재세요</b> — PC 에서
+<code>.\run sig_test.py --serve</code> 를 켜고, 거기 찍히는 주소를 넣습니다.
+그게 통해야 진짜 로봇 앞에 갈 값어치가 있습니다.</p>
+
+<label>주소 (PC 의 가짜 로봇, 또는 진짜 로봇 IP)</label>
+<input id=ip inputmode=decimal placeholder="192.168.0.51">
+<label>포트</label>
+<input id=port inputmode=numeric placeholder="9991">
+<label>AES 키 — data2=3 인 로봇만 필요합니다 (없으면 비워두세요)</label>
+<input id=key autocapitalize=off autocorrect=off spellcheck=false
+       placeholder="hex 32글자">
+<button id=go>악수해 보기</button>
+<div id=bridge>아직 안 해봤습니다.</div>
+<pre id=detail hidden></pre>
+
+<script src="sig.js"></script>
+<script>
+/* 마지막에 쓴 값을 기억합니다 — 폰에서 IP 를 매번 치는 건 고역입니다.
+   저장소가 막혀 있어도(위 3번이 ★ 여도) 화면은 그대로 돌아야 하므로
+   읽기·쓰기를 다 감싸둡니다. */
+const F = {ip: document.getElementById('ip'),
+           port: document.getElementById('port'),
+           key: document.getElementById('key')};
+try{
+  for(const k in F){ const saved = localStorage.getItem('다리.' + k);
+                     if(saved) F[k].value = saved; }
+}catch(e){ console.warn('저장소를 못 읽었습니다: ' + e); }
+if(!F.port.value) F.port.value = '9991';
+
+const out = document.getElementById('bridge');
+const detail = document.getElementById('detail');
+const go = document.getElementById('go');
+
+function say(cls, html, more){
+  out.className = cls;
+  out.innerHTML = html;
+  if(more){ detail.textContent = more; detail.hidden = false; }
+  else { detail.hidden = true; }
+}
+
+go.addEventListener('click', async function(){
+  const ip = F.ip.value.trim();
+  if(!ip){ say('bad', '<b>주소를 넣어주세요.</b>'); return; }
+  try{
+    for(const k in F) localStorage.setItem('다리.' + k, F[k].value.trim());
+  }catch(e){ /* 저장 못 해도 악수는 됩니다 */ }
+
+  go.disabled = true;
+  say('', '제안을 만드는 중…');
+  try{
+    /* ★ 진짜 제안을 씁니다 ★ 가짜 문자열로는 "다리가 틀렸나 SDP 가
+       틀렸나" 를 구별할 수 없습니다. */
+    const offer = await makeOffer();
+    say('', '악수하는 중… (최대 8초)');
+    const answer = await handshake(ip, parseInt(F.port.value, 10) || 9991,
+                                   offer, F.key.value.trim());
+    say('good',
+        '<b>악수가 끝까지 갔습니다.</b><br>'
+        + '보낸 제안 ' + offer.length + '글자'
+        + ' → 받은 응답 ' + answer.length + '글자.<br>'
+        + '브라우저가 막히던 두 번의 HTTP 를 앱이 넘겼습니다.',
+        answer);
+  }catch(e){
+    say('bad', '<b>막혔습니다.</b><br>' + String(e.message || e)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>'),
+        '어디까지 갔는지는 PC 의 Logcat 에서 "다리" 태그로 보입니다.');
+  }finally{
+    go.disabled = false;
+  }
+});
 </script>
 </body></html>

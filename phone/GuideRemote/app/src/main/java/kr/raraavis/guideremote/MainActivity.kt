@@ -10,10 +10,12 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 
 /**
@@ -26,15 +28,16 @@ import java.io.ByteArrayInputStream
  *   로봇과의 시그널링 (CORS 로 막히고, 쓰는 암호가 WebCrypto 에 없습니다).
  *   자세한 것은 저장소의 web_probe.py 와 sig.py 에 있습니다.
  *
- * ★ 지금은 그 하나가 아직 없습니다 ★
- *   이 파일은 **통로가 뚫리는지만** 봅니다. 빌드되고, 폰에 깔리고,
- *   WebView 가 뜨고, 우리 페이지가 보이는지. 그것부터 확인하고 나서
- *   다리를 놓습니다.
+ * ★ 통로는 뚫렸습니다 (1판에서 확인) ★
+ *   빌드 → 설치 → 실행 → 화면 → 앱까지 여섯 줄이 다 ○ 였습니다.
+ *   출처가 https://guide.local 로 잡히고, 저장소도 WebRTC 도 삽니다.
+ *   그래서 이제 다리(Sig.kt)를 얹었습니다.
  *
- *   '만들었다' 와 '보인다' 는 다릅니다 — 이 저장소에서 네 번 겪었습니다.
- *   하물며 이건 제가(작성한 AI가) 빌드해 볼 수 없는 첫 코드입니다.
- *   그래서 처음 것을 최대한 작게 만듭니다. 틀렸을 때 어디가 틀렸는지
- *   바로 보이도록요.
+ *   '만들었다' 와 '보인다' 는 다릅니다 — 이 저장소에서 다섯 번 겪었습니다.
+ *   하물며 이건 제가(작성한 AI가) 빌드해 볼 수 없는 코드입니다.
+ *   그래서 화면 맨 위에 **판수 딱지**를 답니다. 고쳐 넣었는데 화면이
+ *   그대로일 때, '안 들어간 것' 과 '내가 안 내려본 것' 이 똑같이
+ *   보이거든요. 실제로 한 번 그랬습니다.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -84,6 +87,11 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true                    // localStorage
             mediaPlaybackRequiresUserGesture = false
+            // ★ 페이지는 앱 안에 있으니 캐시할 이유가 없습니다 ★
+            //   고쳐 넣었는데 옛 화면이 뜨면, '안 들어갔나' 를 의심하며
+            //   엉뚱한 데를 뒤지게 됩니다. 그 몇 밀리초를 아낄 값어치가
+            //   없습니다.
+            cacheMode = WebSettings.LOAD_NO_CACHE
         }
 
         // 뒤로 가기로 앱이 툭 꺼지지 않게 — 시연 중에 제일 나쁜 일입니다.
@@ -148,5 +156,51 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun appVersion(): String =
             packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+
+        /**
+         * 시그널링 다리 — 화면이 못 하는 두 번의 HTTP 를 대신 해줍니다.
+         *
+         * ★ 왜 답을 그냥 돌려주지 않는가 ★
+         *   여기는 WebView 의 자바브리지 스레드입니다. 네트워크를 써도
+         *   되지만, 답이 올 때까지 **화면의 자바스크립트가 통째로
+         *   멈춥니다.** 악수는 8초까지 걸릴 수 있습니다. 멈춘 화면은
+         *   고장난 화면과 구별이 안 갑니다 — 그 8초 동안 사용자는
+         *   앱이 죽었다고 생각합니다.
+         *
+         *   그래서 배경 스레드로 보내고, 끝나면 화면의 함수를 불러
+         *   알려줍니다. 화면 쪽은 sig.js 가 그걸 약속(Promise)으로
+         *   감싸주니, 부르는 쪽은 그냥 await 하면 됩니다.
+         *
+         * @param callId 화면이 만든 이름표. 어느 부탁의 답인지 짝을 맞춥니다.
+         */
+        @JavascriptInterface
+        fun handshake(
+            ip: String, port: Int, offerSdp: String, aesKey: String, callId: String
+        ) {
+            Thread {
+                val steps = StringBuilder()
+                val res = JSONObject()
+                try {
+                    val sdp = Sig.handshake(
+                        ip, offerSdp,
+                        if (aesKey.isBlank()) null else aesKey,
+                        port
+                    ) { name, detail ->
+                        if (steps.length > 0) steps.append("\n")
+                        steps.append("$name — $detail")
+                        Log.i("다리", "$name — $detail")
+                    }
+                    Log.i("다리", "악수 성공 · 응답 ${sdp.length}글자")
+                    res.put("ok", true).put("sdp", sdp)
+                } catch (e: Throwable) {
+                    Log.w("다리", "악수 실패: ${e.message}")
+                    res.put("ok", false).put("why", e.message ?: e.toString())
+                }
+                res.put("steps", steps.toString())
+                // ★ evaluateJavascript 는 UI 스레드에서만 됩니다 ★
+                val js = "window.__sigDone(${JSONObject.quote(callId)}, $res)"
+                runOnUiThread { web.evaluateJavascript(js, null) }
+            }.start()
+        }
     }
 }

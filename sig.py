@@ -7,7 +7,7 @@
     휴대폰이 두뇌가 되려면 폰이 로봇에 직접 붙어야 합니다. 재봤더니
     (web_probe.py) 브라우저가 막히는 곳은 **딱 두 군데**였습니다.
 
-        GET  http://<로봇>:9991/con_notify        ← 막힘 (CORS)
+        POST http://<로봇>:9991/con_notify        ← 막힘 (CORS)
         POST http://<로봇>:9991/con_ing_<토큰>    ← 막힘 (CORS)
 
         그 뒤의 WebRTC · 데이터채널 · 오디오 · 안내 로직은 전부
@@ -227,15 +227,31 @@ def public_key_of(data1: str) -> str:
 
 # ── HTTP ─────────────────────────────────────────────────────
 
-def _http(url, body=None, timeout=8.0):
+def _http(url, body="", timeout=8.0):
     """랜 안의 로봇에게 보냅니다. **프록시를 거치지 않습니다.**
 
     학교 망처럼 프록시가 잡혀 있으면 urllib 이 랜 주소를 바깥으로
     보내려다 조용히 시간만 끕니다.
+
+    ★ 둘 다 POST 입니다 — con_notify 도요 ★
+
+      처음에는 con_notify 를 GET 으로 물었습니다. 답은 옵니다. data1 도
+      오고, 풀리고, 토큰도 나옵니다. 그런데 뒤이은 con_ing 에서 로봇이
+      답 없이 연결을 끊었습니다 (폰 앱에서 실제로 겪었습니다).
+
+      라이브러리를 읽어보니 **몸통 없는 POST** 를 씁니다.
+
+          def make_local_request(path, body=None, headers=None):
+              response = requests.post(url=path, data=body, headers=headers)
+
+          make_local_request(f"http://{ip}:9991/con_notify", None, None)
+
+      나머지는 우리와 똑같습니다 — con_ing 의 헤더도, 몸통의 모양도,
+      순서도. 아마 로봇이 GET 에는 답만 해주고 **세션을 열어두지는
+      않는** 모양입니다.
     """
-    data = body.encode("utf-8") if isinstance(body, str) else body
-    req = urllib.request.Request(url, data=data,
-                                 method="POST" if data else "GET")
+    data = body.encode("utf-8") if isinstance(body, str) else (body or b"")
+    req = urllib.request.Request(url, data=data, method="POST")
     if data:
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -250,9 +266,100 @@ def _http(url, body=None, timeout=8.0):
 
 # ── 계약 ─────────────────────────────────────────────────────
 
+ENVELOPE_ID = "STA_localNetwork"
+
+
+def check_offer(sdp):
+    """보내기 전에 제안이 말이 되는지 봅니다.
+
+    ★ 로봇은 어설픈 제안에 아무 말도 안 해줍니다 ★
+
+      한 줄짜리 SDP 를 보냈더니 로봇이 **응답 없이 연결을 끊었습니다.**
+      오류도, 상태 코드도, 거절 메시지도 없습니다. 그 침묵을 보고 네
+      번 헛짚었습니다 — 소켓 재사용, 오디오 줄, GET 대 POST, 봉투.
+
+      라이브러리와 나란히 세워보고서야 갈렸습니다.
+
+          토막 SDP (41글자)     라이브러리도 막힘
+          진짜 제안 (3860글자)   둘 다 통과
+
+      그러니 **보내기 전에 우리가 봅니다.** 로봇의 침묵을 문장으로
+      바꾸는 것이 이 함수의 전부입니다. 완전한 검사는 아닙니다 —
+      명백히 모자란 것만 잡습니다.
+    """
+    if not sdp or "v=0" not in sdp:
+        raise SignalError("SDP 가 아닙니다 ('v=0' 이 없습니다).")
+    media = [l for l in sdp.splitlines() if l.startswith("m=")]
+    if not media:
+        raise SignalError(
+            "제안에 미디어 줄(m=)이 하나도 없습니다.\n"
+            "  로봇은 이런 제안에 **말없이 연결을 끊습니다.**\n"
+            "  데이터채널·비디오·오디오를 갖춘 제안을 만들어 주세요.")
+    if len(sdp) < 500:
+        raise SignalError(
+            f"제안이 너무 짧습니다 ({len(sdp)}글자, m= 줄 {len(media)}개).\n"
+            "  로봇이 받는 진짜 제안은 3천 글자 남짓입니다.\n"
+            "  이대로 보내면 로봇이 말없이 끊습니다.")
+
+
+def wrap_offer(sdp, token=""):
+    """SDP 를 로봇이 기다리는 봉투에 담습니다.
+
+    ★ 여기서 세 번 헛짚었습니다 ★
+
+      맨 SDP 를 암호화해 보냈더니 로봇이 **말없이 연결을 끊었습니다.**
+      오류도, 상태 코드도 없이 그냥 끊깁니다. 그 침묵을 보고 저는
+      차례로 이렇게 짐작했습니다.
+
+          1. 소켓을 아껴 쓰다 닫힌 것을 다시 썼다   → 아니었습니다
+          2. 로봇이 SDP 에 오디오 줄을 요구한다      → 아니었습니다
+          3. con_notify 를 GET 으로 물어서다        → 아니었습니다
+                                                     (POST 가 맞긴 합니다)
+
+      셋 다 오류 문구만 보고 세운 짐작이었습니다. **되는 코드를 열어
+      보니** 답이 거기 있었습니다 — 라이브러리는 SDP 를 그냥 안 보냅니다.
+
+          sdp_offer_json = {
+              "id": "STA_localNetwork",
+              "sdp": sdp_offer.sdp,
+              "type": sdp_offer.type,
+              "token": self.token,
+          }
+          send_sdp_to_local_peer(ip, json.dumps(sdp_offer_json), ...)
+
+      로봇은 푼 것을 JSON 으로 읽습니다. 맨 SDP 는 JSON 이 아니니
+      파싱에서 넘어지고, 그대로 연결을 닫습니다.
+
+      token 은 클라우드 로그인을 했을 때만 값이 있습니다. 랜으로만
+      붙는 우리는 빈 문자열입니다.
+    """
+    return json.dumps({"id": ENVELOPE_ID, "sdp": sdp,
+                       "type": "offer", "token": token})
+
+
+def unwrap_answer(text):
+    """돌아온 봉투에서 SDP 를 꺼냅니다."""
+    try:
+        got = json.loads(text)
+    except Exception:
+        raise SignalError(
+            "응답이 JSON 이 아닙니다 — 봉투 모양이 바뀌었을 수 있습니다.\n"
+            f"  받은 것 앞부분: {text[:80]!r}")
+    sdp = got.get("sdp")
+    if sdp == "reject":
+        raise SignalError(
+            "로봇이 거절했습니다 — 이미 다른 곳과 연결돼 있습니다.\n"
+            "  → 유니트리 앱이나 PC 스크립트를 먼저 끊으세요.")
+    if not sdp:
+        raise SignalError(f"응답에 sdp 가 없습니다: {list(got)}")
+    return sdp
+
+
 def handshake(ip, offer_sdp, aes_128_key=None, port=9991, timeout=8.0,
-              trace=None):
+              trace=None, token=""):
     """SDP 제안을 주면 SDP 응답을 돌려줍니다. **이것이 다리의 전부입니다.**
+
+    맨 SDP 를 주고 맨 SDP 를 받습니다 — 봉투는 안에서 씌우고 벗깁니다.
 
     trace 에 함수를 주면 단계마다 불러줍니다 (무엇이 어디서 막혔는지
     보려고). 로봇에 아무것도 시키지 않습니다 — 연결을 맺는 첫 악수일
@@ -262,10 +369,11 @@ def handshake(ip, offer_sdp, aes_128_key=None, port=9991, timeout=8.0,
         if trace:
             trace(name, detail)
 
+    check_offer(offer_sdp)      # 로봇의 침묵을 문장으로 바꿉니다
     base = f"http://{ip}:{port}"
 
     step("1. con_notify", f"{base}/con_notify")
-    raw = _http(f"{base}/con_notify", timeout=timeout)
+    raw = _http(f"{base}/con_notify", timeout=timeout)  # 몸통 없는 POST
     try:
         info = json.loads(base64.b64decode(raw).decode("utf-8"))
     except Exception as e:
@@ -276,19 +384,24 @@ def handshake(ip, offer_sdp, aes_128_key=None, port=9991, timeout=8.0,
     step("2. data1 풀기", f"data2={info.get('data2')} · {len(data1)}글자")
 
     pem = public_key_of(data1)
-    token = path_ending(data1)
-    step("3. 공개키와 토큰", f"토큰 {token!r}")
+    # ★ 이름을 'token' 으로 두면 안 됩니다 ★
+    #   바깥에 이미 token 이 있습니다 — 클라우드 로그인 토큰이고,
+    #   봉투에 들어갑니다. 여기서 같은 이름을 쓰면 경로 토큰이 그 자리에
+    #   실려 갑니다. 이름은 다르고 뜻도 다른데 글자만 같습니다.
+    path = path_ending(data1)
+    step("3. 공개키와 경로", f"경로 {path!r}")
 
     key = new_aes_key()
+    envelope = wrap_offer(offer_sdp, token)
     body = json.dumps({
-        "data1": aes_ecb_encrypt(offer_sdp, key),
+        "data1": aes_ecb_encrypt(envelope, key),
         "data2": rsa_encrypt(key, pem),
     })
-    step("4. con_ing", f"{base}/con_ing_{token}")
-    answer_raw = _http(f"{base}/con_ing_{token}", body=body, timeout=timeout)
+    step("4. con_ing", f"{base}/con_ing_{path} · 봉투 {len(envelope)}글자")
+    answer_raw = _http(f"{base}/con_ing_{path}", body=body, timeout=timeout)
 
-    answer = aes_ecb_decrypt(answer_raw, key)
-    step("5. 응답 풀기", f"{len(answer)}글자")
+    answer = unwrap_answer(aes_ecb_decrypt(answer_raw, key))
+    step("5. 응답 풀기", f"SDP {len(answer)}글자")
     return answer
 
 
@@ -301,7 +414,7 @@ def show():
     print(" 계약:  handshake(ip, offer_sdp, aes_128_key) -> answer_sdp")
     print()
     for n, line in enumerate([
-        "GET  con_notify           →  base64 안에 {data1, data2}",
+        "POST con_notify (몸통 없음) →  base64 안에 {data1, data2}",
         "data1 풀기                →  data2 가 1·2·3 중 무엇이냐로 갈립니다",
         "data1[10:-10] = 공개키    ·  마지막 10글자 = con_ing 토큰",
         "AES 키를 새로 만들어      →  SDP 는 AES-ECB, 그 키는 RSA 로",
