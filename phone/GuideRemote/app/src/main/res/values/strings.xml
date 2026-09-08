@@ -1,0 +1,4 @@
+<resources>
+    <!-- 폰의 앱 서랍과 홈 화면에 뜨는 이름입니다 -->
+    <string name="app_name">안내 리모컨</string>
+</resources>

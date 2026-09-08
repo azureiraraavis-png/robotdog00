@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  화면 전체가 WebView 하나입니다.
+  ConstraintLayout 도 필요 없어서 뺐습니다 — 배치할 것이 없습니다.
+-->
+<WebView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/web"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#14181d" />

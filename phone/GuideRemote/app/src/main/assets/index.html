@@ -1,0 +1,127 @@
+<!doctype html><html lang=ko><head>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>안내 리모컨 — 통로 확인</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;padding:18px calc(16px + env(safe-area-inset-left)) 24px;
+     background:#14181d;color:#e8edf1;line-height:1.6;
+     font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}
+h1{font-size:18px;margin:0 0 4px}
+p.sub{color:#8d979f;font-size:13px;margin:0 0 18px}
+.row{display:flex;gap:10px;align-items:flex-start;background:#1d232a;
+     border:1px solid #2c343d;border-radius:12px;padding:12px 14px;margin-bottom:8px}
+.mark{flex:none;width:22px;font-size:16px;text-align:center}
+.what{font-weight:600;font-size:15px}
+.why{color:#8d979f;font-size:12.5px;margin-top:2px;word-break:break-all}
+.ok .mark{color:#7fe0b0}.no .mark{color:#ff9c8f}
+h2{font-size:12px;letter-spacing:.12em;color:#8d979f;text-transform:uppercase;
+   margin:22px 4px 10px}
+#verdict{margin-top:20px;padding:16px;border-radius:12px;font-size:15px;
+         background:#1d232a;border:1px solid #2c343d}
+#verdict.good{background:#215843;border-color:#2f7d5f}
+#verdict.bad{background:#5b241d;border-color:#8f2f26}
+b{color:#fff}
+</style></head><body>
+
+<h1>통로가 뚫렸는가</h1>
+<p class=sub>앱이 빌드되고, 폰에 깔리고, 화면이 뜨고, 화면이 앱과 말할 수
+있는지 — 그것만 봅니다. 로봇은 아직 아무 상관 없습니다.</p>
+
+<h2>확인</h2>
+<div id=list></div>
+<div id=verdict>재는 중…</div>
+
+<script>
+const list = document.getElementById('list');
+const rows = [];
+
+function row(what, ok, why){
+  rows.push(ok);
+  const d = document.createElement('div');
+  d.className = 'row ' + (ok ? 'ok' : 'no');
+  d.innerHTML = '<div class=mark>' + (ok ? '○' : '★') + '</div>'
+              + '<div><div class=what>' + what + '</div>'
+              + '<div class=why>' + why + '</div></div>';
+  list.appendChild(d);
+}
+
+/* 1. 화면이 살아 있는가 — 이 글이 보이면 자바스크립트가 돕니다 */
+row('화면이 돕니다', true, '이 목록이 보이면 자바스크립트가 살아 있습니다');
+
+/* 2. 출처가 있는가
+      file:// 로 열렸으면 origin 이 "null" 입니다. 그러면 아래 것들이
+      줄줄이 막힙니다 — 그래서 가짜 https 주소로 띄웁니다.
+
+      ※ 'https 인가' 를 보면 안 됩니다. 필요한 것은 출처가 **있는가**
+        이지 무슨 방식인가가 아닙니다. 처음에 https 로 검사했다가
+        PC 브라우저(http)에서 멀쩡한 것이 ★ 로 나왔습니다.
+
+      ※ 그런데 file:// 은 따로 걸러야 합니다. PC 크로미움은 file:// 을
+        출처로 쳐주고 저장소도 열어주는데, **안드로이드 WebView 는
+        그러지 않습니다.** 시험하는 곳이 목표한 곳보다 관대하면
+        시험이 거짓말을 합니다. */
+row('출처가 있습니다',
+    !!location.origin && location.origin !== 'null'
+      && !location.origin.startsWith('file:'),
+    (location.origin || '(없음)')
+      + '  ← null 이나 file:// 이면 저장소와 fetch 가 막힙니다');
+
+/* 3. 저장소 — 화면이 기억하는 것들(마지막 코스 같은)에 씁니다 */
+let store = false, storeWhy = '';
+try{
+  localStorage.setItem('시험', '1');
+  store = localStorage.getItem('시험') === '1';
+  localStorage.removeItem('시험');
+  storeWhy = 'localStorage 읽고 쓰기 됩니다';
+}catch(e){ storeWhy = String(e); }
+row('저장소를 씁니다', store, storeWhy);
+
+/* 4. WebRTC — 로봇과 실제로 이야기할 통로입니다.
+      이게 없으면 폰 단독 계획이 통째로 무너집니다. */
+const rtc = typeof RTCPeerConnection === 'function';
+let rtcWhy = rtc ? '' : 'RTCPeerConnection 이 없습니다';
+if(rtc){
+  try{
+    const pc = new RTCPeerConnection();
+    const ch = pc.createDataChannel('시험');
+    rtcWhy = '연결 객체와 데이터채널을 만들 수 있습니다 (' + ch.label + ')';
+    pc.close();
+  }catch(e){ rtcWhy = String(e); }
+}
+row('WebRTC 가 있습니다', rtc, rtcWhy);
+
+/* 5. 앱과 말이 통하는가 — 시그널링 다리가 지나갈 길입니다 */
+let bridge = false, bridgeWhy = '앱이 안 붙어 있습니다 (브라우저로 열었나요?)';
+try{
+  if(typeof app !== 'undefined'){
+    bridge = true;
+    bridgeWhy = app.device() + ' · 안드로이드 ' + app.androidVersion()
+              + ' · 앱 ' + app.appVersion();
+  }
+}catch(e){ bridgeWhy = String(e); }
+row('앱과 말이 통합니다', bridge, bridgeWhy);
+
+/* 6. 화면 크기 — 조종판이 손가락에 맞는지 나중에 볼 때 씁니다 */
+row('화면', true,
+    innerWidth + ' × ' + innerHeight + ' · 배율 ' + devicePixelRatio);
+
+/* ── 판정 ── */
+const bad = rows.filter(x => !x).length;
+const v = document.getElementById('verdict');
+if(bad === 0){
+  v.className = 'good';
+  v.innerHTML = '<b>통로가 뚫렸습니다.</b><br>'
+    + '빌드 → 설치 → 실행 → 화면 → 앱까지 다 이어졌습니다.<br>'
+    + '이제 여기에 <b>시그널링 다리</b>를 놓고, 안내 화면을 옮겨오면 됩니다.';
+}else{
+  v.className = 'bad';
+  v.innerHTML = '<b>' + bad + '가지가 막혔습니다.</b><br>'
+    + '위에서 ★ 표시된 줄을 보세요. 그 줄의 회색 글씨가 이유입니다.<br>'
+    + 'PC 의 Logcat 에도 같은 내용이 "화면" 태그로 찍힙니다.';
+}
+
+console.log('통로 확인: ' + (rows.length - bad) + '/' + rows.length + ' 통과');
+</script>
+</body></html>
