@@ -97,6 +97,15 @@ BUILDING = {
 
 # ★ 현행 호실 — 도면에 적힌 그대로 ★
 #   (호실, 용도, 면적 ㎡, 정원)
+#
+#   ※ 이 표의 '용도' 는 **2024년 도면의 값**이고, 지금 쓰임과 다릅니다.
+#     학과에 확인한 결과 301호와 303호는 둘 다 **강의실**이고, 강의와
+#     실습이 기본적으로 이 두 공간에서 이뤄집니다. 도면에는 301 이
+#     '교수연구실 #1', 303 이 '프로젝트실 #2' 로 적혀 있습니다.
+#
+#     대사(아래 s2_room301 · s3_room303)는 **확인된 쪽**을 따릅니다.
+#     이 표는 면적과 배치를 볼 때만 쓰세요. 건물은 도면보다 빨리
+#     바뀝니다 — 문패 순서도 도면과 달랐습니다(아래 STOPS 참고).
 ROOMS_SOUTH = [        # 아래줄. 엘리베이터 쪽부터
     (None, "계단실 #1", 15.2, None),
     (None, "화장실 (남)", 10.3, None),
@@ -343,24 +352,24 @@ SCENARIO = [
         doc_seconds=30, face="visitor",
         lines=[
             # 문서 §2: "인사 동작은 멘트 첫 문장과 동기화한다"
-            Line("s1a_greet", gesture="hello", pause=0.5, text=(
+            Line("ai_swe_s1a_greet", gesture="hello", pause=0.5, text=(
                 "안녕하십니까. 저는 AI응용소프트웨어과 안내를 맡은 로봇입니다. "
                 "저희 학과를 방문해 주셔서 진심으로 감사합니다."
             )),
             # 여기서 앉습니다. 서서 40초를 떠드는 것보다, 자리를 잡고
             # 이야기하는 편이 자연스럽고 볼 것도 생깁니다.
-            Line("s1b_intro", gesture="sit", pause=0.3, text=(
+            Line("ai_swe_s1b_intro", gesture="sit", pause=0.3, text=(
                 "지금부터 AI응용소프트웨어과를 안내해 드리겠습니다. "
                 "저희 학과는 인공지능과 데이터 분석, 그리고 응용 소프트웨어 개발을 "
                 "함께 배우는 학과입니다."
             )),
             # 앉은 채로 이어갑니다
-            Line("s1c_program", pause=0.3, text=(
+            Line("ai_swe_s1c_program", pause=0.3, text=(
                 "한 해에 두 개의 하이테크 과정을 운영하며, 전공 기초부터 인공지능 응용, "
                 "그리고 현장 중심 프로젝트로 이어지는 교육과정을 진행하고 있습니다."
             )),
             # 일어서면서 "따라오세요" — 동작이 말을 예고합니다
-            Line("s1d_lead", gesture="stand", text=(
+            Line("ai_swe_s1d_lead", gesture="stand", text=(
                 "오늘은 저희 학과의 강의실과 프로젝트실을 차례로 안내해 드리겠습니다. "
                 "제 뒤를 따라 천천히 이동해 주시기 바랍니다."
             )),
@@ -377,7 +386,7 @@ SCENARIO = [
     ),
     Move(
         "M1", "홀 → 301호 앞", "이동 예고 후 저속 주행",
-        key="m1_to_301",
+        key="ai_swe_m1_to_301",
         meters=3.06, doc_seconds=25, turn_deg=-180, align=True,
         text=("지금부터 301호 강의실로 이동하겠습니다. "
               "통로가 좁으니 한 줄로 천천히 따라와 주시기 바랍니다."),
@@ -405,7 +414,7 @@ SCENARIO = [
     ),
     Stop(
         "S2", "301호 강의실 앞", "301호 소개 (대표 강의실 / 전반기 과정)",
-        key="s2_room301",
+        key="ai_swe_s2_room301",
         doc_seconds=20, face="door", door_deg=+130,
         text=(
             "여기는 301호 강의실입니다. AI응용소프트웨어과 대표 강의실입니다. "
@@ -421,7 +430,7 @@ SCENARIO = [
     ),
     Move(
         "M2", "301호 → 303호", "이동",
-        key="m2_to_303",
+        key="ai_swe_m2_to_303",
         meters=9.66, doc_seconds=15, turn_deg=0.0, align=True,
         text="이어서 303호 강의실로 이동하겠습니다.",
         notes=[
@@ -437,7 +446,7 @@ SCENARIO = [
     ),
     Stop(
         "S3", "303호 강의실 앞", "303호 소개 (후반기 과정)",
-        key="s3_room303",
+        key="ai_swe_s3_room303",
         doc_seconds=15, face="door", door_deg=+129,
         text=(
             "여기는 303호 강의실입니다. "
@@ -456,7 +465,7 @@ SCENARIO = [
     ),
     Move(
         "M3", "303호 → 304호", "이동",
-        key="m3_to_304",
+        key="ai_swe_m3_to_304",
         meters=1.19, doc_seconds=15, turn_deg=0.0, align=True,
         text="다음은 304호 프로젝트실입니다. 이쪽으로 이동하겠습니다.",
         notes=[
@@ -467,7 +476,7 @@ SCENARIO = [
     ),
     Stop(
         "S4", "304호 문 앞 (복도)", "프로젝트실 소개 — 들어가기 전에",
-        key="s4_room304",
+        key="ai_swe_s4_room304",
         doc_seconds=25, face="door", door_deg=-72, face_back=False,
         text=(
             "여기는 304호 프로젝트실입니다. "
@@ -487,7 +496,7 @@ SCENARIO = [
     ),
     Move(
         "M4", "304호 문 통과", "문틀을 지나 방 안으로",
-        key="m4_enter",
+        key="ai_swe_m4_enter",
         meters=1.07, turn_deg=0.0, narrow=True,
         text=("이제 안으로 들어가 보겠습니다. "
               "문틀의 폭이 좁으니, 제가 먼저 지나가겠습니다."),
@@ -545,19 +554,19 @@ SCENARIO = [
         doc_seconds=20, face="visitor",
         lines=[
             # 방문객 쪽으로 도는 것은 앞의 M4 가 합니다 (실측 -127도)
-            Line("s5a_close", pause=0.3, text=(
+            Line("ai_swe_s5a_close", pause=0.3, text=(
                 "이상으로 AI응용소프트웨어과 안내를 마치겠습니다."
             )),
-            Line("s5b_program", gesture="sit", pause=0.3, text=(
+            Line("ai_swe_s5b_program", gesture="sit", pause=0.3, text=(
                 "저희 학과는 전공 기초부터 인공지능 응용, 그리고 현장 중심 "
                 "프로젝트로 이어지는 교육과정을 한 해 두 차례의 하이테크 과정으로 "
                 "운영하고 있습니다."
             )),
-            Line("s5c_thanks", gesture="stand", pause=0.3, text=(
+            Line("ai_swe_s5c_thanks", gesture="stand", pause=0.3, text=(
                 "오늘 방문해 주셔서 다시 한번 감사드립니다."
             )),
             # 문서 §2: "인사 동작은 마지막 '감사합니다'에 맞춰 실행한다"
-            Line("s5d_bye", gesture="hello", pause=5.0, text=(
+            Line("ai_swe_s5d_bye", gesture="hello", pause=5.0, text=(
                 "남은 일정도 편안하게 보내시기 바랍니다. 감사합니다."
             )),
             # ★ 말 없는 토막 ★ 동작만 합니다.
@@ -579,7 +588,7 @@ SCENARIO = [
 
 # ── 선택 멘트 ────────────────────────────────────────────────
 OPTIONAL = {
-    "s4_extra": "제가 수행하는 안내 프로그램도 이 프로젝트실에서 "
+    "ai_swe_s4_extra": "제가 수행하는 안내 프로그램도 이 프로젝트실에서 "
                 "학생들이 직접 개발한 것입니다.",
 }
 

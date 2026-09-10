@@ -105,7 +105,9 @@ def _drop_course_files():
         "course_t_draft.py": "DRAFT = True\n" + body("t_draft", "t_draft_hi"),
         "course_t_bad.py": "이건 파이썬이 아닙니다 ((((\n",
         "course_t_empty.py": head + "SOMETHING = 1\n",
-        # 기본 코스와 같은 오디오 이름 — 거부당해야 합니다
+        # 접두어 없는 이름 — 거부당해야 합니다
+        # (예전에는 기본 코스와 '겹쳐서' 거부됐는데, 이제는
+        #  't_dup_' 로 시작하지 않아서 그 앞에서 걸립니다)
         "course_t_dup.py": body("t_dup", "s1a_greet"),
     }
     made = []
@@ -280,7 +282,8 @@ async def main():
         second = courses.Course(
             "t_second", "시험용 둘째 코스", "이 시험에서만 씁니다.",
             [scenario.Stop("S1", "어딘가", "시험", doc_seconds=10,
-                           lines=[scenario.Line("t_hello", text="시험입니다.")])],
+                           lines=[scenario.Line("t_second_hello",
+                                                text="시험입니다.")])],
         )
         s.check("겹치지 않으면 등록됩니다",
                 courses.register(second).id, "t_second")
@@ -309,7 +312,7 @@ async def main():
             s.check("COURSE 가 없으면 그렇다고 말합니다",
                     any("course_t_empty" in p
                         for p in courses.PROBLEMS[n_prob:]), True)
-            s.check("이름이 겹치면 거부하고 어느 파일인지 말합니다",
+            s.check("규칙을 어긴 코스는 거부하고 어느 파일인지 말합니다",
                     any("course_t_dup" in p
                         for p in courses.PROBLEMS[n_prob:]), True)
             s.check("거부당한 것은 안 들어옵니다", "t_dup" in now, False)
@@ -360,9 +363,62 @@ async def main():
         s.check("이름으로 찾힙니다", courses.get("t_second") is second, True)
         s.check("모르는 이름은 None", courses.get("없는코스"), None)
 
-        # ★ 겹치는 이름은 거부해야 합니다 ★
-        #   같은 오디오 이름은 로봇에서 한 파일입니다. 나중 것이
-        #   앞의 것을 덮어써서 다른 코스의 문장이 나옵니다.
+        # ★ 코스 이름으로 시작하지 않으면 거부해야 합니다 ★
+        #
+        #   로봇의 오디오 이름은 폴더 없이 평평합니다. 두 코스가 같은
+        #   이름을 쓰면 로봇에서는 한 파일이 되고, 나중에 올린 쪽이 앞의
+        #   것을 덮어씁니다. 화면에는 맞는 문장이 찍히는데 스피커에서는
+        #   다른 코스의 말이 나옵니다 — 로그가 멀쩡해서 못 찾습니다.
+        #
+        #   겹칠 때 잡는 검사는 원래 있었지만 그건 **부딪힌 뒤에** 잡습니다.
+        #   규칙을 두면 애초에 안 부딪힙니다.
+        loose = courses.Course("t_loose", "접두어 없는 코스", "",
+                               [scenario.Stop("S1", "어딘가", "시험",
+                                              doc_seconds=10,
+                                              lines=[scenario.Line(
+                                                  "hello", text="시험")])])
+        s.check("접두어가 없는 이름을 찾아냅니다",
+                courses.unprefixed(loose), ["hello"])
+        why = ""
+        try:
+            courses.register(loose)
+        except ValueError as e:
+            why = str(e)
+        s.check("접두어가 없으면 등록을 거부합니다", bool(why), True)
+        s.check("무엇이 잘못됐는지 말해줍니다", "hello" in why, True)
+        s.check("어떻게 고치는지도 말해줍니다", "t_loose_" in why, True)
+        s.check("거부당한 것은 안 들어옵니다",
+                courses.get("t_loose") is None, True)
+
+        # 규칙을 지키는 코스는 통과해야 합니다 — 검사가 다 막으면 안 됩니다
+        s.check("규칙을 지키면 통과합니다",
+                courses.unprefixed(courses.get("t_second")), [])
+
+        # ★ 겹치는 이름은 거부해야 합니다 — 둘째 방어선 ★
+        #
+        #   접두어 규칙을 지키면 원래 안 부딪힙니다. 그래도 겹침 검사를
+        #   남겨둡니다. 규칙이 언젠가 새면(코스 이름을 잘못 짓는다든지)
+        #   그때 잡아줄 것이 하나는 있어야 합니다.
+        #
+        #   ※ register() 를 거쳐 시험하면 **접두어 검사가 먼저 걸립니다.**
+        #     그러면 겹침 검사는 한 번도 안 돌면서 시험은 통과합니다 —
+        #     조용히 아무것도 안 지키는 검사가 되는 것이죠.
+        #     그래서 collisions() 를 직접 부릅니다.
+        twin_a = courses.Course(
+            "t_twin_a", "쌍둥이 가", "",
+            [scenario.Stop("S1", "어딘가", "시험", doc_seconds=10,
+                           lines=[scenario.Line("t_twin_hello", text="가")])])
+        twin_b = courses.Course(
+            "t_twin_b", "쌍둥이 나", "",
+            [scenario.Stop("S1", "어딘가", "시험", doc_seconds=10,
+                           lines=[scenario.Line("t_twin_hello", text="나")])])
+        bad = courses.collisions([twin_a, twin_b])
+        s.check("같은 이름을 쓰는 두 코스를 찾아냅니다",
+                [k for k, _who in bad], ["t_twin_hello"])
+        s.check("어느 코스들인지도 알려줍니다",
+                sorted(bad[0][1]), ["t_twin_a", "t_twin_b"])
+
+        # 그리고 register() 를 거쳐도 거부되는지 (이유는 접두어 쪽입니다)
         dup = courses.Course("t_dup", "겹치는 코스", "",
                              scenario.SCENARIO, scenario.OPTIONAL)
         refused = False
@@ -370,7 +426,7 @@ async def main():
             courses.register(dup)
         except ValueError:
             refused = True
-        s.check("오디오 이름이 겹치면 등록을 거부합니다", refused, True)
+        s.check("남의 코스 대본을 그대로 쓰면 거부합니다", refused, True)
 
         hand.arm()
         hand.show(courses=[c.brief() for c in courses.all_courses()],

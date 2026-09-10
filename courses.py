@@ -110,12 +110,48 @@ def collisions(pool=None):
     return sorted((k, v) for k, v in seen.items() if len(v) > 1)
 
 
+def unprefixed(course):
+    """코스 이름으로 시작하지 않는 오디오 이름들.
+
+    ★ 왜 이걸 강제하는가 ★
+
+      로봇의 오디오 이름은 **평평합니다.** 폴더가 없습니다. 그래서 두
+      코스가 같은 이름을 쓰면 로봇에서는 한 파일이 되고, 나중에 올린
+      쪽이 앞의 것을 덮어씁니다. 화면에는 맞는 문장이 찍히는데
+      스피커에서는 다른 코스의 말이 나옵니다.
+
+      겹칠 때 거부하는 검사(collisions)는 이미 있었습니다. 그런데 그건
+      **부딪힌 뒤에** 잡습니다. 코스가 셋 넷이 되면 "이번엔 뭐랑
+      겹쳤지" 를 매번 풀어야 합니다.
+
+      규칙을 하나 두면 애초에 안 부딪힙니다 — **오디오 이름은 코스
+      이름으로 시작한다.** 사람이 기억할 필요는 없습니다. 여기서
+      확인하니까요.
+
+      ※ alert_* 와 config.PHRASES(greet · settle · power_ready 등)는
+        코스에 안 딸린 **공용** 멘트라 이 규칙 밖입니다. 애초에
+        Course 안에 없어서 여기까지 오지 않습니다.
+    """
+    want = f"{course.id}_"
+    return [k for k in course.keys() if not k.startswith(want)]
+
+
 def register(course):
     """코스를 등록합니다. 겹치는 이름이 있으면 거부합니다."""
     if not isinstance(course, Course):
         raise ValueError("COURSE 가 Course 가 아닙니다.")
     if get(course.id):
         raise ValueError(f"'{course.id}' 라는 코스가 이미 있습니다.")
+    loose = unprefixed(course)
+    if loose:
+        shown = ", ".join(loose[:6]) + (" …" if len(loose) > 6 else "")
+        raise ValueError(
+            f"'{course.id}' 의 오디오 이름 {len(loose)}개가 코스 이름으로\n"
+            f"      시작하지 않습니다: {shown}\n"
+            f"      로봇의 오디오 이름은 평평합니다 — 폴더가 없어서, 다른\n"
+            f"      코스와 같은 이름을 쓰면 한쪽이 다른 쪽을 덮어씁니다.\n"
+            f"      '{course.id}_' 를 앞에 붙이세요."
+        )
     bad = collisions(COURSES + [course])
     if bad:
         lines = "\n".join(f"      {k} — {', '.join(v)}" for k, v in bad)

@@ -454,19 +454,64 @@ async def main():
     print("─" * 70)
     print(" 라이브러리와 대조")
     print("─" * 70)
+    #
+    # ★ 이 구간에서 시험 자신이 터진 적이 있습니다 ★
+    #
+    #   sig.py 의 설명글에 "라이브러리는 패딩을 **글자 수**로 세니 아스키가
+    #   아니면 틀립니다" 라고 적어놓고, 정작 여기서 lib.aes_encrypt("시험")
+    #   을 불렀습니다. 틀린다고 적어둔 함수를 틀리는 입력으로 부른 것이죠.
+    #
+    #       "시험"  2글자지만 UTF-8 로 6바이트
+    #       라이브러리: 16 - 2 = 14를 글자로 채움 → 6 + 14 = 20바이트
+    #       20은 16의 배수가 아니라 AES 가 아예 못 돕니다
+    #
+    #   그리고 그 한 줄이 터지면서 **뒤의 검사 셋이 통째로 안 돌았습니다.**
+    #   그래서 이제 검사마다 따로 감쌉니다 — 하나가 넘어져도 나머지는
+    #   갑니다. 그게 채점표의 일입니다.
+    #
     try:
         from unitree_webrtc_connect import encryption as lib
         from unitree_webrtc_connect import unitree_auth as auth
-        s.check("AES 암호가 라이브러리와 같은 값",
-                sig.aes_ecb_encrypt(OFFER, k), lib.aes_encrypt(OFFER, k))
-        s.check("AES 복호도 같은 값",
-                sig.aes_ecb_decrypt(lib.aes_encrypt("시험", k), k), "시험")
-        s.check("토큰 계산이 라이브러리와 같은 값",
-                sig.path_ending("xxxx1A2C3E4G5I"),
-                auth._calc_local_path_ending("xxxx1A2C3E4G5I"))
-        s.check("고정 키가 같습니다", sig.LEGACY_GCM_KEY, auth._LEGACY_GCM_KEY)
     except ImportError:
+        lib = auth = None
         print("   (라이브러리가 없어서 건너뜁니다 — 가짜 로봇 쪽이 더 중요합니다)")
+
+    if lib is not None:
+        def same(name, ours, theirs):
+            """한쪽이 터져도 나머지 검사는 갑니다."""
+            try:
+                s.check(name, ours(), theirs())
+            except Exception as e:
+                s.check(name, f"{type(e).__name__}: {e}", "같은 값")
+
+        # 아스키로만 견줍니다 — 로봇에 보내는 것이 실제로 아스키입니다.
+        # (SDP 는 아스키이고, 봉투는 json.dumps 가 \uXXXX 로 escape 합니다)
+        same("AES 암호가 라이브러리와 같은 값",
+             lambda: sig.aes_ecb_encrypt(OFFER, k),
+             lambda: lib.aes_encrypt(OFFER, k))
+        same("AES 복호도 같은 값 (아스키)",
+             lambda: sig.aes_ecb_decrypt(lib.aes_encrypt("test", k), k),
+             lambda: "test")
+        same("토큰 계산이 라이브러리와 같은 값",
+             lambda: sig.path_ending("xxxx1A2C3E4G5I"),
+             lambda: auth._calc_local_path_ending("xxxx1A2C3E4G5I"))
+        same("고정 키가 같습니다",
+             lambda: sig.LEGACY_GCM_KEY, lambda: auth._LEGACY_GCM_KEY)
+
+        # ★ 여기가 라이브러리와 우리가 **갈리는** 자리입니다 ★
+        #   견주는 것이 아니라, 다르다는 것을 적어두는 검사입니다.
+        #   지금은 안 부딪힙니다(보내는 것이 다 아스키라서). 나중에
+        #   한글이 실려 갈 일이 생기면 여기서 미리 알게 됩니다.
+        blew = ""
+        try:
+            lib.aes_encrypt("가" * 15, k)
+        except Exception as e:
+            blew = type(e).__name__
+        s.check("라이브러리는 한글을 못 싸맵니다 (글자 수로 패딩)",
+                blew, "ValueError")
+        s.check("우리는 됩니다 (바이트로 패딩)",
+                sig.aes_ecb_decrypt(sig.aes_ecb_encrypt("가" * 15, k), k),
+                "가" * 15)
 
     return 0 if s.report() else 1
 
