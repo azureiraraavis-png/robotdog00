@@ -7,6 +7,30 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 로봇을 찾을 때 같은 공유기에 붙어 있는지 봅니다 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- ★ 마이크 ★
+         로봇에게 귀가 없고 PC 에도 마이크가 없습니다 (삽질 기록 29·30).
+         이 폰이 유일한 귀입니다. 브라우저에서는 사이트 권한으로 되지만,
+         앱 안에서는 앱 권한이 먼저 있어야 WebView 가 마이크를 내줍니다.
+         — 둘 다 있어야 합니다. 하나만으로는 조용히 막힙니다. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- ★ 이것도 있어야 합니다 — 둘 중 하나만으로는 안 됩니다 ★
+         WebView 안의 Chromium 은 녹음 장치를 고를 때 **두 권한을 같이**
+         봅니다. RECORD_AUDIO 만 있으면 장치 목록에는 마이크가 보이는데
+         (화면이 "보이는 마이크 1개" 라고 했습니다) 여는 데서 막힙니다.
+         화면에 올라오는 것은 NotReadableError 하나뿐이라, 위에서는
+         '누가 쓰고 있나' · '권한이 없나' 로만 보입니다 — 둘 다 아닙니다.
+
+         진짜 이름은 Logcat 아래층에만 찍힙니다 (2026-09-11) —
+           cr_media W  Requires MODIFY_AUDIO_SETTINGS and RECORD_AUDIO.
+                       No audio device will be available for recording
+
+         크롬은 이 둘을 다 선언합니다. 그래서 같은 폰, 같은 주소인데
+         브라우저는 되고 앱만 안 됐습니다.
+
+         위험한 권한이 아니라 물어보는 창이 안 뜹니다. 여기 적기만 하면
+         됩니다 — 그래서 설정 화면에도 안 보이고, '허용됨' 만 보고는
+         빠진 줄을 알 수 없습니다. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <application
         android:allowBackup="true"

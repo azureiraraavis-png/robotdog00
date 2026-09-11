@@ -45,7 +45,7 @@ pre{white-space:pre-wrap;word-break:break-all;background:#11151a;
 #bridge.bad{background:#5b241d;border-color:#8f2f26}
 </style></head><body>
 
-<h1>통로가 뚫렸는가 <span class=ver>6판 · 제안 갖추기</span></h1>
+<h1>안내 리모컨 · 설정 <span class=ver>8판 · 칸 나눔</span></h1>
 <p class=sub>앱이 빌드되고, 폰에 깔리고, 화면이 뜨고, 화면이 앱과 말할 수
 있는지 — 그것만 봅니다. 로봇은 아직 아무 상관 없습니다.
 <b>아래로 내리면 '시그널링 다리' 칸이 있습니다.</b></p>
@@ -55,6 +55,27 @@ pre{white-space:pre-wrap;word-break:break-all;background:#11151a;
      안 내려본 것' 이 똑같이 보입니다. 실제로 한 번 그랬습니다.
      이 딱지가 있으면 맨 위 한 줄로 구별됩니다 — 딱지가 없으면 옛 페이지,
      있으면 새 페이지인데 안 내려본 것. 고칠 때마다 판수를 올립니다. -->
+
+<h2>PC 에 붙기</h2>
+<p class=sub style="margin:0 0 8px">안내 화면은 PC 가 내줍니다.
+PC 에서 <b>.\run guide.py --manual</b> 을 띄우면 콘솔에 <b>https 주소</b>와
+<b>인증서 지문</b>이 같이 뜹니다. 그 주소를 여기 적으세요.</p>
+<!-- ★ 콜론을 치게 하지 않습니다 ★
+     처음에는 한 칸에 192.168.0.80:8766 을 적게 했습니다. 그런데
+     inputmode=decimal 이 부르는 숫자 키패드에는 **콜론이 없습니다.**
+     칸을 나누면 칠 일이 없어집니다 — 아래 '시그널링 다리' 칸도
+     처음부터 그렇게 되어 있었습니다. -->
+<p class=sub style="margin:0 0 8px;color:#ffd27a">★ <b>로봇 주소가 아닙니다.</b>
+아래 '시그널링 다리' 칸에 적는 것(로봇)과 <b>다른 값</b>입니다 —
+여기는 <b>PC</b> 의 주소입니다.</p>
+<label for=pcip>PC 주소</label>
+<input id=pcip inputmode=decimal placeholder="192.168.0.80"
+       autocapitalize=off autocorrect=off spellcheck=false>
+<label for=pcport>포트 (https 쪽, 리모컨 포트 + 1)</label>
+<input id=pcport inputmode=numeric placeholder="8766" value="8766">
+<button id=pcgo>이 PC 로 붙기</button>
+<div class=box id=pcst>아직 안 정했습니다.</div>
+<button id=pcforget style="background:#3a2a2a;margin-top:8px">잊어버리기</button>
 
 <h2>확인</h2>
 <div id=list></div>
@@ -182,6 +203,59 @@ try{
                      if(saved) F[k].value = saved; }
 }catch(e){ console.warn('저장소를 못 읽었습니다: ' + e); }
 if(!F.port.value) F.port.value = '9991';
+
+/* ── PC 에 붙기 ───────────────────────────────────────
+   ★ 기억한 지문을 화면에 되비쳐 보여줍니다 ★
+     앱이 처음 붙을 때 "이 지문이 맞습니까" 를 묻고 기억합니다.
+     그 뒤로는 안 묻는데, 그러면 **무엇을 기억했는지** 볼 방법이
+     없어집니다. "왜 안 붙지" 를 풀 때 제일 먼저 볼 값입니다. */
+const PC = {ip: document.getElementById('pcip'),
+            port: document.getElementById('pcport'),
+            go: document.getElementById('pcgo'),
+            forget: document.getElementById('pcforget'),
+            st: document.getElementById('pcst')};
+
+function pcSay(cls, html){ PC.st.className = 'box' + (cls ? ' ' + cls : '');
+                           PC.st.innerHTML = html; }
+
+function pcPaint(){
+  if(typeof app === 'undefined' || !app.pc){
+    pcSay('bad', '앱이 안 붙어 있습니다 — 브라우저로는 이 칸을 못 씁니다.');
+    return;
+  }
+  const now = app.pc(), f = app.finger ? app.finger() : '';
+  if(!now){ pcSay('', '아직 안 정했습니다.'); return; }
+  pcSay('good', '<b>' + now + '</b>' + (f
+      ? '<br>기억한 지문<br><span style="font-size:11px">' + f + '</span>'
+      : '<br>아직 한 번도 안 붙어봤습니다.'));
+  const bits = now.split(':');
+  if(!PC.ip.value) PC.ip.value = bits[0];
+  if(bits[1]) PC.port.value = bits[1];
+}
+
+PC.go.addEventListener('click', function(){
+  /* 콜론은 여기서 붙입니다. 사람이 칠 일이 없습니다. */
+  const v = PC.ip.value.trim() + ':' + (PC.port.value.trim() || '8766');
+  if(typeof app === 'undefined' || !app.savePc){
+    pcSay('bad', '앱이 안 붙어 있습니다.'); return;
+  }
+  if(!app.savePc(v)){
+    pcSay('bad', '주소 모양이 아닙니다 — <b>192.168.0.80</b> 처럼, 숫자와 점만.');
+    return;
+  }
+  pcPaint();
+  pcSay('', '붙는 중… 처음이면 지문을 물어봅니다.');
+  app.openPc();
+});
+
+PC.forget.addEventListener('click', function(){
+  if(typeof app !== 'undefined' && app.forgetPc) app.forgetPc();
+  PC.ip.value = '';
+  PC.port.value = '8766';
+  pcPaint();
+});
+
+pcPaint();
 
 const out = document.getElementById('bridge');
 const detail = document.getElementById('detail');

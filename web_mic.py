@@ -300,6 +300,7 @@ $('ask').onclick = function(){
   }
   say($('askr'),'','묻는 중…');
   navigator.mediaDevices.getUserMedia({audio:true}).then(function(s){
+    if (stream) { try { stream.getTracks().forEach(function(t){t.stop();}); } catch(_){} }
     stream = s;
     var t = s.getAudioTracks()[0];
     say($('askr'),'good','<b>마이크가 열렸습니다.</b><br>' +
@@ -310,6 +311,15 @@ $('ask').onclick = function(){
     else say($('talkr'),'','눌러서 말해보세요.');
     say($('recr'),'','눌러서 3초 녹음해보세요.');
   }).catch(function(e){
+    // ★ 다른 것이 쓰고 있을 때가 따로 있습니다 ★
+    //   NotReadableError 는 권한이 아니라 '못 열었다' 입니다. 이 페이지를
+    //   브라우저 탭에 열어둔 채 앱에서 또 열려 하면 이게 납니다 —
+    //   우리 페이지가 마이크를 안 놓고 있었기 때문입니다.
+    if (e.name === 'NotReadableError') {
+      say($('askr'),'bad','<b>다른 것이 마이크를 쓰고 있습니다.</b><br>' +
+          '이 페이지를 열어둔 다른 탭이나 앱을 닫고 다시 해보세요.');
+      return;
+    }
     say($('askr'),'bad','<b>' + e.name + '</b><br>' + e.message +
         (secure ? '' : '<br><br>안전한 자리가 아니라서일 가능성이 큽니다. ' +
                        'https 쪽으로 열어 견주세요.'));
@@ -344,6 +354,21 @@ $('talk').onclick = function(){
   };
   try { r.start(); } catch(e){ say($('talkr'),'bad', e.message); }
 };
+
+/* 물러나면 마이크를 놓습니다 — 안 놓으면 이 탭이 계속 붙들고 있어서
+   앱이나 다른 페이지가 못 엽니다. */
+function freeMic(){
+  if (!stream) return;
+  try { stream.getTracks().forEach(function(t){ t.stop(); }); } catch(_){}
+  stream = null;
+  $('talk').disabled = true;
+  $('rec').disabled = true;
+  say($('askr'), '', '마이크를 놓았습니다 (물러나 있는 동안). 다시 받으려면 위 단추를.');
+}
+window.addEventListener('pagehide', freeMic);
+document.addEventListener('visibilitychange', function(){
+  if (document.hidden) freeMic();
+});
 
 /* ── 3. 녹음해서 PC 로 ──────────────────────────────
    여기서는 **PC 까지 닿는지**만 봅니다. 알아듣는 것은 whisper 의
