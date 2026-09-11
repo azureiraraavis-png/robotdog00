@@ -530,7 +530,7 @@ SCENARIO = [
     ),
     Move(
         "M5", "304호 안으로", "방 안 마무리 자리까지",
-        key="m5_inside",
+        key="ai_swe_m5_inside",
         meters=3.58, turn_deg=+180, turn_when="after",  # 도착한 뒤에 돕니다
         reposition=True,                                # 잠정 — 자리 미확정
         text="",
@@ -572,7 +572,7 @@ SCENARIO = [
             # ★ 말 없는 토막 ★ 동작만 합니다.
             # 앞 토막의 pause 5초가 문서의 "복귀 전 5초간 정지" 입니다.
             # 질문이 나올 수 있는 시간을 두고 나서 엎드립니다.
-            Line("s5e_rest", "", gesture="lie",
+            Line("ai_swe_s5e_rest", "", gesture="lie",
                  note="엎드리는 것이 '안내가 끝났다' 는 가장 분명한 신호입니다"),
         ],
         notes=[
@@ -1096,6 +1096,28 @@ class Course:
                 out.append(s.key)
         return out
 
+    def every_key(self):
+        """말이 없는 것까지 **오디오 이름 전부.**
+
+        ★ keys() 와 왜 다른가 ★
+          keys() 는 '실제로 나오는 멘트' 만 셉니다 — 길이를 재거나
+          올릴 대상이라 말 없는 것은 뺍니다. 맞는 셈법입니다.
+
+          그런데 **이름 규칙을 검사할 때는 그게 구멍이 됩니다.**
+          말이 없어도 이름은 붙어 있고, 나중에 누가 그 자리에 대사를
+          채우면 그 이름이 살아납니다. 실제로 그런 것이 둘 있었고
+          (m5_inside · s5e_rest), 접두어를 붙이는 작업에서 조용히
+          빠졌습니다. coursefile.check() 가 나중에 찾아냈습니다.
+        """
+        out = []
+        for s in self.steps:
+            lines = getattr(s, "lines", None)
+            if lines:
+                out += [l.key for l in lines if l.key]
+            elif getattr(s, "key", None):
+                out.append(s.key)
+        return out + list(self.optional)
+
     def keys(self):
         """이 코스가 쓰는 오디오 이름 전부 (선택 멘트 포함).
 
@@ -1139,7 +1161,13 @@ class Course:
         m = measured()
         guessed = [k for k in self.spoken_keys() if k not in m]
         dist = [m.meters for m in self.moves()]
-        known = [d for d in dist if d]
+        # ★ 0 은 '안 잰 것' 이 아닙니다 ★
+        #   여기만 참·거짓으로 쟀습니다 (`if d`). 그래서 걷지 않고 돌기만
+        #   하는 구간(meters=0.0)이 "안 잰 구간" 으로 세어졌습니다 —
+        #   다 재놓고도 화면에 "+1구간 안 잼" 이 영영 붙습니다.
+        #   바로 아래 unmeasured() 는 처음부터 `is None` 으로 재고
+        #   있었습니다. 같은 것을 두 가지로 재고 있었던 셈입니다.
+        known = [d for d in dist if d is not None]
         return {
             "seconds": secs,          # 걷는 시간은 뺀 값입니다
             "guessed": len(guessed),  # 길이를 아직 안 잰 멘트 수

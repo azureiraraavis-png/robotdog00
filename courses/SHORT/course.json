@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "id": "SHORT",
+  "name": "짧은 코스",
+  "subtitle": "아직 대본을 안 썼습니다.",
+  "route": "3층 엘리베이터 홀 → 어딘가",
+  "audience": "",
+  "steps": [
+    {
+      "sid": "S1",
+      "place": "3층 엘리베이터 홀",
+      "purpose": "환영 인사",
+      "notes": [],
+      "doc_seconds": 20,
+      "kind": "stop",
+      "lines": [
+        {
+          "key": "SHORT_s1_greet",
+          "text": "여기에 첫 인사를 적습니다. 한 토막은 15초에서 25초 사이가 좋습니다.",
+          "gesture": "hello",
+          "pause": 0.5,
+          "note": null
+        }
+      ],
+      "face": "visitor",
+      "door_deg": null,
+      "face_back": true
+    },
+    {
+      "sid": "M1",
+      "place": "홀 → 어딘가",
+      "purpose": "복도로 나가기",
+      "notes": [],
+      "doc_seconds": null,
+      "kind": "move",
+      "key": "SHORT_m1_go",
+      "text": "이동하기 전에 방문객에게 하는 예고 멘트입니다.",
+      "meters": 3.06,
+      "turn_deg": -180,
+      "turn_when": "before",
+      "reposition": false,
+      "narrow": false,
+      "align": false
+    },
+    {
+      "sid": "S2",
+      "place": "어딘가 앞",
+      "purpose": "방 소개",
+      "notes": [],
+      "doc_seconds": 20,
+      "kind": "stop",
+      "lines": [
+        {
+          "key": "SHORT_s2_room",
+          "text": "이 방에 대한 설명을 적습니다.",
+          "gesture": null,
+          "pause": 0.0,
+          "note": null
+        }
+      ],
+      "face": "door",
+      "door_deg": 130,
+      "face_back": true
+    }
+  ],
+  "optional": {
+    "SHORT_extra": "시간이 남을 때만 하는 멘트입니다."
+  }
+}

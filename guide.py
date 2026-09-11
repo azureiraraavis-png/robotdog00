@@ -358,14 +358,28 @@ async def read_volume(robot, hand):
 async def toggle_ears(robot, hand):
     """음성 인식 켜기/끄기.
 
-    ★ 마이크는 PC 에 있습니다 ★
-      복도에서 말해도 안 들립니다. PC 옆에 사람이 있을 때만 쓸모가
-      있습니다. 로봇 마이크가 되는지는 mic_test.py 로 확인 중이고,
-      되면 여기 소리 나오는 곳만 바꾸면 됩니다.
+    ★ 마이크는 이제 **폰** 에 있습니다 (2026-09, 삽질 기록 29) ★
+
+      로봇에게는 귀가 없습니다 — 세 번 재서 확정했습니다. PC 마이크는
+      복도에서 안 들립니다. 남은 것은 손에 든 폰이었습니다.
+
+      폰이 누르는 동안 녹음해서 보내고, whisper 가 여기서 알아듣습니다.
+      **인터넷은 안 씁니다.**
+
+    ★ 알아채는 대신 누릅니다 ★
+      PC 마이크 때는 소리 크기를 보고 말이 시작된 걸 알아챘습니다
+      (`listener.start()` + `calibrate()`). 복도에서는 그게 안 됩니다 —
+      방문객 소리, 발소리, 로봇 제 목소리가 다 '말이 시작됐다' 로
+      걸립니다. 그래서 그 부분은 안 씁니다. 모델만 올리고, 소리
+      덩어리는 화면이 보내줍니다.
+
+      귀를 막는 문지기(ear_gate)도 필요 없어졌습니다. 안 누르면
+      안 듣거든요. **켜고 끄는 판단이 사람 손가락 하나로 줄었습니다.**
     """
     ears = robot.get("ears")
     if ears is not None:                       # 켜져 있으면 끕니다
         robot["ears"] = None
+        hand.ear = None                        # 화면의 단추가 먼저 막힙니다
         for key in ("task", "gate"):
             if ears.get(key):
                 ears[key].cancel()
@@ -387,52 +401,38 @@ async def toggle_ears(robot, hand):
         hand.flag(mic="off")
         print(f"   ※ 음성 인식을 켜지 못했습니다: {type(e).__name__}: {e}")
         return
-    listener.start()
-    await asyncio.to_thread(listener.calibrate)
+
+    async def hear(raw):
+        """소리 덩어리 → (글자, 초). remote.py 가 부릅니다.
+
+        옮기는 것과 알아듣는 것을 갈라두었습니다 — 안 들릴 때 어느
+        쪽이 틀렸는지 가려야 하니까요 (29-2).
+        """
+        import web_mic
+        audio = await asyncio.to_thread(web_mic.decode_to_16k, raw)
+        text = await asyncio.to_thread(listener.transcribe, audio)
+        return text, len(audio) / 16000
+
+    hand.ear = hear
     task = asyncio.ensure_future(ear_loop(robot, hand, listener))
-    gate = asyncio.ensure_future(ear_gate(hand, listener))
-    robot["ears"] = {"listener": listener, "task": task, "gate": gate}
+    robot["ears"] = {"listener": listener, "task": task, "gate": None}
     hand.flag(mic="on")
-    print("   ⟨음성 인식 켜짐 — PC 마이크로 듣습니다⟩")
-    print("     ※ 로봇이 말하거나 도는 동안에는 스스로 귀를 막습니다.")
+    print("   ⟨음성 인식 켜짐 — **폰** 의 마이크로 듣습니다⟩")
+    print("     ※ 폰 화면의 '누르고 말하기' 를 누르고 있는 동안만 듣습니다.")
+    print("     ※ https 주소로 열어야 폰이 마이크를 내줍니다.")
 
 
-async def ear_gate(hand, listener):
-    """로봇이 말하거나 도는 동안에는 귀를 막습니다.
-
-    ★ 버튼만 잠가서는 모자랍니다 ★
-      메뉴의 '음성 인식' 을 안내 중에 못 누르게 하는 것은 쉽습니다.
-      그런데 **기다릴 때 켜두고 안내를 시작하면** 그 뒤로는 계속
-      켜져 있습니다. 그동안 로봇은 스피커로 말하고, PC 마이크는
-      그 소리를 주워 담습니다.
-
-      실제로 걸릴 만한 말이 대본에 있습니다 — S1 의 "지금부터
-      … 안내해 드리겠습니다" 에 '안내' 가 들어 있고, 그것이
-      '다음' 으로 번역됩니다. 로봇이 자기 말로 자기 안내를
-      넘기게 됩니다.
-
-      stt.Listener 에 pause()/resume() 가 이미 있습니다. 로봇이
-      자기 말을 다시 듣는 것을 막으려고 만들어 둔 것입니다.
-      여기가 그것을 쓸 자리입니다.
-
-    ※ resume() 은 그동안 들어온 소리를 버립니다 — 안 버리면 막아둔
-      동안 쌓인 로봇 목소리가 풀리는 순간 한꺼번에 들어옵니다.
-    """
-    deaf = False
-    try:
-        while True:
-            want = not hand.state.get("waiting")
-            if want != deaf:
-                deaf = want
-                if want:
-                    listener.pause()
-                else:
-                    listener.resume()          # drain=True — 쌓인 것은 버립니다
-                hand.flag(mic="deaf" if want else "on")
-            await asyncio.sleep(0.15)
-    except asyncio.CancelledError:
-        raise
-
+# ── ear_gate 는 없어졌습니다 (2026-09) ──────────────────────
+#
+#   로봇이 말하거나 도는 동안 마이크를 막던 문지기였습니다. PC 마이크가
+#   늘 열려 있었기 때문에 필요했습니다 — 안 막으면 로봇이 제 목소리를
+#   듣고 그걸 명령으로 알아들었습니다.
+#
+#   이제 **안 누르면 안 듣습니다.** 막을 것이 없어졌습니다. 사람이
+#   손가락을 떼는 것이 문지기입니다.
+#
+#   지우면서 하나 확인했습니다: 화면의 'deaf'(잠깐 멈춤) 표시는
+#   이제 안 뜹니다. 뜰 일이 없으니 맞습니다.
 
 async def ear_loop(robot, hand, listener):
     """들은 말을 명령으로 옮깁니다.
@@ -446,7 +446,13 @@ async def ear_loop(robot, hand, listener):
     NEXT = ("다음", "안내", "안내해", "안내해줘", "시작", "계속")
     try:
         while True:
-            text = await listener.listen()
+            # ★ 소리가 아니라 **글자** 를 기다립니다 ★
+            #   여태 여기서 PC 마이크를 직접 들었습니다. 이제 폰이
+            #   녹음을 보내고 remote.py 가 옮겨서 이 큐에 넣습니다.
+            #   바뀐 것은 **글자가 어디서 오느냐** 한 곳뿐이고, 아래
+            #   흘려보내는 부분은 그대로입니다 — 그래야 말로 하든
+            #   손으로 하든 한 길을 지납니다.
+            text = await hand.said.get()
             if not text:
                 continue
             print(f"   ⟨들림⟩ {text}")
@@ -1045,6 +1051,17 @@ def dry_run(start_at=None):
                 ls, _r = scenario._line_seconds(line)
                 body = line.text[:44] or "(말 없음)"
                 print(f"     {g}{ls:4.0f}초  {body}")
+            # ★ 돌아나오는 것도 보여줍니다 ★
+            #   여태 문 쪽으로 도는 것만 찍고 되돌아서는 것은 안 찍었습니다.
+            #   S2·S3·S4 셋 다 되돌아서는데 계획에는 한 줄도 없었습니다.
+            #   로봇이 **어느 쪽을 보고 다음 구간에 들어가는지**가 안 보이면,
+            #   등을 돌린 채 인사하게 되는 것 같은 일을 복도에 가서야 압니다.
+            #   실제로 ai_swe01 을 만들면서 그 자리를 코드로 파내야 했습니다.
+            if step.face == "door" and step.door_deg is not None:
+                if getattr(step, "face_back", True):
+                    print(f"     ⟨복도 쪽 {-step.door_deg:+.0f}도 · 라이트 끄기⟩")
+                else:
+                    print("     ⟨★ 문을 본 채로 둡니다 — 이 문으로 들어갑니다 ★⟩")
             total += scenario.QA_PAUSE
         else:
             bits = []

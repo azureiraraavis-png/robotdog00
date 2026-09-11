@@ -125,6 +125,10 @@ DRIVE = {
 #   멈춥니다. 놓쳐서 멈추는 것은 안전하고, 놓쳐서 계속 가는 것은 아닙니다.
 DEADMAN = 0.45
 
+# 폰이 보내는 녹음의 상한. 3초에 21 KB 였으니 (29번) 넉넉합니다.
+# 이보다 크면 우리 것이 아닙니다 — 그 연결은 버립니다.
+MAX_BODY = 4 * 1024 * 1024
+
 
 def lan_ip():
     """휴대폰이 칠 수 있는 이 PC 의 주소.
@@ -258,6 +262,13 @@ button:disabled{opacity:.4}
 #stop{background:var(--stop)}
 #end{background:transparent;border:1px solid var(--line);color:var(--dim);
      font-size:14px;font-weight:500;padding:13px;margin-bottom:4px}
+#talkbox{margin-top:10px}
+#talk{width:100%;padding:20px;font-size:19px;font-weight:700;border:0;
+      border-radius:14px;background:#2f6d8f;color:#fff;font-family:inherit;
+      -webkit-user-select:none;user-select:none;touch-action:none}
+#talk.hot{background:#8f2f26}
+#talkst{margin-top:8px;text-align:center;font-size:14px;color:#8d979f;
+        min-height:20px;word-break:break-word}
 #msg{text-align:center;font-size:13px;color:var(--dim);min-height:20px;padding-bottom:10px}
 #lock{font-size:11px;color:var(--dim);opacity:.7}
 @media(prefers-reduced-motion:reduce){button{transition:none}}
@@ -336,6 +347,19 @@ button:disabled{opacity:.4}
   <button id=again disabled>다시</button>
   <button id=restart disabled>처음부터</button>
   <button id=stop>멈춤</button>
+</div>
+
+<!-- ★ 누르고 있는 동안 듣습니다 ★
+     조종판과 같은 규칙입니다. 알아서 말이 시작된 걸 알아채는 방식은
+     복도에서 못 씁니다 — 방문객 소리, 발소리, 로봇 소리가 다
+     '말이 시작됐다' 로 걸립니다. 누르는 동안만 듣는 것이 시끄러운
+     곳에서 유일하게 믿을 만합니다.
+
+     안전한 자리(https)가 아니면 이 칸은 **아예 안 뜹니다.** 눌러도
+     안 되는 단추를 보여주면 고장으로 보입니다. -->
+<div id=talkbox hidden>
+  <button id=talk>🎤 누르고 말하기</button>
+  <div id=talkst>누르고 있는 동안 듣습니다.</div>
 </div>
 
 <div id=msg></div>
@@ -489,6 +513,65 @@ document.querySelectorAll('[data-k]').forEach(b=>{
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) release(); });
 window.addEventListener('blur',release);
 window.addEventListener('pagehide',release);
+
+/* ══ 누르고 말하기 ═══════════════════════════════════════════════
+   ★ 왜 '누르는 동안' 인가 ★
+     PC 마이크 때는 소리 크기를 보고 말이 시작된 걸 알아챘습니다.
+     복도에서는 그게 안 됩니다 — 방문객 소리, 발소리, 로봇 제 목소리가
+     다 '말이 시작됐다' 로 걸립니다. 누르는 동안만 듣는 것이 시끄러운
+     곳에서 믿을 만한 유일한 방법입니다. 조종판과 같은 규칙이고요.
+
+   ★ 조종판을 안 건드립니다 ★
+     창 전체의 pointerup 이 drop(id) 를 부르지만, drop 은 자기가 모르는
+     손가락이면 그냥 돌아갑니다. 이 단추의 손가락은 held 에 안 들어가니
+     조종에 아무 영향이 없습니다.                                    */
+let mrec=null, mbits=[], mstream=null, mfrom=0;
+const talkable = window.isSecureContext &&
+                 navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+                 window.MediaRecorder;
+if(talkable) $('talkbox').hidden=false;
+
+function tsay(t){ $('talkst').textContent=t; }
+
+async function talkOn(){
+  if(mrec) return;
+  try{
+    if(!mstream) mstream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){ tsay('마이크를 못 열었습니다 — '+e.name); return; }
+  mbits=[]; mfrom=performance.now();
+  mrec = new MediaRecorder(mstream);
+  mrec.ondataavailable = e=>{ if(e.data.size) mbits.push(e.data); };
+  mrec.onstop = ()=>{
+    const blob=new Blob(mbits,{type:mrec.mimeType}); mrec=null;
+    /* 너무 짧으면 안 보냅니다 — 잘못 스친 것입니다 */
+    if(performance.now()-mfrom < 400){ tsay('너무 짧습니다 — 좀 더 누르세요.'); return; }
+    tsay('알아듣는 중… '+Math.round(blob.size/1024)+' KB');
+    fetch('/heard',{method:'POST',body:blob})
+      .then(r=>r.json())
+      .then(j=>{
+        if(j.error) tsay('★ '+j.error);
+        else if(j.text) tsay('⟨들림⟩ '+j.text);
+        else tsay('아무 말도 안 들렸습니다. 다시 해보세요.');
+      })
+      .catch(e=>tsay('못 보냈습니다 — '+e.message));
+  };
+  $('talk').classList.add('hot');
+  tsay('듣는 중… 말하세요.');
+  mrec.start();
+}
+function talkOff(){
+  $('talk').classList.remove('hot');
+  if(mrec && mrec.state!=='inactive'){ try{ mrec.stop(); }catch(_){} }
+}
+$('talk').addEventListener('pointerdown', e=>{
+  e.preventDefault();
+  try{ $('talk').setPointerCapture(e.pointerId); }catch(_){}
+  talkOn();
+});
+['pointerup','pointercancel','lostpointercapture'].forEach(ev=>
+  $('talk').addEventListener(ev, talkOff));
+window.addEventListener('pagehide', talkOff);
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) talkOff(); });
 
 document.querySelectorAll('[data-job]').forEach(b=>{
   /* 메뉴를 닫지 않는 것들 — 잇달아 누르는 버튼입니다 */
@@ -679,18 +762,18 @@ async function poll(){
        마이크를 잠시 막습니다 — 그때 '잠깐 멈춤' 으로 뜹니다. */
     $('mic').disabled = micHeld || !s.waiting;
     $('micst').textContent = micHeld ? '보류'
-      : ({on:'켜짐', deaf:'잠깐 멈춤', loading:'모델 읽는 중…',
-          off:'꺼짐'}[f.mic]||'꺼짐');
-    $('mic').classList.toggle('on', f.mic==='on'||f.mic==='deaf');
+      : ({on:'켜짐', loading:'모델 읽는 중…', off:'꺼짐'}[f.mic]||'꺼짐');
+    $('mic').classList.toggle('on', f.mic==='on');
     $('michint').innerHTML = micHeld
       ? 'PC 에서 <code>--no-ears</code> 로 잠가뒀습니다. 그 옵션을 빼면 열립니다.'
-      : (f.mic==='deaf'
-          ? '지금은 <b>귀를 막고</b> 있습니다 — 로봇이 말하거나 도는 동안에는 '
-            + '자기 목소리를 듣게 되어서요. 기다리는 자리로 오면 다시 듣습니다.'
-          : '★ 마이크는 <b>PC</b> 에 있습니다 ★ 복도에서 말해도 안 들립니다. '
-            + 'PC 옆에 사람이 있을 때 쓰세요. 켜면 "앉아 · 일어서 · 불 켜" 같은 '
-            + '말을 듣고, <b>"다음"</b> 이라고 하면 안내를 넘깁니다. '
-            + '설명 중에는 켜고 끄지 못합니다.');
+      : (f.mic==='on'
+          ? '★ 마이크는 <b>이 폰</b> 에 있습니다 ★ 화면 아래 '
+            + '<b>🎤 누르고 말하기</b> 를 누르고 있는 동안만 듣습니다. '
+            + '"앉아 · 일어서 · 불 켜" 를 알아듣고, <b>"다음"</b> 이라고 하면 '
+            + '안내를 넘깁니다.'
+          : '켜면 이 폰의 마이크로 듣습니다. 처음 켤 때 모델을 읽느라 '
+            + '좀 걸립니다. <b>https 주소로 열어야</b> 폰이 마이크를 내줍니다 — '
+            + 'PC 화면에 그 주소가 같이 떠 있습니다. 설명 중에는 켜고 끄지 못합니다.');
   }catch(e){
     /* 여기까지 왔다는 것은 PC 와는 잘 통했다는 뜻입니다. 그리는
        코드가 터진 것이고, 그건 우리 잘못입니다. 숨기지 않습니다. */
@@ -871,7 +954,16 @@ class Remote:
         #   대신 켜고 끄는 것은 **기다리는 중에만** 됩니다 —
         #   로봇이 말하는 동안 켜면 자기 말을 듣습니다.
         self.ears = ears
+        # ★ 귀가 폰으로 옮겨왔습니다 (29번) ★
+        #   ear 는 "소리 덩어리 → (글자, 초)" 를 돌려주는 함수입니다.
+        #   guide.py 의 toggle_ears 가 whisper 를 올린 뒤 여기에 꽂고,
+        #   끄면 None 으로 되돌립니다. remote.py 는 whisper 를 모릅니다 —
+        #   화면을 띄우는 쪽이 음성 인식기를 끌어안으면 무거워집니다.
+        self.ear = None
+        self.said = asyncio.Queue()   # 들은 글자. ear_loop 가 꺼냅니다
+        self.heard_last = ""          # 화면에 되비쳐 보여줄 것
         self.server = None
+        self.tls = None               # https 쪽 (없을 수도 있습니다)
         self.event = asyncio.Event()
         self.stop_event = asyncio.Event()   # '멈춤' 은 따로 — 대기 중이 아니어도
         # ★ '멈춤' 과 '종료' 는 다른 일입니다 ★
@@ -1042,20 +1134,62 @@ class Remote:
                     break
                 if not line:
                     break
+
+                # ★ https 를 http 포트에 대면 이런 꼴이 됩니다 ★
+                #   TLS 는 맨 앞에 0x16 을 보냅니다. 그건 요청 줄이
+                #   아니니 아래 split 이 실패하고, 우리는 연결을 그냥
+                #   끊습니다 — 폰에는 **"연결이 예기치 않게 종료되었
+                #   습니다"** 로 뜹니다. 포트를 잘못 쓴 것인데 화면에는
+                #   서버가 고장난 것처럼 보입니다.
+                #
+                #   TLS 로는 되돌려줄 말이 없습니다 (평문을 보내면
+                #   브라우저가 또 다른 오류로 읽습니다). 그래서 **PC
+                #   화면에 적습니다.** 거기 사람이 있으니까요.
+                if line[:1] == b"\x16":
+                    print(f"[리모컨] ★ {self.address_of(writer)} 가 "
+                          f"**http 포트({self.port})에 https 로** 붙었습니다.")
+                    print(f"         https 는 {self.port + 1}번입니다 — "
+                          f"주소의 포트를 보세요.")
+                    break
+
                 try:
                     method, path, _ = line.decode("latin-1").split(" ", 2)
                 except ValueError:
                     break
-                # 헤더는 버립니다 (본문 없는 요청만 받습니다)
+                # ★ 본문을 반드시 다 읽어야 합니다 ★
+                #   여태 헤더를 버리고 본문 없는 요청만 받았습니다.
+                #   폰이 녹음을 보내기 시작하면 그러면 안 됩니다 —
+                #   본문을 안 읽으면 그 20 KB 가 소켓에 남고, 다음
+                #   readline 이 **소리 조각을 요청 줄로 읽습니다.**
+                #   그러면 연결이 어긋나고, 조종판이 같은 연결을
+                #   쓰고 있으므로 **조종이 통째로 먹통이 됩니다.**
+                #   길이를 못 읽으면 그 연결은 버립니다 (아래 break).
+                length = 0
                 try:
                     while True:
                         h = await asyncio.wait_for(reader.readline(), 5.0)
                         if h in (b"\r\n", b"\n", b""):
                             break
+                        name, _, value = h.decode("latin-1").partition(":")
+                        if name.strip().lower() == "content-length":
+                            length = int(value.strip() or 0)
                 except Exception:
                     break
 
-                body, ctype, code = self._answer(path)
+                payload = b""
+                if length:
+                    if length > MAX_BODY:
+                        break                    # 이상한 것은 안 받습니다
+                    try:
+                        payload = await asyncio.wait_for(
+                            reader.readexactly(length), 20.0)
+                    except Exception:
+                        break                    # 반쯤 읽었으면 연결을 버립니다
+
+                if path.split("?")[0] == "/heard":
+                    body, ctype, code = await self._hear(payload)
+                else:
+                    body, ctype, code = self._answer(path)
                 writer.write(
                     f"HTTP/1.1 {code}\r\nContent-Type: {ctype}\r\n"
                     f"Content-Length: {len(body)}\r\nCache-Control: no-store\r\n"
@@ -1069,6 +1203,48 @@ class Remote:
                 writer.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def address_of(writer):
+        try:
+            return writer.get_extra_info("peername")[0]
+        except Exception:
+            return "누군가"
+
+    async def _hear(self, raw):
+        """폰이 보낸 녹음 한 덩어리를 글자로 옮깁니다.
+
+        ★ 여기서 움직이지 않습니다 ★
+          들은 글자는 `said` 큐에 넣기만 합니다. guide.py 의 ear_loop 가
+          꺼내서 **버튼과 똑같은 길**로 흘려보냅니다. 말로 하든 손으로
+          하든 한 길을 지나야, 한쪽만 고쳐지는 일이 안 생깁니다.
+
+        ★ 넘어져도 화면에는 답을 줍니다 ★
+          여기서 예외가 나가면 위의 _client 가 연결을 끊습니다. 그러면
+          폰은 "못 보냈습니다" 로 뜨고, 그건 **소리가 안 닿은 것과
+          구별이 안 됩니다.** 닿은 것은 닿았다고 말합니다.
+        """
+        out = {"bytes": len(raw)}
+        try:
+            if self.ear is None:
+                out["error"] = "마이크가 꺼져 있습니다 — 화면에서 켜세요"
+            elif not raw:
+                out["error"] = "빈 녹음입니다 — 단추를 좀 더 오래 누르세요"
+            else:
+                text, secs = await self.ear(raw)
+                out["secs"] = round(secs, 1)
+                out["text"] = text
+                if text:
+                    print(f"   ⟨폰⟩ {text}")
+                    self.said.put_nowait(text)
+                    self.heard_last = text
+                else:
+                    print(f"   ⟨폰⟩ {secs:.1f}초 — 아무 말도 안 들렸습니다")
+        except Exception as e:
+            out["error"] = f"{type(e).__name__}: {e}"
+            print(f"   ★ 못 알아들었습니다 — {out['error']}")
+        return (json.dumps(out, ensure_ascii=False).encode("utf-8"),
+                "application/json; charset=utf-8", "200 OK")
 
     def _answer(self, path):
         """요청 하나에 대한 답. (본문, 형식, 코드)"""
@@ -1144,6 +1320,25 @@ class Remote:
             print(f"[리모컨] ★ {self.port}번 포트를 열지 못했습니다: {e}")
             print("         다른 프로그램이 쓰고 있거나 방화벽이 막았습니다.")
             return None
+        # ★ https 는 **더하는 것**이지 바꾸는 것이 아닙니다 ★
+        #
+        #   폰은 안전한 자리(https)가 아니면 마이크를 안 줍니다. 함수를
+        #   아예 안 만들어 둡니다 — 그래서 권한 문제처럼 보입니다 (29번).
+        #
+        #   그렇다고 http 를 걷어내면, 인증서 쪽이 조금이라도 어긋났을 때
+        #   **여태 되던 조종 화면까지 같이 죽습니다.** 시연 아침에 그건
+        #   안 됩니다. 그래서 둘 다 엽니다. 마이크가 필요하면 https,
+        #   아니면 여태 쓰던 http 그대로.
+        tls_url = None
+        try:
+            tls_url = await self._start_tls()
+        except Exception as e:
+            print(f"[리모컨] ※ https 를 못 열었습니다: {type(e).__name__}: {e}")
+            print("         http 는 그대로 됩니다 — 다만 폰 마이크는 못 씁니다.")
+        if not tls_url:
+            print("[리모컨] ※ https 가 안 열렸습니다 — 폰이 마이크를 안 내줍니다.")
+            print("         까닭은 바로 위에 적혀 있습니다.")
+
         url = f"http://{lan_ip()}:{self.port}/"
         if self.pin:
             url += f"?pin={self.pin}"
@@ -1159,13 +1354,57 @@ class Remote:
             print()
             print("     처음에 윈도우가 방화벽을 물어보면 '허용' 하세요.")
             print("     (사설망 쪽만 허용하면 됩니다)")
+            if tls_url:
+                print()
+                print("  ── 음성으로 시키려면 이쪽입니다 ──────────────")
+                print(f"    {tls_url}")
+                print("    ※ '안전하지 않습니다' 경고가 뜹니다. 스스로 만든")
+                print("      인증서라 그렇습니다. 고급 → 계속 을 누르세요.")
+                print("      http 로는 폰이 마이크를 아예 안 내줍니다.")
+                print()
+        return url
+
+    async def _start_tls(self):
+        """같은 화면을 https 로도 엽니다. 안 되면 None 을 돌려줍니다.
+
+        인증서 만드는 부분은 web_mic.py 에 있습니다 — 거기서 폰으로
+        확인한 그대로입니다 (IP 를 subjectAltName 에 넣어야 크롬이
+        받아줍니다). 두 벌로 갈라두면 한쪽만 고쳐집니다.
+        """
+        import ssl
+        # ★ 여기서 조용히 돌아가면 안 됩니다 ★
+        #   처음에 `except Exception: return None` 이라고 썼습니다.
+        #   그래서 https 가 안 열렸는데 **화면에 아무 말도 안 나왔고**,
+        #   사이안 님은 주소가 왜 하나뿐인지 알 길이 없었습니다.
+        #   안 되는 것은 안 된다고 말해야 합니다. 27번·29번과 같은
+        #   실수를 제가 제 코드 안에서 또 했습니다.
+        try:
+            import web_mic
+        except Exception as e:
+            print(f"[리모컨] ※ web_mic.py 를 못 읽었습니다: "
+                  f"{type(e).__name__}: {e}")
+            print("         그 파일이 remote.py 옆에 있어야 https 가 열립니다.")
+            return None
+        ip = lan_ip()
+        if not web_mic.cert_ok_for(ip):
+            print(f"[리모컨] 인증서를 만듭니다 ({ip} 앞으로, 30일)…")
+            web_mic.make_cert(ip)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(web_mic.CERT, web_mic.KEY)
+        self.tls = await asyncio.start_server(
+            self._client, "0.0.0.0", self.port + 1, ssl=ctx)
+        url = f"https://{ip}:{self.port + 1}/"
+        if self.pin:
+            url += f"?pin={self.pin}"
         return url
 
     async def close(self):
-        if self.server:
-            self.server.close()
+        for srv in (self.server, self.tls):
+            if not srv:
+                continue
+            srv.close()
             try:
-                await self.server.wait_closed()
+                await srv.wait_closed()
             except Exception:
                 pass
 

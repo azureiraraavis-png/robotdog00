@@ -59,6 +59,7 @@ import sys
 import urllib.error
 import urllib.request
 
+import json as _json
 import remote
 
 PORT = 8791          # 진짜 리모컨(8080)과 겹치지 않게
@@ -80,6 +81,29 @@ def push(path):
 async def press(path):
     """서버는 같은 루프에 있습니다 — 요청은 다른 실에서 보냅니다."""
     return await asyncio.to_thread(push, path)
+
+
+def send(path, blob):
+    """본문이 있는 요청. 폰이 녹음을 보내는 것과 같습니다.
+
+    ★ 본문 있는 요청을 처음 받습니다 ★
+      여태 리모컨은 본문을 버렸습니다. 폰이 20 KB 를 보내기 시작하면
+      그러면 안 됩니다 — 안 읽은 본문이 소켓에 남아 다음 요청 줄로
+      읽히고, 그 연결은 어긋납니다. 조종판이 같은 연결을 쓰니
+      **조종이 통째로 먹통이 됩니다.** 그래서 이 시험이 있습니다.
+    """
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}{path}", data=blob,
+        headers={"Content-Type": "audio/webm"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.read().decode()
+    except urllib.error.HTTPError as e:
+        return str(e.code)
+
+
+async def post(path, blob):
+    return await asyncio.to_thread(send, path, blob)
 
 
 def _drop_course_files():
@@ -494,58 +518,107 @@ async def main():
             remote.PAGE = base
         s.check("검사가 끝나고 화면은 그대로입니다", remote.check_page(), [])
 
-        # ── 8. 로봇이 말할 때 귀를 막는가 ───────────────────
+        # ── 8. 폰이 보낸 말이 버튼과 같은 길을 지나는가 ─────
         #
-        # ★ 버튼을 잠그는 것만으로는 모자랍니다 ★
-        #   기다릴 때 음성 인식을 켜두고 안내를 시작하면 그 뒤로도
-        #   계속 켜져 있습니다. 그동안 로봇은 말하고, PC 마이크는 그
-        #   소리를 담습니다. 대본의 "지금부터 … 안내해 드리겠습니다"
-        #   에 '안내' 가 있고, 그게 '다음' 으로 번역됩니다 —
-        #   로봇이 자기 말로 자기 안내를 넘깁니다.
+        # ★ 여기가 오늘 바뀐 자리입니다 ★
+        #   여태 PC 마이크가 늘 열려 있어서, 로봇이 말하는 동안 귀를
+        #   막는 문지기(ear_gate)가 필요했습니다. 안 막으면 대본의
+        #   "지금부터 … 안내해 드리겠습니다" 에 있는 '안내' 를 듣고
+        #   **로봇이 자기 말로 자기 안내를 넘겼습니다.**
+        #
+        #   이제 안 누르면 안 듣습니다. 문지기가 사람 손가락이 됐고,
+        #   그래서 그 시험 자리를 이걸로 바꿉니다.
         print()
         print("─" * 70)
-        print(" 로봇이 말하는 동안 귀를 막는가")
+        print(" 폰이 보낸 말")
         print("─" * 70)
         import guide
 
-        class FakeEar:
-            """진짜 whisper 대신. pause/resume 만 흉내 냅니다."""
+        # ★ 앞 자리가 남긴 것을 비우고 시작합니다 ★
+        #   처음에 안 비웠더니 '앉아' 를 넣고 꺼낸 것이 앞 자리에서
+        #   남은 'stand' 였습니다. 시험은 틀렸다고 했지만 코드는
+        #   멀쩡했습니다 — 그리고 **우연히 맞을 수도 있었습니다.**
+        #   같은 큐를 여럿이 쓰면 앞자리를 비우고 재야 합니다.
+        while not hand.jobs.empty():
+            hand.jobs.get_nowait()
+        while not hand.said.empty():
+            hand.said.get_nowait()
+        hand.action = None
 
-            def __init__(self):
-                self.deaf = False
-                self.drained = 0
+        heard = []
 
-            def pause(self):
-                self.deaf = True
+        async def fake_ear(raw):
+            """진짜 whisper 대신. 보낸 바이트를 글자로 돌려줍니다."""
+            heard.append(raw)
+            return raw.decode("utf-8"), len(raw) / 1000.0
 
-            def resume(self, drain=True):
-                self.deaf = False
-                if drain:
-                    self.drained += 1
+        # ㄱ. 귀가 꺼져 있으면 거절합니다 — 조용히 삼키지 않습니다
+        r = _json.loads(await post("/heard", "다음".encode()))
+        s.check("귀가 꺼져 있으면 그렇게 말해줍니다",
+                "마이크가 꺼져" in r.get("error", ""), True)
+        s.check("꺼져 있을 때는 옮기지도 않습니다", heard, [])
 
-        ear = FakeEar()
-        hand.state["waiting"] = True
-        gate = asyncio.ensure_future(guide.ear_gate(hand, ear))
+        hand.ear = fake_ear
+
+        # ㄴ. 빈 녹음 — 잘못 스친 것입니다
+        r = _json.loads(await post("/heard", b""))
+        s.check("빈 녹음은 거절합니다", "빈 녹음" in r.get("error", ""), True)
+
+        # ㄷ. 들은 말이 큐에 들어갑니다
+        r = _json.loads(await post("/heard", "다음".encode()))
+        s.check("들은 것을 되돌려줍니다", r.get("text"), "다음")
+        s.check("길이도 알려줍니다", "secs" in r, True)
+        s.check("큐에 들어갔습니다", hand.said.qsize(), 1)
+
+        # ㄹ. ear_loop 가 꺼내서 **버튼과 같은 자리**로 흘려보냅니다
+        hand.action = None
+        loop_task = asyncio.ensure_future(guide.ear_loop({}, hand, None))
         try:
-            await asyncio.sleep(0.4)
-            s.check("기다릴 때는 듣습니다", ear.deaf, False)
+            await asyncio.sleep(0.3)
+            s.check("'다음' 은 '다음' 버튼과 같은 자리로 갑니다",
+                    hand.action, "go")
 
-            hand.state["waiting"] = False          # 설명이 시작됩니다
-            await asyncio.sleep(0.4)
-            s.check("로봇이 말하면 귀를 막습니다", ear.deaf, True)
-            s.check("화면에는 '잠깐 멈춤' 으로 뜹니다",
-                    hand.state["flags"]["mic"], "deaf")
+            hand.said.put_nowait("앉아")
+            await asyncio.sleep(0.3)
+            s.check("'앉아' 는 메뉴와 같은 자리로 갑니다",
+                    hand.jobs.get_nowait(), "sit")
 
-            hand.state["waiting"] = True           # 다시 기다리는 자리로
-            await asyncio.sleep(0.4)
-            s.check("기다리는 자리로 오면 다시 듣습니다", ear.deaf, False)
-            s.check("막아둔 동안 쌓인 소리는 버립니다", ear.drained >= 1, True)
-            s.check("화면도 '켜짐' 으로 돌아옵니다",
-                    hand.state["flags"]["mic"], "on")
+            hand.action = None
+            hand.said.put_nowait("멈춰")
+            await asyncio.sleep(0.3)
+            s.check("'멈춰' 는 '멈춤' 버튼과 같은 자리로 갑니다",
+                    hand.action, "stop")
+
+            # ★ 모르는 말에 아무 일도 안 일어나야 합니다 ★
+            #   방문객이 지나가며 한 말이 명령이 되면 안 됩니다.
+            hand.action = None
+            hand.said.put_nowait("오늘 날씨가 좋네요")
+            await asyncio.sleep(0.3)
+            s.check("모르는 말은 흘려보냅니다", hand.action, None)
+            s.check("모르는 말로 일감이 생기지도 않습니다",
+                    hand.jobs.qsize(), 0)
         finally:
-            gate.cancel()
-            hand.state["waiting"] = False
-            hand.flag(mic="off")
+            loop_task.cancel()
+            hand.ear = None
+
+        # ㅁ. ★ 본문을 다 읽었는가 — 그 다음 요청이 멀쩡한가 ★
+        #     안 읽은 본문이 남으면 다음 readline 이 소리 조각을
+        #     요청 줄로 읽습니다. 그러면 조종이 먹통이 됩니다.
+        #     같은 연결을 쓰는지까지는 여기서 못 보지만, 서버가
+        #     어긋나지 않았다는 것은 볼 수 있습니다.
+        hand.ear = fake_ear
+        await post("/heard", "다음".encode())
+        s.check("소리를 보낸 뒤에도 조종이 됩니다",
+                await press("/drive/w"), "ok")
+        s.check("소리를 보낸 뒤에도 화면이 옵니다",
+                _json.loads(await press("/state")).get("sid") is not None, True)
+        await press("/drive/-")
+        hand.ear = None
+        while not hand.said.empty():
+            hand.said.get_nowait()
+
+        # ㅂ. 너무 큰 것은 안 받습니다
+        s.check("상한이 정해져 있습니다", remote.MAX_BODY > 0, True)
 
         # ── 9. 인사 뒤에 다시 세우는가 ──────────────────────
         #

@@ -133,7 +133,11 @@ def unprefixed(course):
         Course 안에 없어서 여기까지 오지 않습니다.
     """
     want = f"{course.id}_"
-    return [k for k in course.keys() if not k.startswith(want)]
+    # ★ keys() 가 아니라 every_key() 입니다 ★
+    #   keys() 는 말이 나오는 것만 셉니다. 그런데 말 없는 지점에도
+    #   이름은 붙어 있고, 나중에 대사를 채우면 살아납니다. 실제로
+    #   그런 이름 둘이 접두어 붙이기에서 조용히 빠졌습니다.
+    return [k for k in course.every_key() if not k.startswith(want)]
 
 
 def register(course):

@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "keys": {
+    "ai_swe01_s1a_greet": {
+      "hash": "8f05f9f17368dead",
+      "seconds": 13.199977324263038,
+      "bytes": 1164282,
+      "uploaded_hash": "8f05f9f17368dead",
+      "how": "올림"
+    },
+    "ai_swe01_s1b_intro": {
+      "hash": "7de377ae150fd051",
+      "seconds": 12.983968253968253,
+      "bytes": 1145230,
+      "uploaded_hash": "7de377ae150fd051",
+      "how": "올림"
+    },
+    "ai_swe01_s1c_program": {
+      "hash": "04882d2c256d581e",
+      "seconds": 11.39997732426304,
+      "bytes": 1005522,
+      "uploaded_hash": "04882d2c256d581e",
+      "how": "올림"
+    },
+    "ai_swe01_s1d_lead": {
+      "hash": "8b4f0d6119eeb2f5",
+      "seconds": 10.31997732426304,
+      "bytes": 910266,
+      "uploaded_hash": "8b4f0d6119eeb2f5",
+      "how": "올림"
+    },
+    "ai_swe01_m1_to_301": {
+      "hash": "b7e50b5a753a2a4b",
+      "seconds": 9.023968253968254,
+      "bytes": 795958,
+      "uploaded_hash": "b7e50b5a753a2a4b",
+      "how": "올림"
+    },
+    "ai_swe01_s2_room301": {
+      "hash": "47a2af1a6ec88f45",
+      "seconds": 22.31997732426304,
+      "bytes": 1968666,
+      "uploaded_hash": "47a2af1a6ec88f45",
+      "how": "올림"
+    },
+    "ai_swe01_m2_to_303": {
+      "hash": "8b087ca40a65ddf5",
+      "seconds": 4.247959183673469,
+      "bytes": 374714,
+      "uploaded_hash": "8b087ca40a65ddf5",
+      "how": "올림"
+    },
+    "ai_swe01_s3_room303": {
+      "hash": "cd2f4983a4aaa01f",
+      "seconds": 18.383968253968256,
+      "bytes": 1621510,
+      "uploaded_hash": "cd2f4983a4aaa01f",
+      "how": "올림"
+    },
+    "ai_swe01_m3_to_304": {
+      "hash": "10e2a6af5a00b253",
+      "seconds": 6.76795918367347,
+      "bytes": 596978,
+      "uploaded_hash": "10e2a6af5a00b253",
+      "how": "올림"
+    },
+    "ai_swe01_s4_room304": {
+      "hash": "89c727f58076dc66",
+      "seconds": 28.00795918367347,
+      "bytes": 2470346,
+      "uploaded_hash": "89c727f58076dc66",
+      "how": "올림"
+    },
+    "ai_swe01_s5a_close": {
+      "hash": "ac84353ad79184f4",
+      "seconds": 5.159977324263038,
+      "bytes": 455154,
+      "uploaded_hash": "ac84353ad79184f4",
+      "how": "올림"
+    },
+    "ai_swe01_s5b_program": {
+      "hash": "9ba38fb628e64364",
+      "seconds": 11.471972789115647,
+      "bytes": 1011872,
+      "uploaded_hash": "9ba38fb628e64364",
+      "how": "올림"
+    },
+    "ai_swe01_s5c_thanks": {
+      "hash": "5f2e45368c083432",
+      "seconds": 4.391972789115647,
+      "bytes": 387416,
+      "uploaded_hash": "5f2e45368c083432",
+      "how": "올림"
+    },
+    "ai_swe01_s5d_bye": {
+      "hash": "47dd707dded3dee7",
+      "seconds": 6.095963718820862,
+      "bytes": 537708,
+      "uploaded_hash": "47dd707dded3dee7",
+      "how": "올림"
+    },
+    "ai_swe01_s4_extra": {
+      "hash": "1cd04c49c7ccc2fe",
+      "seconds": 6.88795918367347,
+      "bytes": 607562,
+      "uploaded_hash": "1cd04c49c7ccc2fe",
+      "how": "올림"
+    }
+  }
+}
