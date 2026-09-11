@@ -60,6 +60,9 @@ import urllib.error
 import urllib.request
 
 import json as _json
+import tempfile as _tempfile
+from pathlib import Path
+
 import remote
 
 PORT = 8791          # 진짜 리모컨(8080)과 겹치지 않게
@@ -514,6 +517,18 @@ async def main():
             remote.PAGE = base.replace("data-job=vol_up", "data-job=vol_updown")
             s.check("서버가 안 받는 메뉴는 잡습니다",
                     any("vol_updown" in x for x in remote.check_page()), True)
+
+            # ★ 자기가 자기를 덮어쓰는 CSS 도 잡는가 ★
+            #   `#burger{margin-left:auto; … ; margin:0}` 이 실제로
+            #   있었습니다. 뒤쪽 margin:0 이 앞의 것을 없애서, 햄버거를
+            #   오른쪽 끝으로 밀라는 규칙이 **쓰인 날부터 한 번도 안
+            #   들었습니다.** 브라우저는 안 알려줍니다 — 화면이 멀쩡해
+            #   보이거든요. 배터리를 달다가 우연히 드러났습니다.
+            remote.PAGE = base.replace(
+                "#burger{background:transparent",
+                "#burger{margin-left:auto;background:transparent", 1)
+            s.check("죽은 CSS 를 잡습니다",
+                    any("덮어씁니다" in x for x in remote.check_page()), True)
         finally:
             remote.PAGE = base
         s.check("검사가 끝나고 화면은 그대로입니다", remote.check_page(), [])
@@ -619,6 +634,140 @@ async def main():
 
         # ㅂ. 너무 큰 것은 안 받습니다
         s.check("상한이 정해져 있습니다", remote.MAX_BODY > 0, True)
+
+        # ── 8-2. 배터리 ─────────────────────────────────────
+        #
+        # ★ 시연에서 정작 아슬아슬했던 것은 이것이었습니다 (30-1) ★
+        #   로봇은 bms_state.soc 로 계속 보내주고 있었는데 아무도 안
+        #   읽었습니다. 사람은 로봇 옆구리의 초록 점 네 개로 '기색' 만
+        #   봤고요 — 한 칸이 25% 인데 준비 목록은 '40% 이상' 을 묻습니다.
+        print()
+        print("─" * 70)
+        print(" 배터리")
+        print("─" * 70)
+        import common
+
+        class FakeConn:
+            """구독만 받아둡니다. 로봇은 없습니다."""
+
+            class _PS:
+                def __init__(self):
+                    self.fn = None
+
+                def subscribe(self, topic, fn):
+                    self.fn = fn
+
+            class _DC:
+                def __init__(self):
+                    self.pub_sub = FakeConn._PS()
+
+            def __init__(self):
+                self.datachannel = FakeConn._DC()
+
+        conn = FakeConn()
+        bat = common.Battery(conn)
+        s.check("듣기 전에는 모릅니다", bat.percent, None)
+        s.check("모를 때는 신선하지도 않습니다", bat.fresh(), False)
+        s.check("모를 때는 판단을 안 합니다", bat.enough_for(220), None)
+
+        send = conn.datachannel.pub_sub.fn
+        s.check("구독은 붙었습니다", callable(send), True)
+
+        # 로봇이 실제로 보내는 모양 그대로 (dump_low_state.json 에서)
+        send({"data": {"bms_state": {"soc": 88, "current": -1541},
+                       "power_v": 31.04, "temperature_ntc1": 43}})
+        s.check("퍼센트를 읽습니다", bat.percent, 88)
+        s.check("볼트도 읽습니다", round(bat.volts, 1), 31.0)
+        s.check("쓰는 중인 것도 압니다", bat.current < 0, True)
+        s.check("신선합니다", bat.fresh(), True)
+
+        # ★ 이상한 값은 안 받습니다 ★
+        #   soc 가 None 이나 255 로 오는 순간이 있을 수 있습니다.
+        #   그때 화면이 "255%" 나 "0%" 로 바뀌면, 사람은 배터리가
+        #   아니라 프로그램을 의심하게 됩니다.
+        send({"data": {"bms_state": {"soc": None}}})
+        s.check("None 은 무시합니다", bat.percent, 88)
+        send({"data": {"bms_state": {"soc": 255}}})
+        s.check("범위 밖도 무시합니다", bat.percent, 88)
+        send({"data": {}})
+        s.check("빈 메시지도 견딥니다", bat.percent, 88)
+
+        # ★ 끊긴 값을 신선하다고 하면 안 됩니다 ★
+        #   배터리는 줄기만 하므로, 멎은 값은 **언제나 낙관적인 쪽으로**
+        #   거짓말합니다.
+        bat.stamp -= 60
+        s.check("오래된 값은 안 믿습니다", bat.fresh(), False)
+        s.check("안 믿으면 판단도 안 합니다", bat.enough_for(220), None)
+        s.check("그래도 마지막 값은 들고 있습니다", bat.percent, 88)
+
+        # 코스를 돌 만큼 남았는가 — 경고등이 아니라 계기판
+        send({"data": {"bms_state": {"soc": 80}}})
+        s.check("넉넉하면 된다고 합니다", bat.enough_for(220), True)
+        send({"data": {"bms_state": {"soc": 5}}})
+        s.check("모자라면 모자란다고 합니다", bat.enough_for(220), False)
+
+        # ★ 남겨둘 몫(RESERVE)을 넘어서 따지는가 ★
+        #   처음에는 남은 전부로 따졌습니다. 그러면 25% 남았을 때
+        #   "3%짜리 코스 되겠네" 라고 답하는데, 돌고 나면 22% 입니다.
+        #   20% 아래로는 안 쓰기로 했으니 거짓말입니다.
+        s.check("남겨둘 몫이 정해져 있습니다", common.RESERVE, 20)
+        send({"data": {"bms_state": {"soc": common.RESERVE + 2}}})
+        s.check("남겨둘 몫 바로 위면 모자랍니다",
+                bat.enough_for(600), False)
+        send({"data": {"bms_state": {"soc": 99}}})
+        s.check("가득 차 있으면 넉넉합니다", bat.enough_for(600), True)
+
+        # ★ 한 바퀴를 적어두는가 ★
+        #   이것이 짐작을 잰 값으로 바꾸는 자리입니다.
+        real = common.battery_log_path
+        tmp = Path(_tempfile.mkdtemp()) / "battery_log.json"
+        common.battery_log_path = lambda: tmp
+        try:
+            s.check("기록이 없으면 잰 값도 없습니다",
+                    common.measured_per_minute(), None)
+            row = common.log_lap("ai_swe01", 91, 87, 600.0)
+            s.check("쓴 만큼을 적습니다", row["used"], 4)
+            s.check("분당으로도 적습니다", row["per_minute"], 0.4)
+            s.check("한 번으로는 안 씁니다",
+                    common.measured_per_minute(), None)
+            common.log_lap("ai_swe01", 87, 82, 600.0)
+            common.log_lap("ai_swe01", 82, 78, 600.0)
+            # 4 + 5 + 4 = 13% / 30분 = 0.4333…
+            s.check("세 번 쌓이면 씁니다",
+                    round(common.measured_per_minute(), 3), 0.433)
+
+            # ★ 바퀴마다 나눠 세지 않습니다 ★
+            #   soc 가 정수라, 3% 짜리 한 바퀴의 분당값에는 ±33% 가
+            #   붙습니다. 실제로 잰 두 바퀴가 같은 3% 인데 0.47 과
+            #   0.55 로 갈렸습니다. 통째로 세면 그 오차가 묽어집니다.
+            #   짧은 판 하나가 전체를 끌고 가지 않는지 봅니다.
+            common.log_lap("ai_swe01", 78, 77, 60.0)      # 1% / 1분
+            s.check("짧은 판 하나에 안 끌립니다",
+                    common.measured_per_minute() < 0.6, True)
+            # ★ 셈이 안 되는 것은 안 적습니다 ★
+            #   중간에 충전했거나 값을 못 읽었으면 0.0 %/분 같은 것이
+            #   섞여 들어갑니다. 그 한 줄이 가운뎃값을 끌어내리면
+            #   "아직 넉넉하다" 는 거짓말이 됩니다.
+            s.check("충전한 판은 안 적습니다",
+                    common.log_lap("x", 50, 60, 600.0), None)
+            s.check("모르는 값도 안 적습니다",
+                    common.log_lap("x", None, 60, 600.0), None)
+            # 셈이 안 되는 판은 파일에 아예 안 들어갔는가 —
+            # 값으로 견주면 다른 이유로도 맞을 수 있으니 줄 수를 셉니다.
+            s.check("셈이 안 되는 판은 파일에 없습니다",
+                    len(_json.loads(tmp.read_text(encoding="utf-8"))), 4)
+        finally:
+            common.battery_log_path = real
+
+        # 화면이 그 값을 그대로 나릅니다
+        hand.flag(battery=17, battery_stale=False, battery_note="시험")
+        got = _json.loads(await press("/state"))["flags"]
+        s.check("화면까지 갑니다", got["battery"], 17)
+        s.check("끊김 표시도 갑니다", got["battery_stale"], False)
+        s.check("한 줄 설명도 갑니다", got["battery_note"], "시험")
+        hand.flag(battery=None, battery_stale=False, battery_note="")
+        s.check("처음에는 비어 있습니다",
+                hand.state["flags"]["battery"], None)
 
         # ── 9. 인사 뒤에 다시 세우는가 ──────────────────────
         #

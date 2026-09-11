@@ -1472,6 +1472,216 @@ def _report_descent(start, pts, label="엎드리기", verbose=True):
     return out
 
 
+class Battery:
+    """배터리 잔량을 지켜봅니다. 로봇이 알아서 보내주는 값입니다.
+
+    ★ 왜 이게 필요했나 (삽질 기록 30-1) ★
+
+      2026-09-11 외빈 시연에서 정작 아슬아슬했던 것은 음성도 회전도 아니고
+      배터리였습니다. 그런데 이 프로그램은 그 값을 **한 번도 본 적이
+      없었습니다.** guide.py 맨 위에 `□ 배터리 40% 이상` 이라고 사람이
+      눈으로 보라고 적어둔 것이 전부였고, alert_low_battery.mp3 는
+      만들어놓고 아무도 틀지 않았습니다.
+
+      로봇 옆구리에 초록 점 네 개가 있어 사람은 볼 수 있습니다. 다만
+      **값이 아니라 기색만 보입니다** — 한 칸이 25% 인데 준비 목록이
+      묻는 것은 '40% 이상인가' 입니다. 경고등이지 계기판이 아닙니다.
+
+      그리고 그 점들은 로봇 옆구리에 있습니다. 안내 중에는 로봇이 걷고,
+      방문객이 둘러싸고, 조종하는 사람은 폰을 봅니다.
+
+    ★ 아무것도 안 보냅니다 ★
+      듣기만 합니다. LOW_STATE 는 로봇이 알아서 계속 내보내는 것이라
+      물어볼 필요가 없습니다.
+
+    ★ 모르면 모른다고 합니다 ★
+      첫 메시지가 오기 전에는 percent 가 None 입니다. 0 이 아닙니다 —
+      0 으로 두면 화면에 "0%" 가 뜨고, 그건 배터리가 없다는 뜻이
+      되어버립니다. 이 프로젝트에서 그 실수를 여러 번 했습니다.
+    """
+
+    def __init__(self, conn):
+        self.percent = None        # soc (0~100). 모르면 None
+        self.volts = None
+        self.current = None        # mA. 음수면 쓰는 중
+        self.temperature = None
+        self.stamp = None          # 마지막으로 받은 시각
+        self.count = 0
+        try:
+            conn.datachannel.pub_sub.subscribe(
+                RTC_TOPIC["LOW_STATE"], self._on_state)
+        except Exception as e:
+            # 토픽 이름이 펌웨어마다 다를 수 있습니다. 못 붙어도 안내는
+            # 돌아가야 하므로, 조용히 넘기지는 않되 멈추지도 않습니다.
+            print(f"[배터리] 못 붙었습니다: {type(e).__name__}: {e}")
+
+    def _on_state(self, message):
+        data = (message or {}).get("data") or {}
+        bms = data.get("bms_state") or {}
+        soc = bms.get("soc")
+        if isinstance(soc, (int, float)) and 0 <= soc <= 100:
+            self.percent = int(soc)
+            self.stamp = time.time()
+            self.count += 1
+        if isinstance(bms.get("current"), (int, float)):
+            self.current = bms["current"]
+        if isinstance(data.get("power_v"), (int, float)):
+            self.volts = data["power_v"]
+        if isinstance(data.get("temperature_ntc1"), (int, float)):
+            self.temperature = data["temperature_ntc1"]
+
+    def fresh(self, within=15.0):
+        """값이 아직 살아 있는가.
+
+        메시지가 끊겼는데 마지막 값을 계속 띄우면, 화면은 멀쩡한데
+        실제로는 몇 분 전 값입니다. 배터리는 줄기만 하므로 그 거짓말은
+        **언제나 낙관적인 쪽으로** 틀립니다.
+        """
+        return (self.percent is not None and self.stamp is not None
+                and (time.time() - self.stamp) <= within)
+
+    def enough_for(self, seconds, margin=1.5):
+        """이 코스를 돌 만큼 남았는가. 모르면 None.
+
+        ★ 퍼센트만 띄우면 더 고운 경고등일 뿐입니다 ★
+          사람은 "37%" 를 보고도 그게 이 코스에 되는 양인지 모릅니다.
+          그런데 코스가 몇 분인지는 이미 압니다. 그러니 물음에 바로
+          답할 수 있어야 합니다.
+
+        ※ PER_MINUTE 는 아직 **잰 값이 아닙니다.** 코스를 돌 때마다
+          얼마나 줄었는지가 쌓이면 그때 진짜 근거가 생깁니다.
+          그때까지는 짐작이라고 화면에도 적습니다.
+        """
+        if not self.fresh():
+            return None
+        # ★ 남은 전부가 아니라 RESERVE 위로 남은 것입니다 ★
+        #   20% 를 안 쓰기로 했으면 쓸 수 있는 것은 그 위쪽뿐입니다.
+        #   처음에는 self.percent 를 그대로 썼습니다. 그러면 25% 남았을 때
+        #   "3%짜리 코스 되겠네" 라고 답하는데, 돌고 나면 22% 입니다.
+        rate = measured_per_minute() or PER_MINUTE
+        need = (seconds / 60.0) * rate * margin
+        return (self.percent - RESERVE) >= need
+
+
+# 이 밑으로는 안 씁니다 (%).
+#
+#   사이안 님이 정한 값입니다 — 20% 아래로는 내려가지 않습니다.
+#   배터리는 바닥 가까이에서 전압이 급히 떨어집니다. 그때 로봇이 서
+#   있으면 다리에 힘이 빠지고, 복도에서 그건 안 됩니다.
+#
+#   그래서 "코스를 돌 만큼 남았는가" 는 남은 전부가 아니라
+#   **이 선 위로 남은 것**으로 따집니다.
+RESERVE = 20
+
+# 안내 1분에 배터리가 몇 %나 줄어드는가.
+#
+# ★ 잰 것 하나, 아직 모르는 것 하나 ★
+#
+#   잰 것 —  2026-09-11, 멘트 15개를 올리는 25분 동안 99% → 91%.
+#            **0.32 %/분.** 다만 그동안 로봇은 아무것도 안 했습니다.
+#            걷지도 돌지도 않았으니 이 값은 **바닥**입니다.
+#
+#   모르는 것 — 걸을 때 그 몇 배가 되는가. 다리 열둘에 힘을 주는
+#            일이니 더 먹는 것은 분명한데, 2배인지 3배인지 모릅니다.
+#            10분짜리 한 바퀴가 2배면 6.4%, 3배면 9.6% 입니다.
+#            **그 차이가 '한 번 더 돌아도 되는가' 를 가릅니다.**
+#
+#   그래서 3배로 잡아둡니다. 모르는 쪽으로 틀릴 때 어느 쪽이 안전한지가
+#   기준입니다 — 적게 잡으면 복도에서 멈추고, 많이 잡으면 한 번 덜
+#   돕니다. 뒤엣것이 낫습니다.
+#
+#   ★ 이 값은 스스로 고쳐집니다 ★
+#     guide.py 가 코스를 돌 때마다 시작과 끝의 soc 를 battery_log.json
+#     에 적습니다. 세 바퀴가 쌓이면 measured_per_minute() 가 진짜 값을
+#     돌려주고, 그때부터 이 짐작은 안 쓰입니다.
+PER_MINUTE = 0.32 * 3
+
+
+def battery_log_path():
+    return Path(__file__).parent / "battery_log.json"
+
+
+def log_lap(course_id, start_soc, end_soc, seconds):
+    """한 바퀴가 배터리를 얼마나 먹었는지 적어둡니다.
+
+    ★ 이것이 PER_MINUTE 를 짐작에서 잰 값으로 바꿉니다 ★
+      한 줄씩 쌓이기만 하면 됩니다. 사람이 종이에 적을 필요가 없고,
+      적는 것을 잊을 일도 없습니다.
+    """
+    import json
+    if None in (start_soc, end_soc) or seconds <= 0:
+        return None
+    used = start_soc - end_soc
+    if used < 0:                 # 중간에 충전했으면 셈이 안 됩니다
+        return None
+    p = battery_log_path()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except Exception:
+        data = []
+    # counts 는 이 숫자가 **무엇을 잰 것인지** 적어둡니다.
+    # 나중에 이 파일만 보고도 "기다린 시간이 들었나" 를 알 수 있어야
+    # 합니다 — 안 적어두면 몇 달 뒤에 다시 헷갈립니다.
+    row = {"when": time.strftime("%Y-%m-%d %H:%M"), "course": course_id,
+           "counts": "안내만 (기다린 시간 제외)",
+           "from": start_soc, "to": end_soc, "used": used,
+           "minutes": round(seconds / 60.0, 1),
+           "per_minute": round(used / (seconds / 60.0), 3)}
+    data.append(row)
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                     encoding="utf-8")
+    except Exception as e:
+        print(f"[배터리] 기록을 못 남겼습니다: {e}")
+    return row
+
+
+def measured_per_minute(least=3):
+    """쌓인 기록에서 분당 소모율. 아직 모자라면 None.
+
+    ★ 한 번으로는 안 씁니다 ★
+      한 바퀴는 그날 복도가 붐볐는지, 사람이 얼마나 헤맸는지에 휘둘립니다.
+      세 번은 있어야 "이 코스는 대개 이만큼" 이라고 말할 수 있습니다.
+      그 전까지는 짐작을 쓰고, 짐작이라고 화면에 적습니다.
+    """
+    import json
+    p = battery_log_path()
+    if not p.exists():
+        return None
+    try:
+        rows = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    good = [r for r in rows
+            if isinstance(r.get("used"), (int, float)) and r["used"] > 0
+            and isinstance(r.get("minutes"), (int, float)) and r["minutes"] > 0]
+    if len(good) < least:
+        return None
+
+    # ★ 한 바퀴씩 낸 값의 가운뎃값을 쓰려다 말았습니다 ★
+    #
+    #   soc 는 **정수**입니다. 한 바퀴가 3% 라면 거기에 ±1 이 붙고,
+    #   그건 ±33% 입니다. 실제로 잰 두 바퀴가 그걸 그대로 보여줬습니다.
+    #
+    #       3% / 6.3분 = 0.47
+    #       3% / 5.5분 = 0.55      ← 같은 3% 인데 16% 차이
+    #
+    #   쓴 양은 똑같고 시간만 다른데 분당값이 갈립니다. 그 차이는
+    #   로봇이 아니라 **눈금이 만든 것**입니다.
+    #
+    #   그래서 바퀴마다 나눠 셈하지 않고 **통째로** 셉니다. 쓴 양을 다
+    #   더하고 시간을 다 더해서 한 번만 나눕니다. 그러면 ±1 이 합계
+    #   위에 한 번만 얹혀서 묽어집니다.
+    #
+    #       두 바퀴 합  6% / 11.8분 = 0.51   (±1 이면 0.42~0.59)
+    #       세 바퀴 합  9% / 17.3분 = 0.52   (±1 이면 0.46~0.58)
+    #
+    #   ※ 대신 이상한 판 하나에 끌릴 수는 있습니다. 안내 도중에 오래
+    #     멈춰 섰던 판 같은 것요. 그런 판이 생기면 그때 걸러냅니다 —
+    #     아직 본 적이 없어서 미리 만들지 않습니다.
+    return sum(r["used"] for r in good) / sum(r["minutes"] for r in good)
+
+
 class Posture:
     """로봇의 자세를 기억하고, 안전한 순서로 전환합니다.
 

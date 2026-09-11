@@ -1,0 +1,29 @@
+[
+  {
+    "when": "2026-09-11 13:59",
+    "course": "ai_swe01",
+    "from": 88,
+    "to": 85,
+    "used": 3,
+    "minutes": 6.3,
+    "per_minute": 0.473
+  },
+  {
+    "when": "2026-09-11 14:09",
+    "course": "ai_swe01",
+    "from": 84,
+    "to": 81,
+    "used": 3,
+    "minutes": 5.5,
+    "per_minute": 0.547
+  },
+  {
+    "when": "2026-09-11 14:17",
+    "course": "ai_swe01",
+    "from": 80,
+    "to": 77,
+    "used": 3,
+    "minutes": 6.6,
+    "per_minute": 0.456
+  }
+]

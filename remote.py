@@ -162,7 +162,12 @@ body{margin:0;background:var(--bg);color:var(--ink);
      font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
      display:flex;flex-direction:column;min-height:100dvh;padding:env(safe-area-inset-top) 14px env(safe-area-inset-bottom)}
 header{padding:16px 4px 12px;display:flex;align-items:center;gap:10px}
-#burger{margin-left:auto;background:transparent;border:0;color:var(--ink);
+/* ★ 여기 margin-left:auto 가 있었는데 죽어 있었습니다 ★
+   같은 블록 뒤쪽의 margin:0 이 덮어써서, 햄버거를 오른쪽 끝으로 밀라는
+   규칙이 **쓰인 날부터 한 번도 안 들었습니다.** 화면은 멀쩡해 보였고요 —
+   왼쪽에 붙어 있어도 그게 틀린 줄 알 방법이 없었습니다.
+   미는 일은 이제 #batt 가 합니다 (아래). 여기서는 뺍니다. */
+#burger{background:transparent;border:0;color:var(--ink);
         font-size:22px;line-height:1;padding:6px 10px;width:auto;margin:0;border-radius:10px}
 #burger:active{background:var(--card)}
 #veil{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;
@@ -271,10 +276,26 @@ button:disabled{opacity:.4}
         min-height:20px;word-break:break-word}
 #msg{text-align:center;font-size:13px;color:var(--dim);min-height:20px;padding-bottom:10px}
 #lock{font-size:11px;color:var(--dim);opacity:.7}
+/* ★ 배터리는 메뉴가 아니라 머리줄에 둡니다 ★
+   시연 중에 메뉴를 열어볼 겨를은 없습니다. 로봇 옆구리의 초록 점을
+   들여다볼 수 없었던 것과 같은 이유입니다 — 있는 자리가 중요합니다. */
+/* margin-left:auto 가 머리줄의 **밀대**입니다 — 이 앞은 왼쪽,
+   이 뒤(화면 유지 · 햄버거)는 오른쪽으로 갈립니다. */
+#batt{font-size:13px;font-weight:700;color:var(--dim);margin-left:auto;
+      padding:3px 8px;border-radius:8px;white-space:nowrap}
+#batt.low{background:#5b241d;color:#ffd9d3}
+#batt.mid{color:#ffd27a}
+#batt.stale{opacity:.55;font-weight:500}
+#battnote{text-align:center;font-size:12px;color:var(--dim);
+          min-height:16px;margin:-4px 0 6px}
 @media(prefers-reduced-motion:reduce){button{transition:none}}
 </style></head><body>
-<header><span id=dot></span><h1>안내 리모컨</h1><span id=lock></span>
+<header><span id=dot></span><h1>안내 리모컨</h1><span id=batt></span><span id=lock></span>
   <button id=burger aria-label=메뉴>☰</button></header>
+
+<!-- 배터리를 설명하는 줄이므로 배터리 바로 밑입니다.
+     화면 맨 아래에 뒀더니 무엇에 대한 말인지 알 수가 없었습니다. -->
+<div id=battnote></div>
 
 <div id=veil></div>
 <div id=menu>
@@ -755,6 +776,23 @@ async function poll(){
        "Cannot access 'held' before initialization" 이 됐습니다.
        코스 목록도 음량도 그래서 안 그려졌습니다. 화면에는 초록 점만
        멀쩡히 켜져 있었고요 — catch 가 삼켰습니다. */
+    /* ── 배터리 ──────────────────────────────────────────
+       ★ 모르는 것과 끊긴 것을 갈라 보여줍니다 ★
+         아직 안 온 것은 '—', 오다 끊긴 것은 숫자에 '?' 를 붙이고
+         흐리게. 배터리는 줄기만 하므로, 멎은 값을 그냥 띄우면
+         **언제나 낙관적인 쪽으로** 거짓말합니다. */
+    const bp = f.battery;
+    const bs = $('batt');
+    if(bp===null||bp===undefined){
+      bs.textContent='🔋 —'; bs.className='';
+    }else{
+      bs.textContent='🔋 '+bp+'%'+(f.battery_stale?'?':'');
+      bs.className=(f.battery_stale?'stale ':'')+(bp<=30?'low':(bp<=50?'mid':''));
+    }
+    $('battnote').textContent = f.battery_stale
+      ? '배터리 소식이 끊겼습니다 — 위 숫자는 마지막으로 받은 값입니다.'
+      : (f.battery_note||'');
+
     const micHeld = f.mic==='held';
     /* ★ 음성 인식도 다리 쓰는 것과 같은 규칙입니다 ★
        로봇이 말하는 동안 켜면 자기 말을 듣습니다. 그래서 기다릴
@@ -826,6 +864,32 @@ def check_page():
         plain = re.sub(r"\\.", "", line)
         if plain.count("'") % 2 or plain.count('"') % 2:
             bad.append(f"스크립트 {n}번째 줄에서 따옴표가 안 닫혔습니다: {line.strip()[:50]}")
+
+    # ★ 3-2. 자기가 자기를 덮어쓰는 CSS ★
+    #
+    #   `#burger{margin-left:auto; … ; margin:0}` 이 있었습니다.
+    #   뒤쪽 margin:0 이 앞의 margin-left:auto 를 없앱니다 — 햄버거를
+    #   오른쪽 끝으로 밀라는 규칙이 **쓰인 날부터 한 번도 안 들었습니다.**
+    #
+    #   이런 것은 브라우저가 안 알려줍니다. 화면이 멀쩡해 보이거든요.
+    #   "만들었다" 와 "듣는다" 가 다른 또 하나의 예입니다.
+    style = PAGE.split("<style>")[1].split("</style>")[0] if "<style>" in PAGE else ""
+    SHORTHAND = {"margin": ("margin-left", "margin-right",
+                            "margin-top", "margin-bottom"),
+                 "padding": ("padding-left", "padding-right",
+                             "padding-top", "padding-bottom")}
+    for block in re.findall(r"\{([^{}]*)\}", style):
+        decls = [d.strip() for d in block.split(";") if ":" in d]
+        names = [d.split(":", 1)[0].strip() for d in decls]
+        for short, longs in SHORTHAND.items():
+            if short not in names:
+                continue
+            at = names.index(short)
+            for long in longs:
+                if long in names and names.index(long) < at:
+                    bad.append(
+                        f"CSS 에서 '{long}' 을 써놓고 뒤에서 '{short}' 로 "
+                        f"덮어씁니다 — 앞의 것이 죽습니다: {block.strip()[:60]}")
 
     # 4. 메뉴 항목은 서버가 받는 이름이어야 합니다
     for job in sorted(set(re.findall(r"data-job=([\w-]+)", body))):
@@ -990,7 +1054,12 @@ class Remote:
                                 "light": False, "posture": "?",
                                 # 로봇에서 읽기 전까지는 None 입니다 —
                                 # 짐작한 숫자를 화면에 띄우지 않습니다.
-                                "volume": None}}
+                                "volume": None,
+                                # 로봇에게 듣기 전까지는 모릅니다.
+                                # 0 으로 두면 화면에 "0%" 가 뜨고,
+                                # 그건 배터리가 없다는 뜻이 됩니다.
+                                "battery": None, "battery_stale": False,
+                                "battery_note": ""}}
         # ★ 메뉴에서 누르는 것들은 '다음' 과 성격이 다릅니다 ★
         #   순서를 넘기는 것이 아니라, 지금 당장 하나 시키는 것입니다.
         #   기다리는 자리를 거치지 않고 따로 흘려보냅니다.

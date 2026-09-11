@@ -45,7 +45,12 @@
   준비물 (제자리 모드)
     □ 로봇 사방 1 m
     □ 조종 장치 손에 (힘 빼기: 게임패드 L2+B, 동반 리모컨 P 두 번)
-    □ 배터리 40% 이상
+    □ 배터리 — 화면이 "됩니다" 라고 하는가 (머리줄 밑 한 줄)
+
+      여태 '40% 이상' 이라고 적어뒀는데, 그건 아무도 재지 않은
+      숫자였습니다. 이제 프로그램이 잰 값으로 직접 답합니다:
+      한 바퀴가 3%, 바퀴 사이 기다림까지 치면 3.7% 입니다.
+      40% 면 다섯 바퀴가 남은 셈이라 지나치게 넉넉했습니다.
 """
 
 import asyncio
@@ -155,6 +160,108 @@ async def play_line(robot, step, line):
     if line.pause:
         print(f"     … {line.pause:.1f}초 쉼")
         await asyncio.sleep(line.pause)
+
+
+# 이 아래로 내려가면 낮다고 봅니다 (%).
+#
+# ★ 숫자는 그대로지만 근거가 생겼습니다 (2026-09-11) ★
+#   처음에는 그냥 정한 값이었습니다. 세 바퀴를 재고 보니:
+#
+#       한 바퀴          3%   (세 번 다 정확히 3%)
+#       바퀴 사이 기다림 1%
+#       그래서 실제로는  3.7% / 바퀴
+#
+#   한계선 20% 위로 30% 면 **세 바퀴**가 남았다는 뜻입니다. 두 바퀴쯤
+#   남았을 때 알려주는 것이 손 쓸 여유로 알맞습니다 — 26% 가 그
+#   자리인데, 30 이면 한 바퀴 더 일찍 말합니다. 그 정도가 낫습니다.
+#
+#   더 내리지 않는 이유: 경고는 **늦는 쪽이 위험**합니다. 일찍 울려서
+#   잃는 것은 한 바퀴뿐이고, 늦게 울려서 잃는 것은 복도에 선 로봇입니다.
+LOW_BATTERY = 30
+
+def _battery_note(bat, hand):
+    """"이 코스를 돌 만큼 남았는가" 를 한 줄로.
+
+    ★ 퍼센트만 띄우면 더 고운 경고등입니다 ★
+      사람은 "37%" 를 보고도 그게 이 코스에 되는 양인지 모릅니다.
+      그런데 코스가 몇 분인지는 이미 압니다 (Course.summary). 그러니
+      물음에 바로 답합니다 — 그게 경고등과 계기판의 차이입니다.
+
+    ※ 근거가 되는 common.PER_MINUTE 는 아직 **짐작**입니다. 그래서
+      화면에도 '짐작' 이라고 적습니다. 몇 바퀴 돌면 진짜 값이 나옵니다.
+    """
+    try:
+        import courses as _courses
+        want = (hand.state.get("course") or {}).get("id")
+        c = _courses.get(want) if want else None
+        if c is None:
+            return ""
+        secs = c.summary()["seconds"]
+        ok = bat.enough_for(secs)
+        if ok is None:
+            return ""
+        mins = secs / 60.0
+        if ok:
+            return f"이 코스 {mins:.0f}분 — 지금 남은 것으로 됩니다 (짐작)"
+        return f"이 코스 {mins:.0f}분 — 모자랄 수 있습니다 (짐작)"
+    except Exception:
+        # 화면에 한 줄 덜 뜨는 것이지, 안내가 멎을 일은 아닙니다.
+        return ""
+
+
+async def battery_loop(robot, hand):
+    """배터리 잔량을 화면에 흘려보냅니다. 5초마다.
+
+    ★ 왜 따로 고리를 두는가 ★
+      조종 고리(drive_loop)는 50Hz 로 돕니다. 배터리는 그렇게 자주 볼
+      값이 아니고, 무엇보다 **조종이 멈춰도 배터리는 계속 보여야**
+      합니다. 한 고리에 묶으면 한쪽이 멎을 때 다른 쪽도 같이 멎습니다.
+
+    ★ 모르는 것과 끊긴 것을 갈라 보냅니다 ★
+      아직 첫 메시지가 안 온 것과, 오다가 끊긴 것은 다른 상황입니다.
+      화면에는 둘 다 숫자가 없지만, 뒤엣것은 **마지막 값이 있는데도
+      못 믿는 것**이라 사람이 알아야 합니다.
+    """
+    bat = robot.get("battery")
+    if bat is None:
+        return
+    said_low = False
+    try:
+        while True:
+            if bat.fresh():
+                hand.flag(battery=bat.percent, battery_stale=False,
+                          battery_note=_battery_note(bat, hand))
+                # ★ 낮으면 한 번은 소리내어 말합니다 ★
+                #   alert_low_battery.mp3 는 여태 만들어만 놓고 아무도
+                #   틀지 않았습니다. 화면은 조종하는 사람만 보지만,
+                #   소리는 곁에 선 사람도 듣습니다.
+                if bat.percent <= LOW_BATTERY and not said_low:
+                    said_low = True
+                    print(f"\n   ★ 배터리 {bat.percent}% — 낮습니다 ★")
+                    # ★ 로봇이 말하는 중이면 안 끼어듭니다 ★
+                    #   안내 멘트 위에 경고를 덮어씌우면 둘 다 못
+                    #   알아듣습니다. 화면에는 이미 떠 있으니, 소리는
+                    #   기다렸다 다음 기회에 냅니다.
+                    hub, uuids = robot.get("hub"), robot.get("uuids") or {}
+                    key = "alert_low_battery"
+                    if hub and key in uuids and not robot.get("busy"):
+                        try:
+                            await hub.play_by_uuid(uuids[key])
+                        except Exception as e:
+                            print(f"      (경고음을 못 냈습니다: {e})")
+                    else:
+                        said_low = False      # 다음 바퀴에 다시 해봅니다
+                elif bat.percent > LOW_BATTERY + 5:
+                    said_low = False        # 충전했으면 다시 말할 수 있게
+            elif bat.percent is not None:
+                hand.flag(battery=bat.percent, battery_stale=True)
+            else:
+                hand.flag(battery=None, battery_stale=False)
+            await asyncio.sleep(5.0)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"   ※ 배터리 표시가 멎었습니다: {type(e).__name__}: {e}")
 
 
 async def drive_loop(robot, hand):
@@ -764,6 +871,7 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
         return
 
     robot = {"conn": conn, "hub": None, "uuids": {}, "probe": probe,
+             "battery": common.Battery(conn),
              "posture": common.Posture(conn, probe=probe)}
     robot["posture"].state = "stand"
     timer = Timer()
@@ -775,6 +883,7 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
     robot["volume"] = None      # 로봇에게 물어보기 전까지는 모릅니다
     jobs = asyncio.ensure_future(serve_jobs(robot, hand)) if hand else None
     wheel = asyncio.ensure_future(drive_loop(robot, hand)) if hand else None
+    juice = asyncio.ensure_future(battery_loop(robot, hand)) if hand else None
     if hand:
         hand.flag(posture="stand", light=False,
                   mic="off" if hand.ears else "held")
@@ -904,6 +1013,14 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
                 break
         i, start_index = start_index, 0
         restarting = False
+        # ★ 한 바퀴가 배터리를 얼마나 먹는지 여기서부터 잽니다 ★
+        #   업로드 25분에 8% 가 든 것은 알지만 (0.32 %/분), 그동안
+        #   로봇은 아무것도 안 했습니다. 걸을 때 몇 배가 되는지를
+        #   아무도 모르고, 그 배수가 '한 번 더 돌아도 되는가' 를
+        #   가릅니다. 짐작을 더 보태는 대신 적어둡니다.
+        bat = robot.get("battery")
+        lap_from = bat.percent if (bat and bat.fresh()) else None
+        lap_start = time.time()
         while i < len(steps):
             step = steps[i]
             if hand is not None:
@@ -972,6 +1089,36 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
         #   방문객 무리가 여럿이면 다음 무리가 옵니다. 여기서 끝내버리면
         #   조종하는 사람이 PC 로 걸어가서 다시 실행해야 합니다 —
         #   방금 없앤 바로 그 왕복입니다.
+        # ★ 한 바퀴가 끝났습니다 — 값을 적어둡니다 ★
+        #   사람이 종이에 적을 필요가 없고, 적는 것을 잊을 일도 없습니다.
+        #   세 바퀴 쌓이면 common.PER_MINUTE 의 짐작이 잰 값으로 바뀝니다.
+        if bat is not None and lap_from is not None and bat.fresh():
+            # 코스 이름은 화면이 들고 있는 것을 씁니다 — load_course 가
+            # 거기에 적어두고, 안내 중에는 안 바뀝니다.
+            here = ((hand.state.get("course") or {}).get("id")
+                    if hand is not None else None) or "?"
+            row = common.log_lap(here, lap_from, bat.percent,
+                                 time.time() - lap_start)
+            if row:
+                print()
+                print(f" [배터리] 이번 바퀴: {row['from']}% → {row['to']}% "
+                      f"({row['used']}%, {row['minutes']:.1f}분) "
+                      f"= {row['per_minute']:.2f} %/분")
+                # ★ 무엇을 안 세는지 말해둡니다 ★
+                #   이 값은 '안내 시작' 을 누른 뒤부터입니다. 방문객을
+                #   기다린 시간은 안 들어 있습니다 — 그 시간은 얼마든지
+                #   길어질 수 있어서 코스의 값이 아닙니다.
+                #   화면의 숫자로 직접 보면 더 많이 줄어든 것처럼
+                #   보이는데, 그 차이가 기다린 몫입니다.
+                print("          (기다린 시간은 빼고 잰 값입니다 — "
+                      "'안내 시작' 부터 끝까지)")
+                got = common.measured_per_minute()
+                if got:
+                    print(f"          쌓인 기록으로는 {got:.2f} %/분 입니다 "
+                          "— 이제 짐작을 안 씁니다.")
+                else:
+                    print("          세 바퀴가 쌓이면 짐작 대신 이 값을 씁니다.")
+
         print()
         print("=" * 70)
         print(" 안내가 끝났습니다. 휴대폰에서 '처음부터' 를 누르면 다시 합니다.")
@@ -1010,7 +1157,7 @@ async def run(conn, refresh=False, allow_turns=False, start_at=None,
         await common.ensure_standing(conn, probe=probe, ask=False)
         robot["posture"].state = "stand"
 
-    for t in (jobs, wheel):
+    for t in (jobs, wheel, juice):
         if t:
             t.cancel()
     if robot.get("ears"):
