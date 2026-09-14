@@ -406,6 +406,259 @@ def picture(ahead, left, reach=3.0, cols=45):
     return [edge] + lines + [edge]
 
 
+def side_view(ahead, left, height, band=0.45, front=3.5, back=1.0,
+              low=-0.7, high=1.5, cols=46):
+    """옆에서 본 모습. **계단은 이 그림에서만 보입니다.**
+
+    ★ 왜 위에서 본 지도로는 안 되는가 ★
+
+      위에서 보면 계단도 벽도 '앞에 뭔가 있음' 으로 똑같이 찍힙니다.
+      계단의 생김새는 **앞으로 갈수록 바닥이 올라가는 것**이고, 그건
+      높이를 세로로 놓아야 나타납니다.
+
+      가로 = 앞으로 얼마나  ·  세로 = 바닥에서 몇 m
+      로봇 폭만큼(±band)의 띠만 봅니다 — 옆벽이 끼어들면 다 찹니다.
+
+    읽는 법
+      바닥      아래쪽에 가로로 쭉 이어진 줄
+      벽        어느 자리에서 세로로 솟은 줄
+      ★계단★   비스듬히 올라가는 층계 모양
+      내려가는 계단  앞쪽 바닥이 뚝 끊기고 그 아래로 이어짐
+    """
+    keep = np.abs(left) <= band
+    a, h = ahead[keep], height[keep]
+    rows = int((high - low) / 0.1)
+    step_x = (front + back) / cols
+    grid = [[" "] * cols for _ in range(rows)]
+    for x, z in zip(a, h):
+        cx = int((x + back) / step_x)
+        cy = int((high - z) / 0.1)
+        if 0 <= cx < cols and 0 <= cy < rows:
+            grid[cy][cx] = "█"
+    out = []
+    for i, row in enumerate(grid):
+        z = high - i * 0.1
+        mark = f"{z:+5.1f} "
+        out.append(mark + "".join(row))
+    # 로봇 자리 표시
+    zero = int(back / step_x)
+    floor_row = int((high - 0.0) / 0.1)
+    if 0 <= floor_row < rows:
+        line = list(out[floor_row])
+        if 6 + zero < len(line):
+            line[6 + zero] = "▲"
+        out[floor_row] = "".join(line)
+    ruler = "      " + "".join(
+        "|" if abs((i * step_x - back) % 1.0) < step_x / 2 else "·"
+        for i in range(cols))
+    return out + [ruler, f"      ← {back:.1f}m 뒤        0        "
+                        f"앞 {front:.1f}m →"]
+
+
+def ground_ahead(ahead, left, height, band=0.45, step=0.10,
+                 front=3.0, jump=0.35, floor_gap=-0.80):
+    """앞쪽 **지면**을 로봇 쪽에서부터 이어가며 따라갑니다.
+
+    ★ '그 칸의 가장 낮은 점' 으로는 안 됩니다 — 여기서 크게 틀렸습니다 ★
+
+      2026-09-14, **내려가는 계단 위에 세워놓고 "올라갑니다" 라고
+      했습니다.** 이 말을 믿고 앞으로 가면 떨어집니다. 이 저장소에서
+      가장 위험한 오답이었습니다.
+
+      까닭: 내려가는 계단은 상자 밖으로 나갑니다 (상자 바닥이 바닥에서
+      0.58 m 아래인데 계단은 그보다 더 내려갑니다). 지면이 안 보이는
+      칸에서 '가장 낮은 점' 을 찾으면 **건너편 벽이나 난간**이 잡히고,
+      그건 0.8 m 쯤 위에 있습니다. 그러니 프로필이 위로 튀고 직선
+      맞춤이 '올라감' 이 됩니다.
+
+      ★ 지면은 이어져 있습니다 ★
+        계단 한 칸은 0.17 m 쯤입니다. 앞 칸의 지면에서 jump(0.35 m)
+        보다 더 튀면 그건 지면이 아니라 딴 것입니다. 그래서 로봇
+        발밑에서 시작해 **이어지는 동안만** 따라가고, 끊기면 멈춥니다.
+
+        멈춘 자리가 곧 **"여기까지만 보입니다"** 이고, 내려가는 계단에서는
+        그 숫자가 계단 각도보다 중요합니다.
+
+    돌려주는 것: (프로필 [(거리, 높이)…], 지면이 끊긴 거리 or None)
+    """
+    keep = (np.abs(left) <= band) & (height > floor_gap)
+    a, h = ahead[keep], height[keep]
+
+    # 발밑의 지면부터 시작합니다. 없으면 0 으로 봅니다 (바닥에 서 있으니).
+    under = (a > -0.3) & (a < 0.3)
+    prev = float(np.percentile(h[under], 5)) if under.sum() >= 3 else 0.0
+
+    out = []
+    lost = None
+    k = 0
+    while True:
+        x = k * step                      # ★ 더해 나가면 라벨이 겹칩니다 ★
+        if x >= front:                    #   0.2·0.2·0.8·0.8 처럼 같은 거리가
+            break                         #   두 번 찍혔습니다. 곱셈으로 바꿉니다.
+        here = (a >= x) & (a < x + step)
+        near = here & (np.abs(h - prev) <= jump)
+        if near.sum() >= 3:
+            prev = float(np.percentile(h[near], 5))
+            out.append((x + step / 2, prev))
+        elif here.sum() >= 3:
+            # 뭔가 있긴 한데 지면으로 이어지지 않습니다 — 거기서 끊깁니다
+            lost = x
+            break
+        else:
+            lost = x
+            break
+        k += 1
+    return out, lost
+
+
+def steps_in(profile, least=0.04, look=3):
+    """지면에서 **턱**을 찾습니다. 계단이 아니라 문턱 같은 단차용.
+
+    ★ 기울기로는 단차를 못 봅니다 ★
+
+      10 cm 턱 하나를 0.5~2.5 m 에 걸쳐 직선으로 맞추면 3도쯤 됩니다.
+      '평평함' 문턱이 5도니 그냥 평지로 읽힙니다. 그런데 로봇에게
+      10 cm 턱은 평지가 아닙니다 — 내려설 때 헛디딥니다.
+
+      계단은 **기울기**로 보고 단차는 **턱**으로 봐야 합니다. 같은
+      지면 프로필을 두 가지 눈으로 봅니다.
+
+    ★ 한 칸만 보고 판단하지 않습니다 ★
+
+      한 칸은 5 cm 격자라 ±5 cm 씩 흔들립니다. 그러니 앞뒤 look 칸의
+      **가운데값**을 견줍니다. 진짜 턱은 그 뒤로도 계속 높거나 낮고,
+      튄 점 하나는 가운데값에 안 끌려갑니다.
+
+    돌려주는 것: [(거리 m, 높이차 m)…]  + 는 올라섬, - 는 내려섬
+    """
+    if len(profile) < 3:
+        return []
+    zs = [z for _, z in profile]
+    xs = [x for x, _ in profile]
+    found = []
+    # ★ 끝자락을 안 보면 안 됩니다 ★
+    #   앞뒤 세 칸씩 견주느라 **마지막 세 칸을 아예 안 봤습니다.**
+    #   2026-09-14 문턱 앞에서 잰 값이 하필 거기 있었습니다 (1.4 m 에서
+    #   +5 cm, 프로필은 1.4 m 에서 끝) — 문턱을 낮춰도 못 찾았을 것입니다.
+    #
+    #   게다가 **턱 바로 뒤는 그림자라 지면이 끊깁니다.** 라이다가 머리
+    #   밑에서 앞을 보니 턱의 앞면은 보여도 그 뒤 바닥은 가려집니다.
+    #   그러니 '프로필의 끝' 이야말로 턱이 있을 자리입니다. 끝에서는
+    #   있는 칸만으로 견줍니다.
+    for i in range(1, len(zs)):
+        b0 = max(0, i - look)
+        a1 = min(len(zs), i + look)
+        pre = sorted(zs[b0:i])
+        post = sorted(zs[i:a1])
+        if not pre or not post:
+            continue
+        before = pre[len(pre) // 2]
+        after = post[len(post) // 2]
+        rise = after - before
+        if abs(rise) < least:
+            continue
+        # ★ 작은 턱은 지면이 고르던 자리에서만 믿습니다 ★
+        #   문턱을 5 cm 까지 낮추니 **거친 평지에서 없는 턱 셋을
+        #   만들어냈습니다** (흔들림 ±2.5cm 를 넣어봤습니다).
+        #   헛울리는 검사기는 없느니만 못합니다 — 이 저장소에 이미
+        #   네 번 적은 말입니다.
+        #
+        #   격자가 5 cm 라 그 언저리 값은 지면이 미동도 없을 때만
+        #   뜻이 있습니다. 큰 턱(7 cm 이상)은 흔들려도 턱입니다.
+        #   그리고 **견줄 칸이 모자라면 작은 턱은 안 봅니다.** 첫 칸에서는
+        #   앞쪽 표본이 하나뿐이라 '흔들림 0' 으로 보이고, 그러면 흔들림
+        #   검사를 그냥 통과합니다 — 검사가 있는 척만 하는 자리입니다.
+        wobble = (max(pre) - min(pre)) if len(pre) >= 2 else 999.0
+        if abs(rise) < 0.10 and (len(pre) < look or wobble > 0.02):
+            continue
+        found.append((xs[i], rise))
+    # 붙어 있는 것들은 한 턱으로 봅니다 (계단이면 여러 개가 줄지어 옵니다)
+    merged = []
+    for x, rise in found:
+        if merged and abs(x - merged[-1][0]) < 0.25 and \
+                (rise > 0) == (merged[-1][1] > 0):
+            if abs(rise) > abs(merged[-1][1]):
+                merged[-1] = (merged[-1][0], rise)
+        else:
+            merged.append((x, rise))
+    return merged
+
+
+def read_steps(steps):
+    """턱을 사람 말로."""
+    if not steps:
+        return "   턱은 없습니다 (4 cm 이상 되는 단차가 안 보입니다)"
+    lines = []
+    for x, rise in steps:
+        way = "올라섭니다" if rise > 0 else "내려섭니다"
+        lines.append(f"   앞 {x:.2f} m 에서 {abs(rise)*100:.0f} cm {way}")
+    # ★ '여럿이면 계단' 이 아닙니다 ★
+    #   턱이 셋 이상이면 계단이라고 했더니, 부호가 오르내리락하는 잡음
+    #   셋에도 "계단일 수 있습니다" 를 붙였습니다 (2026-09-14 문턱에서).
+    #   계단은 **같은 쪽으로** 연달아 갑니다. 오르락내리락은 계단이 아니라
+    #   울퉁불퉁한 바닥입니다.
+    ups = [r for _, r in steps if r > 0]
+    downs = [r for _, r in steps if r < 0]
+    if len(ups) >= 3 or len(downs) >= 3:
+        lines.append("   ※ 같은 쪽 턱이 여럿 줄지어 있습니다 — 계단일 수 있습니다.")
+    elif len(steps) >= 3:
+        lines.append("   ※ 오르내림이 섞여 있습니다 — 계단이 아니라 "
+                     "울퉁불퉁하거나, 작은 것은 잡음일 수 있습니다.")
+    lines.append("   ※ 5 cm 안팎은 격자 한 칸이라 아슬아슬합니다 — 지면이")
+    lines.append("     흔들림 없이 고르던 자리에서만 믿으세요.")
+    lines.append("   ※ 거리는 ±0.1 m 쯤 어림입니다 — 앞뒤 세 칸의 가운데값을")
+    lines.append("     견주느라 가장자리가 조금 앞당겨 잡힙니다. 높이는 정확합니다.")
+    return "\n".join(lines)
+
+
+def slope_of(profile, near=0.5, far=2.5):
+    """지면이 얼마나 기울어 있는지. (각도°, 쓴 구간 수, 높이차 m)
+
+    계단 한 칸씩을 보지 않고 **여러 칸에 걸친 기울기**를 봅니다 — 칸
+    하나는 수직이라 각도가 90도로 나옵니다. 우리가 알고 싶은 것은
+    '이 앞이 올라가는가 내려가는가' 입니다.
+
+    ※ ground_ahead 가 **이어지는 지면만** 돌려주므로, 여기 들어오는
+      것은 전부 진짜 지면입니다. 끊긴 뒤의 벽은 애초에 안 옵니다.
+    """
+    use = [(x, z) for x, z in profile if near <= x <= far]
+    if len(use) < 4:
+        return None, len(use), None
+    xs = np.array([x for x, _ in use])
+    zs = np.array([z for _, z in use])
+    a, _b = np.polyfit(xs, zs, 1)
+    return math.degrees(math.atan(a)), len(use), float(zs[-1] - zs[0])
+
+
+def read_ground(profile, lost=None):
+    """사람 말로 옮깁니다."""
+    deg, n, rise = slope_of(profile)
+    if deg is None:
+        return f"   앞쪽 지면을 못 읽었습니다 (쓸 구간 {n}개)"
+    if abs(deg) < 5:
+        what = "평평합니다"
+    elif deg > 0:
+        what = f"**올라갑니다** — 계단이라면 {deg:.0f}도 (보통 30~35도)"
+    else:
+        what = f"**내려갑니다** — {abs(deg):.0f}도"
+    lines = [f"   앞 0.5~2.5 m 의 지면이 {what}",
+             f"   (그 사이 높이차 {rise:+.2f} m · 구간 {n}개)"]
+    deep = [x for x, z in profile if z < -0.15]
+    if deep:
+        lines.append(f"   ※ 앞 {min(deep):.1f} m 부터 **바닥 아래로 이어집니다.**")
+        lines.append("     내려가는 계단이거나 거울 반사입니다 — 둘은 이 숫자로")
+        lines.append("     못 가립니다. 옆에서 본 그림을 보세요: 계단은 이어진")
+        lines.append("     면이고, 반사는 흩어져 있습니다.")
+    if lost is not None:
+        lines.append(f"   ★ 지면이 앞 {lost:.1f} m 에서 **끊깁니다** — "
+                     "그 너머는 못 봅니다.")
+        if deep:
+            lines.append("     내려가는 계단이 상자 밖으로 나간 것으로 보입니다.")
+            lines.append("     상자 바닥이 바닥에서 0.58 m 아래이니, 계단 서너 칸이")
+            lines.append("     한계입니다. **그 아래는 눈이 없습니다.**")
+    return "\n".join(lines)
+
+
 async def main():
     ap = argparse.ArgumentParser(description="라이다가 보는 것을 읽습니다")
     ap.add_argument("--frames", type=int, default=3, help="몇 장을 겹칠지")
@@ -480,6 +733,13 @@ async def main():
             print(f" ✖ {low}~{high} m 사이에 점이 없습니다. --band 를 바꿔보세요.")
             return 1
 
+        # ★ 옆모습은 높이를 안 거릅니다 ★
+        #   계단은 '바닥이 올라가는 것' 이라, 바닥을 걸러내면 계단도
+        #   같이 사라집니다. 위에서 본 지도는 걸러야 읽히고, 옆에서 본
+        #   그림은 안 걸러야 읽힙니다.
+        ahead_all, left_all = robot_frame(pts, eyes.pose)
+        rel_all = pts[:, 2] - floor
+
         ahead, left = robot_frame(pts[keep], eyes.pose)
         near = nearest(ahead, left)
 
@@ -527,6 +787,22 @@ async def main():
         print(f"   가로 한 칸 ≈ {2 * args.reach / 45:.2f} m · 제 몸은 뺐습니다")
         keep_body = not_me(ahead, left)
         for line in picture(ahead[keep_body], left[keep_body], reach=args.reach):
+            print("   " + line)
+        print()
+        prof, lost = ground_ahead(ahead_all, left_all, rel_all)
+        print(" 앞쪽 지면")
+        print(read_ground(prof, lost))
+        print()
+        print(" 턱 (문턱 같은 단차)")
+        print(read_steps(steps_in(prof)))
+        if prof:
+            shown = [f"{x:.1f}m:{z:+.2f}" for x, z in prof[:14]]
+            print("   " + "  ".join(shown))
+        print()
+
+        print(f" 옆에서 본 모습 (앞뒤 띠 ±0.45 m · 세로는 바닥에서 m)")
+        print("   바닥=가로줄 · 벽=세로줄 · ★계단=비스듬한 층계★")
+        for line in side_view(ahead_all, left_all, rel_all):
             print("   " + line)
         print()
         print(" ※ 이 건물 바닥은 거울 같아서 반사가 바닥 아래로 찍힙니다.")
