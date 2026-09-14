@@ -1,0 +1,345 @@
+# -*- coding: utf-8 -*-
+"""시뮬레이터의 로봇개를 걷게 하고, **실기체와 같은 값**을 잽니다.
+
+  ★ 무엇을 재는가 ★
+
+    실기체에서 2026-09-14 에 잰 것과 같은 셋입니다 —
+
+        앞으로 간 거리 · 옆으로 밀린 양 · 몸이 돌아간 각
+
+    실기체는 1 m 갈 때 왼쪽으로 5 cm, 4.1도 휩니다. 시뮬레이터의 개는
+    안 그럴 것입니다. **그 차이가 sim2real 틈**이고, 모르고 올리면
+    복도에서 벽을 긁습니다. 이 파일의 값어치는 '걷는 걸 보는 것'이 아니라
+    **'얼마나 다른지 아는 것'** 입니다.
+
+  ★ 이 파일은 공식 예제에서 **출발**했습니다 ★
+
+    C:\\isaacsim\\standalone_examples\\api\\isaacsim.robot.policy.examples\\
+    spot_standalone.py 의 뼈대를 그대로 두고, 잣대만 얹었습니다.
+
+    왜 그랬는가 —
+      처음에는 제가 World 를 만들어 for 문에서 world.step() 을 돌렸습니다.
+      로봇이 주저앉았습니다. 공식 예제를 열어 차례를 배운 뒤 "같게" 다시
+      썼는데 또 주저앉았습니다. Spot 을 태워봤더니 **공식 예제에서 멀쩡히
+      걷던 그 Spot 도** 제 뼈대에선 발라당 넘어졌습니다. 이득은 60으로
+      제대로 들어가 있었고, 무대 시계도 돌고 있었고, 관절은 12개가
+      읽혔는데, 다리가 한 번도 안 움직였습니다.
+
+      네 번 "예제와 같다"고 판단했고 네 번 다 틀렸습니다. 눈으로 견주는
+      것을 그만두고 **돌아가는 파일에서 시작해 최소한만 고치는** 쪽으로
+      바꿨습니다. 이게 이 파일이 함수 없이 위에서 아래로 흐르는 이유입니다
+      — 보기에 투박하지만, 공식 예제와의 차이를 눈으로 셀 수 있습니다.
+
+  ★ 공식 예제에서 바꾼 것은 이것뿐입니다 ★
+
+      1. 로봇을 고를 수 있게 (go2 / spot)
+      2. 걷는 동안 시작·끝 자리를 재서 실기체와 같은 방식으로 셈하기
+      3. headless 를 고를 수 있게
+
+  ★ 오늘의 범인 — 제가 넣은 워밍업 ★
+
+    "실기체 시험처럼 1.5초 제자리에 서 있다가 출발" 이라고 워밍업 동안
+    [0,0,0] 을 줬습니다. 로봇이 매번 발버둥치다 엎어졌습니다.
+
+    **이 정책에게 '제자리에 서 있기'는 학습된 동작이 아닙니다.**
+    걸으라고 하면 걷고, 가만있으라고 하면 무너집니다.
+
+    이걸 찾는 데 열 번 넘게 돌렸습니다. 그 사이 관절 이득을 읽고,
+    물리 엔진 이름을 찍고, 무대 시계를 붙이고, 콜백 호출 횟수를 세고,
+    로봇을 Spot 으로 바꿔보고, 뼈대를 통째로 두 번 다시 썼습니다.
+    전부 멀쩡했습니다. 범인은 제가 **로봇을 배려한다고 넣은 한 줄**
+    이었고, 그건 제가 고친 곳이 아니라 제가 더한 곳에 있었습니다.
+
+    교훈: 공식 예제와 다른 곳을 찾을 때, **내가 뺀 것**만 보지 말고
+    **내가 더한 것**도 보아야 합니다.
+
+  쓰는 법 (★ Isaac Sim 의 파이썬으로 ★)
+
+      C:\\isaacsim\\python.bat D:\\workspace_raraavis\\robotdog00\\sim_go2.py
+
+      옵션
+        --robot spot    Go2 대신 Spot (공식 예제가 쓰는 것 — 견주기용)
+        --gui           화면을 띄웁니다
+        --seconds 3     몇 초 걸을지 (실기체 시험과 같게)
+        --speed 0.31    m/s (실기체가 스틱 0.3 에서 내던 속도)
+        --high 0.35     놓는 높이 m (기본: go2 0.4 · spot 0.8)
+        --warm 2.0      걸음이 자리잡기를 몇 초 기다릴지
+                        ※ 이 동안에도 **걷습니다.** 서 있으라고 하면
+                          이 정책은 무너집니다 (아래 설명).
+"""
+
+import argparse
+import math
+import sys
+
+# ── 옵션부터 (SimulationApp 을 만들기 전에) ─────────────────
+ap = argparse.ArgumentParser(description="시뮬레이터의 개를 걷게 하고 잽니다")
+ap.add_argument("--robot", choices=["go2", "spot"], default="go2")
+ap.add_argument("--gui", action="store_true")
+ap.add_argument("--seconds", type=float, default=3.0)
+ap.add_argument("--speed", type=float, default=0.31)
+ap.add_argument("--warm", type=float, default=2.0,
+                help="걸음이 자리잡기를 기다리는 초 (이 동안도 걷습니다)")
+ap.add_argument("--device", type=str, choices=["cpu", "cuda"], default="cpu")
+# ★ 놓는 높이를 만질 수 있게 ★
+#   Spot 은 0.8 에서 떨어뜨려도 버티고 일어섰는데 Go2 는 0.4 에서 못
+#   일어섭니다. 너무 높아 세게 떨어지는 것인지, 너무 낮아 땅에 낀 것인지
+#   코드를 안 고치고 재볼 수 있어야 합니다.
+ap.add_argument("--high", type=float, default=None,
+                help="놓는 높이 m (기본: go2 0.4 · spot 0.8)")
+args, unknown = ap.parse_known_args()
+
+print("=" * 70)
+print(" 시뮬레이터의 개 — 실기체와 같은 값을 잽니다")
+print("=" * 70)
+print(f" {args.robot} · 걸음 잡기 {args.warm:.1f}초 → 재기 {args.seconds:.1f}초"
+      f" · {args.speed:.2f} m/s · {args.device}")
+print(" ※ 처음 켜면 몇 분 걸릴 수 있습니다.")
+print()
+sys.stdout.flush()
+
+# ★ SimulationApp 을 **먼저** 만들어야 아래 것들이 가져와집니다 ★
+#   Kit 은 앱이 켜질 때 확장을 올립니다. 위에 몰아서 import 하면 죽습니다.
+#   공식 예제도 이 모양입니다 — 보기에 이상하지만 이게 맞습니다.
+from isaacsim import SimulationApp
+
+simulation_app = SimulationApp({"headless": not args.gui})
+
+import carb
+import numpy as np
+import omni.timeline
+from isaacsim.core.deprecation_manager import import_module
+from isaacsim.core.experimental.utils.stage import define_prim
+from isaacsim.core.rendering_manager import RenderingManager
+from isaacsim.core.simulation_manager import SimulationManager
+from isaacsim.core.simulation_manager.impl.isaac_events import IsaacEvents
+from isaacsim.robot.policy.examples.robots import (Go2FlatTerrainPolicy,
+                                                   SpotFlatTerrainPolicy)
+from isaacsim.storage.native import get_assets_root_path
+
+torch = import_module("torch")
+
+first_step = True
+woke = 0                      # initialize() 를 몇 번 불렀나
+drove = 0                     # forward() 를 몇 번 불렀나
+hurt = None                   # 콜백 안에서 터진 것 (Kit 이 삼킵니다)
+
+
+# ── 로봇을 깨우고 움직이는 곳 ───────────────────────────────
+#
+#   ★ 공식 예제의 reset_needed 를 **걷어냈습니다** ★
+#
+#     공식 예제는 이렇게 되어 있습니다 —
+#
+#         if first_step:      robot.initialize()
+#         elif reset_needed:  reset_needed = False; first_step = True
+#         else:               robot.forward(...)
+#
+#     그리고 바깥 while 문은 무대가 안 돌 때 reset_needed = True 를 켭니다.
+#     사람이 무대를 멈췄다 다시 켜는 것을 받아주는 장치입니다.
+#
+#     그런데 이게 한 번이라도 어긋나면 —
+#       깨우기 → (reset_needed) 건너뛰고 다시 first_step 켜기 → 깨우기 → …
+#     이렇게 오가면서 **forward() 가 영영 안 불립니다.** 이득은 제대로
+#     들어가 있고, 관절도 읽히고, 무대 시계도 도는데, 명령만 안 닿습니다.
+#     2026-09-14 에 본 모든 숫자가 정확히 이 모양이었습니다.
+#
+#     우리는 무대를 멈췄다 켜는 일이 없습니다. 그러니 그 장치는 우리에게
+#     쓸모가 없고, 대신 조용히 망가뜨릴 수만 있습니다. 걷어냅니다.
+#
+#   ★ 그리고 셉니다 ★
+#     '불렸겠지' 라고 여기고 세 판을 헛짚었습니다. 세어두면 다음엔
+#     그 자리에서 갈립니다.
+def on_physics_step(step_size: float, context: object) -> None:
+    """첫 걸음에 깨우고, 그 뒤로는 명령을 넣습니다."""
+    global first_step, woke, drove, hurt
+    try:
+        if first_step:
+            robot.initialize()
+            first_step = False
+            woke += 1
+        else:
+            robot.forward(step_size, base_command)
+            drove += 1
+    except Exception:
+        if hurt is None:
+            import traceback
+            hurt = traceback.format_exc()
+
+
+# ── 무대 ────────────────────────────────────────────────────
+assets_root_path = get_assets_root_path()
+if assets_root_path is None:
+    carb.log_error("Could not find Isaac Sim assets folder")
+
+prim = define_prim("/World/Ground", "Xform")
+prim.GetReferences().AddReference(
+    assets_root_path + "/Isaac/Environments/Grid/default_environment.usd")
+
+define_prim("/World/PhysicsScene", "PhysicsScene")
+
+RenderingManager.set_dt(8.0 / 200.0)
+SimulationManager.set_physics_sim_device(args.device)
+SimulationManager.set_physics_dt(1.0 / 200.0)
+
+# ── 로봇 ────────────────────────────────────────────────────
+high = args.high if args.high is not None else (0.8 if args.robot == "spot"
+                                                else 0.4)
+if args.robot == "spot":
+    robot = SpotFlatTerrainPolicy(prim_path="/World/Spot", position=[0, 0, high])
+else:
+    robot = Go2FlatTerrainPolicy(prim_path="/World/Go2", position=[0, 0, high])
+print(f" [로봇] {args.robot} 을(를) {high:.2f} m 에 놓았습니다")
+
+base_command = torch.zeros(3, device=args.device)
+
+_physics_callback_id = SimulationManager.register_callback(
+    on_physics_step, IsaacEvents.POST_PHYSICS_STEP)
+
+omni.timeline.get_timeline_interface().play()
+simulation_app.update()
+
+
+# ── 잣대 ────────────────────────────────────────────────────
+def as_numbers(v):
+    """warp·torch·numpy 무엇이 오든 평범한 numpy 배열로.
+
+    get_world_poses 는 warp 배열로 돌려줍니다 — v[0] 이 안 됩니다
+    (RuntimeError: Item indexing is not supported on wp.array objects).
+    """
+    for how in (lambda x: x.numpy(),
+                lambda x: x.detach().cpu().numpy(),
+                lambda x: np.asarray(x)):
+        try:
+            return np.asarray(how(v))
+        except Exception:
+            continue
+    return np.asarray(v)
+
+
+def pose():
+    """몸의 자리와 방향. 공식 예제도 이 이름으로 읽습니다."""
+    pos, quat = robot.robot.get_world_poses()
+    return (as_numbers(pos).reshape(-1, 3)[0],
+            as_numbers(quat).reshape(-1, 4)[0])
+
+
+def yaw_of(q):
+    w, x, y, z = [float(v) for v in q]
+    return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+
+def clock():
+    return omni.timeline.get_timeline_interface().get_current_time()
+
+
+# ── 돌립니다 (공식 예제의 while 모양 그대로) ────────────────
+#
+#   ★ 걸음을 세지 않고 **무대 시계**로 때를 가릅니다 ★
+#     물리 걸음 수를 세어 1.5초를 맞추려다, 실제 dt 가 제 짐작과 달라서
+#     엉뚱한 때에 재고 있었습니다. 시계를 보면 그 문제가 없습니다.
+began = None
+start = end = None
+told = -1.0
+
+print()
+print(f" 걸으면서 {args.warm:.1f}초 자리잡은 뒤부터 잽니다…")
+print(f"   {'무대시계':>8} {'x':>8} {'y':>8} {'z':>7}   몸 높이")
+sys.stdout.flush()
+
+while simulation_app.is_running():
+    simulation_app.update()
+    if not SimulationManager.is_simulating():
+        continue            # ★ 여기서 reset_needed 를 켜지 않습니다 (위 설명) ★
+
+    now = clock()
+    if began is None:
+        began = now
+    since = now - began
+
+    # ★ 워밍업에도 **걸으라고** 합니다 ★
+    #
+    #   2026-09-14 — 여기가 오늘의 범인이었습니다.
+    #   처음엔 실기체 시험과 맞추려고 워밍업 동안 [0,0,0] 을 줬습니다.
+    #   "1.5초 제자리에 서 있다가 출발" 이라는 뜻이었는데, 로봇이 매번
+    #   발버둥치다 엎어졌습니다. 정책·이득·콜백·물리 엔진을 다 뒤지고
+    #   뼈대를 두 번 다시 쓴 끝에, --warm 0 으로 돌려보고서야 알았습니다.
+    #
+    #   **이 정책에게 '제자리에 서 있기'는 학습된 동작이 아닙니다.**
+    #   걸으라고 하면 걷고, 가만있으라고 하면 무너집니다. 로봇을 배려한다고
+    #   넣은 한 줄이 로봇을 죽이고 있었습니다.
+    #
+    #   그래서 워밍업의 뜻을 바꿉니다 — '서 있는 시간' 이 아니라
+    #   **'걸음이 자리잡을 때까지 기다리는 시간'**. 떨어지고 비틀거리는
+    #   첫 1초를 재기 시작점에서 빼는 것이 원래 목적이었고, 그건 이렇게
+    #   해도 똑같이 됩니다.
+    base_command = torch.tensor([args.speed, 0.0, 0.0], device=args.device)
+    if since >= args.warm:
+        if start is None:
+            start = pose()
+        if since >= args.warm + args.seconds:
+            end = pose()
+            break
+
+    if now - told >= 0.5:
+        told = now
+        p, _ = pose()
+        print(f"   {now:8.2f} {float(p[0]):+8.3f} {float(p[1]):+8.3f}"
+              f" {float(p[2]):7.3f}   "
+              + ("걸음 잡는 중" if since < args.warm else "★ 재는 중"))
+        sys.stdout.flush()
+
+# ── 셈합니다 ────────────────────────────────────────────────
+print()
+print("=" * 70)
+print(f" 깨운 횟수 {woke}회 · 명령한 횟수 {drove}회")
+if woke > 1:
+    print("   ✖ 깨우기가 두 번 이상입니다 — 콜백이 오락가락했습니다.")
+if drove == 0:
+    print("   ✖ **명령이 한 번도 안 들어갔습니다.** 로봇이 못 서는 게 당연합니다.")
+if hurt:
+    print()
+    print(" ✖ 물리 콜백 안에서 터졌습니다:")
+    print(hurt)
+print("-" * 70)
+if start is None or end is None:
+    print(" ✖ 끝까지 못 갔습니다 — 잰 값이 없습니다.")
+else:
+    p0, q0 = start
+    p1, q1 = end
+    yaw0, yaw1 = yaw_of(q0), yaw_of(q1)
+    dx, dy = float(p1[0] - p0[0]), float(p1[1] - p0[1])
+    c, s = math.cos(yaw0), math.sin(yaw0)
+    ahead = dx * c + dy * s
+    side = -dx * s + dy * c
+    turned = math.degrees((yaw1 - yaw0 + math.pi) % (2 * math.pi) - math.pi)
+
+    print(f" 시뮬레이터의 {args.robot}")
+    print(f"   앞으로 간 거리   {ahead:+.3f} m   "
+          f"(명령대로면 {args.speed * args.seconds:.2f} m)")
+    print(f"   옆으로 밀린 양   {side * 100:+.1f} cm")
+    print(f"   몸이 돌아간 각   {turned:+.1f} 도")
+    print(f"   몸 높이 (끝)     {float(p1[2]):.3f} m   "
+          f"(제대로 서 있으면 0.3 m 안팎)")
+    print()
+    if abs(ahead) <= 0.15:
+        print(" ✖ 앞으로 안 갔습니다.")
+        if float(p1[2]) < 0.2:
+            print("   주저앉았습니다 — 걸음 이전에 서는 것부터입니다.")
+        print("   --gui 를 붙이면 눈으로 볼 수 있습니다.")
+        print("   --robot spot 으로 바꿔보면 뼈대 탓인지 자산 탓인지 갈립니다.")
+    else:
+        print(" 실기체 (2026-09-14, 13판)")
+        print("   → 1 m 갈 때  옆으로 +5.0 cm · +4.1 도  (왼쪽으로)")
+        print(f" 시뮬레이터   → 1 m 갈 때  옆으로 "
+              f"{side / abs(ahead) * 100:+.1f} cm · "
+              f"{turned / abs(ahead):+.1f} 도")
+        print()
+        print(" ★ 이 둘의 차이가 sim2real 틈입니다 ★")
+        print("   시뮬레이터에서 곧게 걷는 것을 만들어도 실기체는 휩니다.")
+        print("   그 차이를 모르고 올리면 복도에서 벽을 긁습니다.")
+
+print()
+print(" 닫습니다…")
+sys.stdout.flush()
+simulation_app.close()
