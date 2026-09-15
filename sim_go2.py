@@ -63,6 +63,11 @@
         --seconds 3     몇 초 걸을지 (실기체 시험과 같게)
         --speed 0.31    m/s (실기체가 스틱 0.3 에서 내던 속도)
         --high 0.35     놓는 높이 m (기본: go2 0.4 · spot 0.8)
+        --engine newton 물리 엔진을 바꿉니다 (정책 파일도 같이 바뀝니다)
+        --look          자산 서버에 어떤 Unitree 로봇이 있는지 보고 끝냅니다
+        --usd <경로>    로봇 자산을 바꿔 끼웁니다 (Menagerie 판 대신)
+        --policy <경로> 정책 파일을 바꿔 끼웁니다 (Isaac Lab 에서 받은 것)
+        --gains 25,0.5,23.5   관절 이득을 Isaac Lab 이 학습한 값으로
         --warm 2.0      걸음이 자리잡기를 몇 초 기다릴지
                         ※ 이 동안에도 **걷습니다.** 서 있으라고 하면
                           이 정책은 무너집니다 (아래 설명).
@@ -87,6 +92,31 @@ ap.add_argument("--device", type=str, choices=["cpu", "cuda"], default="cpu")
 #   코드를 안 고치고 재볼 수 있어야 합니다.
 ap.add_argument("--high", type=float, default=None,
                 help="놓는 높이 m (기본: go2 0.4 · spot 0.8)")
+ap.add_argument("--engine", choices=["auto", "physx", "newton"], default="auto",
+                help="물리 엔진. Go2 는 MuJoCo 쪽 자산이라 newton 이 맞을 수 있습니다")
+# ★ 자산을 바꿔 끼울 수 있게 ★
+#   go2.py 는 기본으로 Mujoco Menagerie 판을 씁니다. NVIDIA 가 직접 만든
+#   Unitree 자산이 /Isaac/Robots/Unitree/ 에 따로 있고 (H1 예제가 거기서
+#   가져다 씁니다), Go2 도 있을 수 있습니다. 있으면 그걸로 바꿔 끼웁니다.
+ap.add_argument("--usd", default=None,
+                help="로봇 자산 경로. 자산폴더 뒤부터 (예 /Isaac/Robots/Unitree/Go2/go2.usd)")
+ap.add_argument("--look", nargs="?", const="", default=None,
+                help="자산 서버를 둘러보고 끝냅니다. 경로를 주면 그 폴더를 봅니다")
+# ★ 정책 파일을 바꿔 끼울 수 있게 ★
+#   Isaac Sim 에 딸려온 physx_policy.pt 로는 Go2 가 기어다닙니다 (자산을
+#   바꿔도 똑같이 0.12 m). Isaac Lab 에서 받은 policy.pt 를 여기에 물립니다.
+#   env_config 는 안 건드립니다 — go2.py 는 둘 중 하나만 줘도 나머지는
+#   기본값에서 채웁니다. 관절 이득·기본자세·주기는 그대로 쓰겠다는 뜻입니다.
+ap.add_argument("--policy", default=None,
+                help="정책 파일(.pt)의 전체 경로. Isaac Lab 이 내보낸 것")
+# ★ 관절을 미는 힘을 바꿀 수 있게 ★
+#   Isaac Lab 의 Go2 는 파이썬에서 모터를 흉내 내 토크를 직접 넣습니다 —
+#   DCMotorCfg(stiffness=25, damping=0.5, effort_limit=23.5).
+#   토크 법칙을 읽어보니 평범한 PD 에 상한만 씌운 것이라, 엔진 PD 로
+#   거의 그대로 흉내 낼 수 있습니다 (상한은 보통 걸음에서 안 닿습니다).
+#   그러니 이 셋만 맞춰주면 됩니다.
+ap.add_argument("--gains", default=None,
+                help="강성,감쇠,힘제한 (예: 25,0.5,23.5). 깨운 직후에 넣습니다")
 args, unknown = ap.parse_known_args()
 
 print("=" * 70)
@@ -158,6 +188,13 @@ def on_physics_step(step_size: float, context: object) -> None:
             robot.initialize()
             first_step = False
             woke += 1
+            # ★ 이득은 깨운 **뒤에** 덮어씁니다 ★
+            #   initialize() 가 설정 파일의 값을 넣으므로, 그 전에 넣으면
+            #   덮어써집니다. 그리고 넣은 뒤 다시 읽어서 정말 들어갔는지
+            #   확인합니다 — 오늘 엔진 바꾸기에서 '시킨 것'과 '된 것'이
+            #   다른 걸 겪었습니다.
+            if args.gains:
+                gains_said.append(put_gains(robot.robot, args.gains))
         else:
             robot.forward(step_size, base_command)
             drove += 1
@@ -165,6 +202,110 @@ def on_physics_step(step_size: float, context: object) -> None:
         if hurt is None:
             import traceback
             hurt = traceback.format_exc()
+
+
+gains_said = []
+
+
+def put_gains(art, spec):
+    """강성·감쇠·힘제한을 넣고, **다시 읽어서** 무엇이 들어갔는지 돌려줍니다."""
+    import numpy as _np
+    want = [float(x) for x in spec.replace(" ", "").split(",")]
+    while len(want) < 3:
+        want.append(None)
+    kp, kd, eff = want[0], want[1], want[2]
+    n = None
+    try:
+        n = int(_np.asarray(art.get_dof_gains()).reshape(-1).size // 2) or None
+    except Exception:
+        pass
+    n = n or 12
+    lines = []
+
+    def try_set(names, value, what):
+        if value is None:
+            return
+        for name in names:
+            fn = getattr(art, name, None)
+            if not callable(fn):
+                continue
+            for arg in ([_np.full((1, n), value, dtype=_np.float32)],
+                        [_np.full(n, value, dtype=_np.float32)],
+                        [value]):
+                try:
+                    fn(*arg)
+                    lines.append(f"{what} ← {value:g}  ({name})")
+                    return
+                except Exception:
+                    continue
+        lines.append(f"{what} ✖ 넣을 방법을 못 찾았습니다")
+
+    # ★ 이 판은 강성·감쇠를 **하나로 묶어** 다룹니다 ★
+    #   2026-09-15: set_dof_stiffnesses / set_dof_dampings 를 짐작해서 썼다가
+    #   둘 다 "못 찾았습니다" 가 나왔습니다. 읽는 쪽이 get_dof_gains 하나인
+    #   것을 이미 봤으면서 넣는 쪽만 따로 있을 거라고 생각했습니다.
+    #   묶음부터 해보고, 안 되면 따로따로 해봅니다.
+    done_pair = False
+    if kp is not None or kd is not None:
+        fn = getattr(art, "set_dof_gains", None)
+        if callable(fn):
+            kps = None if kp is None else _np.full((1, n), kp, dtype=_np.float32)
+            kds = None if kd is None else _np.full((1, n), kd, dtype=_np.float32)
+            for call in (lambda: fn(stiffnesses=kps, dampings=kds),
+                         lambda: fn(kps, kds),
+                         lambda: fn(stiffness=kps, damping=kds)):
+                try:
+                    call()
+                    lines.append(f"강성·감쇠 ← {kp:g} / {kd:g}  (set_dof_gains)")
+                    done_pair = True
+                    break
+                except Exception as e:
+                    last = e
+            if not done_pair:
+                lines.append(f"set_dof_gains 는 있는데 안 먹습니다 — {last}")
+
+    if not done_pair:
+        try_set(("set_dof_stiffnesses", "set_dof_stiffness"), kp, "강성")
+        try_set(("set_dof_dampings", "set_dof_damping"), kd, "감쇠")
+    try_set(("set_dof_max_efforts", "set_dof_max_effort"), eff, "힘제한")
+
+    # 묶음으로 읽는 쪽도 봅니다
+    fn = getattr(art, "get_dof_gains", None)
+    if callable(fn):
+        try:
+            got = fn()
+            pair = got if isinstance(got, (tuple, list)) else [got]
+            for label, one in zip(("강성", "감쇠"), pair):
+                a = _np.asarray(one)
+                try:
+                    a = _np.asarray(one.numpy())
+                except Exception:
+                    pass
+                a = a.reshape(-1)
+                lines.append(f"{label} 확인 → {float(a.min()):g} ~ {float(a.max()):g}")
+        except Exception as e:
+            lines.append(f"get_dof_gains 로 되읽기 실패 — {type(e).__name__}")
+
+    # 다시 읽기 — 시킨 것과 된 것은 다릅니다
+    for name, what in (("get_dof_max_efforts", "힘제한"),):
+        fn = getattr(art, name, None)
+        if not callable(fn):
+            continue
+        try:
+            got = fn()
+            for how in (lambda x: x.numpy(),
+                        lambda x: x.detach().cpu().numpy(),
+                        lambda x: _np.asarray(x)):
+                try:
+                    got = how(got)
+                    break
+                except Exception:
+                    continue
+            arr = _np.asarray(got).reshape(-1)
+            lines.append(f"{what} 확인 → {float(arr.min()):g} ~ {float(arr.max()):g}")
+        except Exception:
+            pass
+    return lines
 
 
 # ── 무대 ────────────────────────────────────────────────────
@@ -178,18 +319,184 @@ prim.GetReferences().AddReference(
 
 define_prim("/World/PhysicsScene", "PhysicsScene")
 
+# ── 물리 엔진 ───────────────────────────────────────────────
+#
+#   ★ 왜 이걸 만질 수 있게 하는가 ★
+#
+#     go2.py 원본에 이 줄이 있습니다 —
+#
+#         is_newton = active_engine == "newton"
+#         policy_path = newton_policy.pt  if is_newton else  physx_policy.pt
+#
+#     **정책 파일이 엔진별로 둘입니다.** 그리고 자산도 엔진별 변형(variant)을
+#     골라 씁니다 (_set_physics_variant).
+#
+#     두 로봇이 온 곳이 다릅니다 —
+#       Spot  /Isaac/Robots/...                     NVIDIA 자체 자산
+#       Go2   /Isaac/Samples/Mujoco_Menagerie/...   MuJoCo 쪽에서 가져온 것
+#
+#     Isaac Sim 6.0 의 새 엔진이 Newton 이고 Menagerie 는 원래 MuJoCo 계열이니,
+#     Go2 는 Newton 쪽에서 더 손본 물건일 수 있습니다. 우리는 지금 physx 로만
+#     돌려봤습니다. 바꿔보지 않고는 모릅니다.
+#
+#   ★ 이름을 박지 않습니다 ★
+#     엔진을 바꾸는 함수 이름을 모릅니다. 있을 만한 것을 찾아 불러보고,
+#     **무엇이 실제로 먹혔는지 말합니다.** 못 바꾸면 못 바꿨다고 합니다.
+#     2026-09-15: 제 짐작 셋(set_physics_engine · set_active_physics_engine ·
+#     use_physics_engine)이 다 빗나갔고, "못 찾으면 있는 것을 보여준다"고
+#     해둔 덕에 진짜 이름이 나왔습니다 — **switch_physics_engine**.
+#     이름을 박았더라면 '안 됩니다' 한 줄만 보고 끝났을 것입니다.
+try:
+    print(f" [엔진] 쓸 수 있는 것: "
+          f"{SimulationManager.get_available_physics_engines()}")
+except Exception as e:
+    print(f" [엔진] 목록을 못 물어봤습니다 — {type(e).__name__}")
+
+if args.engine != "auto":
+    done = None
+    for what in ("switch_physics_engine", "set_physics_engine",
+                 "set_active_physics_engine", "use_physics_engine"):
+        fn = getattr(SimulationManager, what, None)
+        if callable(fn):
+            try:
+                fn(args.engine)
+                done = what
+                break
+            except Exception as e:
+                print(f" [엔진] {what}({args.engine}) 는 안 됩니다 — {e}")
+    # ★ 불렀다고 바뀐 게 아닙니다 — 다시 읽어서 확인합니다 ★
+    #   2026-09-15: switch_physics_engine 이 예외를 안 던지고 carb 로 오류만
+    #   찍었습니다. 저는 '예외가 없으니 성공'으로 읽고 "골랐습니다" 라고
+    #   보고했는데, **바로 아래 줄에 physx 라고 찍혀 있었습니다.**
+    #   시킨 것과 된 것은 다릅니다. 시켰으면 다시 읽어봐야 합니다.
+    if done:
+        try:
+            now_engine = SimulationManager.get_active_physics_engine()
+        except Exception:
+            now_engine = None
+        if now_engine == args.engine:
+            print(f" [엔진] {done} 로 {args.engine} 으로 바뀌었습니다")
+        else:
+            print(f" [엔진] ✖ {done} 을 불렀지만 **안 바뀌었습니다** — "
+                  f"지금도 {now_engine} 입니다")
+            print("        (이 판에 그 엔진이 안 깔려 있다는 뜻입니다)")
+            done = "실패"
+    if done is None:
+        print(f" [엔진] ✖ 바꾸는 방법을 못 찾았습니다. 있는 것 중 engine 이")
+        print("        들어간 것들: "
+              + ", ".join(a for a in dir(SimulationManager)
+                          if "engine" in a.lower()))
+try:
+    print(f" [엔진] 지금 도는 것: {SimulationManager.get_active_physics_engine()}")
+except Exception:
+    pass
+
 RenderingManager.set_dt(8.0 / 200.0)
 SimulationManager.set_physics_sim_device(args.device)
 SimulationManager.set_physics_dt(1.0 / 200.0)
 
+# ── 자산 서버 둘러보기 ──────────────────────────────────────
+#
+#   ★ Go2 자산이 하나뿐인지 확인합니다 ★
+#     go2.py 는 Mujoco Menagerie 판을 기본으로 씁니다. 그런데 공식 H1
+#     예제는 /Isaac/Robots/Unitree/H1/h1.usd 를 씁니다 — **NVIDIA 가 직접
+#     만든 Unitree 자산이 따로 있다**는 뜻입니다. Go2 도 거기 있으면
+#     Menagerie 판 대신 그걸 끼워볼 수 있습니다.
+def peek(where):
+    """자산 서버의 한 폴더에 뭐가 있는지."""
+    try:
+        import omni.client
+        ok, entries = omni.client.list(where)
+        if str(ok) != "Result.OK":
+            return None
+        return sorted(e.relative_path for e in entries)
+    except Exception:
+        return None
+
+
+if args.look is not None:
+    print()
+    print("=" * 70)
+    print(" 자산 서버에 있는 것")
+    print("=" * 70)
+    folders = ([args.look] if args.look else
+               ["/Isaac/Robots/Unitree",
+                "/Isaac/Robots",
+                "/Isaac/Samples/Mujoco_Menagerie"])
+    for folder in folders:
+        got = peek(assets_root_path + folder)
+        print()
+        print(f" {folder}")
+        if got is None:
+            print("   ✖ 못 읽었습니다 (없거나 접근이 안 됩니다)")
+        else:
+            for name in got[:40]:
+                print(f"   · {name}")
+            if len(got) > 40:
+                print(f"   … 그 밖에 {len(got) - 40}개")
+    print()
+    print(" ※ 폴더 안을 더 보려면 경로를 주세요:")
+    print("   --look /Isaac/Robots/Unitree/Go2")
+    print(" ※ 자산을 바꿔 끼우려면:")
+    print("   --usd /Isaac/Robots/Unitree/Go2/<파일이름>.usd")
+    print()
+    print(" 닫습니다…")
+    sys.stdout.flush()
+    simulation_app.close()
+    raise SystemExit(0)
+
 # ── 로봇 ────────────────────────────────────────────────────
 high = args.high if args.high is not None else (0.8 if args.robot == "spot"
                                                 else 0.4)
-if args.robot == "spot":
-    robot = SpotFlatTerrainPolicy(prim_path="/World/Spot", position=[0, 0, high])
-else:
-    robot = Go2FlatTerrainPolicy(prim_path="/World/Go2", position=[0, 0, high])
+Kind = SpotFlatTerrainPolicy if args.robot == "spot" else Go2FlatTerrainPolicy
+made = {"prim_path": "/World/" + args.robot, "position": [0, 0, high]}
+if args.usd:
+    made["usd_path"] = assets_root_path + args.usd
+    print(f" [자산] 기본 대신 이걸 씁니다: {args.usd}")
+if args.policy:
+    # 이 클래스가 policy_path 를 받는지 **물어보고** 넣습니다.
+    #   Spot 쪽은 인자가 다를 수 있습니다. 박아 넣었다가 TypeError 로
+    #   죽느니, 안 받으면 안 받는다고 말하는 편이 낫습니다.
+    import inspect
+    if "policy_path" in inspect.signature(Kind.__init__).parameters:
+        made["policy_path"] = args.policy
+        print(f" [정책] 기본 대신 이걸 씁니다: {args.policy}")
+    else:
+        print(f" [정책] ✖ {args.robot} 은 policy_path 를 안 받습니다 — 무시합니다")
+robot = Kind(**made)
 print(f" [로봇] {args.robot} 을(를) {high:.2f} m 에 놓았습니다")
+
+# ★ 물리 주기를 **정책에게 물어봅니다** ★
+#
+#   policy_controller.py 원본에 이 줄이 있습니다 —
+#
+#       self._decimation, self._dt, self.render_interval = \
+#           get_physics_properties(self.policy_env_params)
+#
+#   즉 **정책이 스스로 '나는 이 주기로 배웠다'고 말해줍니다.** 학습할 때와
+#   다른 주기로 돌리면, 정책이 내놓는 목표각이 몸이 실제로 움직이는 빠르기와
+#   어긋납니다. 걷긴 걷는데 자세가 무너집니다.
+#
+#   그런데 저는 두 로봇 모두에게 1/200 을 박아서 먹이고 있었습니다.
+#   공식 예제가 Spot 에 그 값을 쓰길래 따라 쓴 것인데, **Spot 용 숫자를
+#   Go2 에게 준 것**입니다. 물어보면 될 것을 베껴왔습니다.
+#
+#   2026-09-15: 여기서 실제 값을 찍고, 있으면 그대로 씁니다.
+want_dt = getattr(robot, "_dt", None)
+deci = getattr(robot, "_decimation", None)
+print(f" [정책] 스스로 말하는 주기  dt={want_dt}  decimation={deci}", end="")
+if want_dt:
+    print(f"  → 정책 판단 {1.0 / want_dt / (deci or 1):.0f} 회/초")
+else:
+    print()
+
+if want_dt and abs(want_dt - 1.0 / 200.0) > 1e-9:
+    print(f" [고침] 제가 박아둔 1/200 ({1/200:.5f}) 대신 "
+          f"정책이 말한 {want_dt:.5f} 로 바꿉니다")
+    SimulationManager.set_physics_dt(want_dt)
+    RenderingManager.set_dt(8.0 * want_dt)
+else:
+    print(" [확인] 1/200 이 맞습니다 — 주기는 범인이 아닙니다")
 
 base_command = torch.zeros(3, device=args.device)
 
@@ -241,6 +548,7 @@ def clock():
 began = None
 start = end = None
 told = -1.0
+told_gains = False        # 이득 줄은 콜백이 뛴 뒤에 생깁니다 — 한 번만 찍습니다
 
 print()
 print(f" 걸으면서 {args.warm:.1f}초 자리잡은 뒤부터 잽니다…")
@@ -251,6 +559,12 @@ while simulation_app.is_running():
     simulation_app.update()
     if not SimulationManager.is_simulating():
         continue            # ★ 여기서 reset_needed 를 켜지 않습니다 (위 설명) ★
+
+    if gains_said and not told_gains:
+        told_gains = True
+        for line in gains_said[0]:
+            print(f" [이득] {line}")
+        sys.stdout.flush()
 
     now = clock()
     if began is None:
