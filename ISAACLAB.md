@@ -253,6 +253,16 @@ Stiffness 0.000 · Damping 0.000 · Effort Limits 1.0e+09
 평지만 배운 정책은 **4 cm 턱부터 넘어집니다** (README 35-2).
 그래서 같은 명령 범위를 거친 지형 위에 얹습니다.
 
+> ## ⚠ 아래 판은 **기어다니는 정책**을 만듭니다
+>
+> 이대로 1500번을 돌렸더니 배를 깔고 다니는 개가 나왔습니다
+> (README 36). 스캐너를 통째로 끄면서 `base_height_l2` 를 빼고
+> **대신 넣은 것이 없어서**, 자세에 대해 아무 말도 안 하는 설정이
+> 됐기 때문입니다. 거친 지형 쪽은 `flat_orientation_l2` 도 0 입니다.
+>
+> 아래를 그대로 붙여넣지 마시고, **맨 밑의 「고칠 것」까지 읽고**
+> 함께 넣으십시오.
+
 ```
 Isaac-Velocity-Rough-Unitree-Go2-Guide-v0        학습용
 Isaac-Velocity-Rough-Unitree-Go2-Guide-Play-v0   확인·내보내기용
@@ -361,9 +371,86 @@ gym.register(
  flat_orientation_l2   −2.50         0.00
 ```
 
+---
+
+## 고친 곳 4 에 고칠 것 — ★ 아직 안 돌려봤습니다 ★
+
+2026-09-16 저녁에 알아낸 것들입니다. **글로만 있고 확인은 안 했습니다.**
+붙여넣은 뒤 아래 「30초 확인」을 꼭 거치십시오.
+
+**(가) 스캐너를 끄지 말고, 관측에서만 뺍니다**
+
+`flat_env_cfg.py` 의 `UnitreeGo2GuideRoughEnvCfg.__post_init__` 에서
+`self.scene.height_scanner = None` 줄을 **지우고**, 대신 —
+
+```python
+        # ★ 정책의 눈만 가립니다 — 스캐너는 남겨둡니다 ★
+        #   관측에서만 빼면 정책은 여전히 48차원(장님)이라 sim_go2.py 가
+        #   그대로 읽고, 상을 셈할 때는 지형 높이를 쓸 수 있습니다.
+        #   학습 중에만 쓰는 정보라 실기체와 상관없습니다.
+        self.observations.policy.height_scan = None
+        # self.scene.height_scanner 는 건드리지 않습니다.
+
+        # 서 있으라고 말해줍니다 — 지형 높이를 뺀 키로.
+        from isaaclab.envs import mdp
+        from isaaclab.managers import RewardTermCfg as RewTerm
+        from isaaclab.managers import SceneEntityCfg
+
+        self.rewards.base_height_l2 = RewTerm(
+            func=mdp.base_height_l2,
+            weight=-30.0,
+            params={"target_height": 0.30,
+                    "sensor_cfg": SceneEntityCfg("height_scanner")},
+        )
+
+        # 광선을 187개 → 4개로 줄입니다.
+        #   상은 이 값들의 **평균 하나**만 씁니다. 그런데 4096마리가
+        #   357만 면짜리 지형에 187줄씩 쏘느라 초당 걸음이
+        #   15만 → 2.7만으로 떨어졌습니다 (17분이 1시간 20분으로).
+        #   기본: size [1.6, 1.0] · 간격 0.1 → 17 × 11 = 187
+        #   우리: size [0.2, 0.2] · 간격 0.2 →  2 ×  2 = 4
+        self.scene.height_scanner.pattern_cfg.resolution = 0.2
+        self.scene.height_scanner.pattern_cfg.size = [0.2, 0.2]
+```
+
+**(나) 탐색 폭을 로그로 저장합니다**
+
+`agents\rsl_rl_ppo_cfg.py` 의 `UnitreeGo2GuideRoughPPORunnerCfg` 에 —
+
+```python
+        # ★ 2026-09-16, 236번째에서 이걸로 죽었습니다 ★
+        #   RuntimeError: normal expects all elements of std >= 0.0
+        #   Mean action std 가 1.00 → 0.52 로 줄고 있었고, 그대로 두면
+        #   0 을 지나 음수가 됩니다. "log" 면 exp 를 씌우니 항상 양수입니다.
+        #   (평지 판이 300번에서 끝난 건 운이 좋았던 것입니다 — 그때
+        #    std 가 0.26 이었으니 더 돌았으면 같은 자리에서 터졌습니다.)
+        self.actor.distribution_cfg.std_type = "log"
+```
+
+이름은 `isaaclab_rl\rsl_rl\rl_cfg.py:57` 에서 확인했습니다 —
+`GaussianDistributionCfg.std_type: Literal["scalar", "log"]`.
+
+**★ 30초 확인 — 이제 다섯 가지 ★**
+
+```powershell
+.\isaaclab.bat train --rl_library rsl_rl `
+    --task Isaac-Velocity-Rough-Unitree-Go2-Guide-v0 `
+    --num_envs 64 --max_iterations 2
+```
+
+```
+관측   shape: (48,) · height_scan 없음
+상     base_height_l2  −30.0
+지형   terrain_levels
+탐색   Mean action std 가 첫 줄에 1.00          ← 새로 생긴 항목
+속도   Steps per second 가 10만 위             ← 광선 줄이기가 먹었는가
+```
+
+마지막 줄이 2.7만 그대로면 엉뚱한 곳을 줄인 것입니다.
+
 ## Isaac Lab 을 다시 깔았다면
 
-위의 「고친 곳 1·2·3·4」 를 순서대로 다시 붙여넣으면 끝입니다.
+위의 「고친 곳 1·2·3·4」 와 그 아래 「고칠 것」 을 순서대로 다시 붙여넣으면 끝입니다.
 셋 다 **파일 맨 끝에 덧붙이는 것**이라 기존 내용과 부딪히지 않습니다.
 
 그리고 설치에서 걸렸던 것들은 README 33-4 에 적어뒀습니다 —
