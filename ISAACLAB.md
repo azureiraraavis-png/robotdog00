@@ -248,9 +248,122 @@ Stiffness 0.000 · Damping 0.000 · Effort Limits 1.0e+09
 
 ---
 
+## 고친 곳 4 — 거친 지형 (2026-09-16)
+
+평지만 배운 정책은 **4 cm 턱부터 넘어집니다** (README 35-2).
+그래서 같은 명령 범위를 거친 지형 위에 얹습니다.
+
+```
+Isaac-Velocity-Rough-Unitree-Go2-Guide-v0        학습용
+Isaac-Velocity-Rough-Unitree-Go2-Guide-Play-v0   확인·내보내기용
+```
+
+**`flat_env_cfg.py` 맨 끝에 이어 붙임**
+
+거친 지형인데 파일 이름이 flat 인 것은 어색합니다만, `UnitreeGo2RoughEnvCfg`
+를 이미 여기서 불러오고 있고 **우리가 고친 것을 한 파일에 모아두는 편**이
+남의 저장소에서는 낫습니다.
+
+```python
+@configclass
+class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+
+        # 명령 범위 — 평지 판과 같게 (견주려면 한 가지만 달라야 합니다)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.2, 0.5)
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        self.commands.base_velocity.rel_standing_envs = 0.15
+
+        # ★ 눈을 뗍니다 ★ — 관측 48차원 유지
+        self.scene.height_scanner = None
+        self.observations.policy.height_scan = None
+
+        # base_height_l2 는 넣지 않습니다.
+        #   거친 지형에서는 땅 높이가 자리마다 달라서, 세계 좌표 높이를
+        #   목표로 삼으면 언덕에서 몸을 낮추라고 시키게 됩니다.
+
+
+class UnitreeGo2GuideRoughEnvCfg_PLAY(UnitreeGo2GuideRoughEnvCfg):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        self.observations.policy.enable_corruption = False
+        self.events.base_external_force_torque = None
+        self.events.push_robot = None
+```
+
+**★ 왜 스캐너를 끄는가 ★**
+
+  · 관측이 48차원으로 남아 `sim_go2.py` 가 그대로 읽습니다. 켜두면
+    235차원이 되어, 17분을 돌린 뒤에야 **우리 잣대에 못 넣는 정책**
+    이라는 걸 알게 됩니다.
+  · 실기체에도 지형 지도를 정책에 물려줄 길이 없습니다 (32-0).
+
+**`agents\rsl_rl_ppo_cfg.py` 맨 끝에 이어 붙임**
+
+```python
+@configclass
+class UnitreeGo2GuideRoughPPORunnerCfg(UnitreeGo2RoughPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "unitree_go2_guide_rough"
+```
+
+`max_iterations` 는 거친 지형 것 그대로 **1500** 입니다 (평지는 300).
+4096 마리로 17분쯤.
+
+**`__init__.py` 맨 끝에 이어 붙임**
+
+```python
+gym.register(
+    id="Isaac-Velocity-Rough-Unitree-Go2-Guide-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.flat_env_cfg:UnitreeGo2GuideRoughEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:UnitreeGo2GuideRoughPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_rough_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-Unitree-Go2-Guide-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.flat_env_cfg:UnitreeGo2GuideRoughEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:UnitreeGo2GuideRoughPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_rough_ppo_cfg.yaml",
+    },
+)
+```
+
+**★ 30초 확인 — 17분을 걸기 전에 ★**
+
+```powershell
+.\isaaclab.bat train --rl_library rsl_rl `
+    --task Isaac-Velocity-Rough-Unitree-Go2-Guide-v0 `
+    --num_envs 64 --max_iterations 2
+```
+
+  · 관측 표가 **`shape: (48,)`** 이고 `height_scan` 줄이 **없어야** 합니다.
+  · 상 표에 **`base_height_l2` 가 없어야** 합니다.
+  · `Curriculum` 에 `terrain_levels` 가 **있어야** 합니다 (쉬운 데서 시작해
+    험해집니다).
+
+물려받은 기본값 때문에 상 두 개가 평지 판과 다릅니다. 알고 가야 합니다 —
+
+```
+                      평지 Guide   거친 Guide
+ feet_air_time          0.25         0.01
+ flat_orientation_l2   −2.50         0.00
+```
+
 ## Isaac Lab 을 다시 깔았다면
 
-위의 「고친 곳 1·2·3」 을 순서대로 다시 붙여넣으면 끝입니다.
+위의 「고친 곳 1·2·3·4」 를 순서대로 다시 붙여넣으면 끝입니다.
 셋 다 **파일 맨 끝에 덧붙이는 것**이라 기존 내용과 부딪히지 않습니다.
 
 그리고 설치에서 걸렸던 것들은 README 33-4 에 적어뒀습니다 —

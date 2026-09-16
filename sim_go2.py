@@ -88,11 +88,32 @@
         --warm 2.0      걸음이 자리잡기를 몇 초 기다릴지
                         ※ 이 동안에도 **걷습니다.** 서 있으라고 하면
                           이 정책은 무너집니다 (아래 설명).
+        --yaw 180       놓을 때 돌려세웁니다 (좌우 비대칭을 가릅니다)
+        --hold          ★ 방향 되먹임을 켭니다 — 학습할 때와 같은 조건 ★
+                        ※ 이걸 안 켜면 정책이 **배운 적 없는 상황**에서
+                          재게 됩니다 (아래 설명).
 """
 
 import argparse
 import math
 import sys
+
+# ★ 파이프로 넘겨도 한글이 안 깨지게 ★
+#
+#   2026-09-16 — 문턱 높이를 쓸어보려고 출력을 `| Select-String` 으로
+#   걸렀더니 통째로 비었습니다. 화면에 바로 찍을 때는 멀쩡했는데요.
+#
+#   파이썬은 출력이 **파이프로 가면** 글자표를 윈도 기본(cp949)으로
+#   바꿉니다. 그러다 이 파일이 즐겨 쓰는 '—' 에서 터졌고, 오류는
+#   `2>$null` 이 삼켜서 빈 화면만 남았습니다.
+#
+#   쓸어보기는 앞으로도 계속 할 일이라 여기서 못박습니다.
+#   (밖에서 $env:PYTHONIOENCODING="utf-8" 로도 되지만, 잊어버립니다.)
+for _out in (sys.stdout, sys.stderr):
+    try:
+        _out.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass            # 아주 옛 파이썬이면 그냥 둡니다
 
 # ── 옵션부터 (SimulationApp 을 만들기 전에) ─────────────────
 ap = argparse.ArgumentParser(description="시뮬레이터의 개를 걷게 하고 잽니다")
@@ -109,6 +130,70 @@ ap.add_argument("--device", type=str, choices=["cpu", "cuda"], default="cpu")
 #   코드를 안 고치고 재볼 수 있어야 합니다.
 ap.add_argument("--high", type=float, default=None,
                 help="놓는 높이 m (기본: go2 0.4 · spot 0.8)")
+# ★ 로봇을 돌려세울 수 있게 ★
+#
+#   2026-09-15, 정책 셋을 쟀더니 **셋 다 오른쪽으로** 돌았습니다
+#   (−6.3 · −3.3 · −6.2 도/m). 1판과 2판은 상이 다른 별개의 학습이었는데도
+#   부호가 안 바뀝니다. 우연이라기엔 좀 그렇습니다.
+#
+#   가르는 법은 32-4 에서 실기체에 썼던 그대로입니다 — **돌려세우고 다시
+#   잰다.** 재는 값은 이미 몸 기준(출발할 때 본 방향 기준)이라, 돌려세워도
+#   숫자의 뜻은 그대로입니다.
+#
+#       몸 기준으로 여전히 오른쪽   → 로봇이나 정책의 버릇
+#       부호가 뒤집힌다             → 시험대나 바닥의 좌우 비대칭
+#
+#   뒤집히면 지금까지 잰 휨 숫자를 전부 다시 읽어야 합니다.
+ap.add_argument("--yaw", type=float, default=0.0,
+                help="놓을 때 바라보는 방향 (도). 180 이면 반대로 세웁니다")
+# ★ 방향 되먹임 ★
+#
+#   2026-09-16, --yaw 180 으로 재보니 휨이 **몸을 따라왔습니다**. 바닥도
+#   시험대도 아니고 로봇 자신의 버릇입니다. 그런데 왜 그런 버릇이 생겼나 —
+#
+#   학습 설정에 `heading_command=True`, `rel_heading_envs=1.0` 이 있습니다.
+#   정책은 **한 번도 '혼자 힘으로 곧게 가라'는 요구를 받은 적이 없습니다.**
+#   늘 "저 방향을 봐라" 를 받았고, 틀어지면 회전 명령이 되돌려줬습니다.
+#   그러니 열린 고리에서의 치우침은 벌점을 받지 않습니다. 자유롭게 남은
+#   값이고, 학습마다 다른 값으로 굳습니다 (−6.3 · −3.3 · −6.2).
+#
+#   즉 지금까지 우리는 **정책이 배운 적 없는 상황**에서 재고 있었습니다.
+#   실제로 쓸 때도 되먹임은 붙습니다 (실기체의 walk_straight.py 가 그것).
+#
+#   그래서 학습 설정과 같은 식을 넣습니다 —
+#
+#       wz = clip(heading_control_stiffness × 방향오차, ang_vel_z 범위)
+#          = clip(0.5 × 오차, −1.0, +1.0)
+#
+#   목표 방향은 **출발할 때 본 방향**입니다. "저 쪽으로 곧게 가라".
+ap.add_argument("--hold", action="store_true",
+                help="방향 되먹임을 켭니다 (학습할 때와 같은 조건)")
+# ★ 문턱 ★
+#
+#   교수님이 계단보다 먼저 하라고 하신 것. 실측 10 cm 입니다 (README 32-8 —
+#   낮은 쪽에서 −0.02, 높은 쪽에서 −0.12). Go2 는 15~20 cm 까지 넘으니
+#   물음은 "넘을 수 있는가" 가 아니라 **"멈추지 않고 넘는가"** 입니다.
+#
+#   sim_world.py 의 3층 전체를 부르지 않고 **턱 하나만** 놓습니다.
+#   벽·사물함·계단이 같이 들어오면 무엇이 원인인지 못 가립니다.
+#   높이를 바꿔가며 쓸어보면 어디서 무너지는지 나옵니다.
+ap.add_argument("--sill", type=float, default=0.0,
+                help="앞길에 턱을 놓습니다. 높이 m (실측 문턱은 0.10)")
+ap.add_argument("--sill-at", type=float, default=1.0, dest="sill_at",
+                help="턱의 앞면이 몇 m 앞인지 (기본 1.0)")
+ap.add_argument("--sill-deep", type=float, default=0.30, dest="sill_deep",
+                help="턱의 깊이 m — 건너갈 윗면의 길이 (기본 0.30)")
+# ★ 자취를 얼마나 촘촘히 찍을지 ★
+#   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
+#   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
+ap.add_argument("--trace", type=float, default=0.5,
+                help="자취를 몇 초마다 찍을지 (기본 0.5 · 턱 볼 때는 0.1)")
+ap.add_argument("--hold-gain", type=float, default=0.5,
+                dest="hold_gain",
+                help="heading_control_stiffness (설정 기본값 0.5)")
+ap.add_argument("--hold-max", type=float, default=1.0,
+                dest="hold_max",
+                help="회전 명령 한계 rad/s (ang_vel_z 범위 기본값 1.0)")
 ap.add_argument("--engine", choices=["auto", "physx", "newton"], default="auto",
                 help="물리 엔진. Go2 는 MuJoCo 쪽 자산이라 newton 이 맞을 수 있습니다")
 # ★ 자산을 바꿔 끼울 수 있게 ★
@@ -336,6 +421,46 @@ prim.GetReferences().AddReference(
 
 define_prim("/World/PhysicsScene", "PhysicsScene")
 
+# ── 문턱 ────────────────────────────────────────────────────
+#
+#   바닥 위에 상자 하나. 로봇은 원점에서 +x 를 보고 서니, 앞면이
+#   sill_at 에 오도록 놓습니다. 윗면의 높이가 정확히 --sill 이 되게
+#   가운데를 높이의 절반에 둡니다.
+sill_near = args.sill_at
+sill_far = args.sill_at + args.sill_deep
+if args.sill > 0:
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+    _sill = define_prim("/World/Sill", "Cube")
+    _cube = UsdGeom.Cube(_sill)
+    _cube.GetSizeAttr().Set(1.0)                   # −0.5 ~ +0.5 짜리를 늘립니다
+    # ★ extent 도 같이 고쳐야 합니다 ★
+    #   size 만 1 로 바꾸고 extent 를 그대로 두면 기본값 ±1 이 남습니다.
+    #   그걸 읽는 쪽에서는 상자가 제가 적어준 것의 **두 배**가 됩니다.
+    _cube.GetExtentAttr().Set([Gf.Vec3f(-0.5, -0.5, -0.5),
+                               Gf.Vec3f(0.5, 0.5, 0.5)])
+    _xf = UsdGeom.Xformable(_sill)
+    _xf.ClearXformOpOrder()
+    _xf.AddTranslateOp().Set(Gf.Vec3d(
+        (sill_near + sill_far) / 2.0, 0.0, args.sill / 2.0))
+    _xf.AddScaleOp().Set(Gf.Vec3f(args.sill_deep, 2.0, args.sill))
+    UsdPhysics.CollisionAPI.Apply(_sill)           # 움직이지 않는 부딪힘판
+    # ★ 적어준 대로 생겼는지 **읽어서** 확인합니다 ★
+    #   넣었다고 들어간 게 아니라는 걸 이득에서 한 번, 명령 범위에서
+    #   한 번 배웠습니다. 상자도 같습니다.
+    _rng = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(),
+        [UsdGeom.Tokens.default_]).ComputeWorldBound(_sill).ComputeAlignedRange()
+    _lo, _hi = _rng.GetMin(), _rng.GetMax()
+    print(f" [문턱] 시킨 것   x {sill_near:.3f}~{sill_far:.3f} · "
+          f"z 0.000~{args.sill:.3f}")
+    print(f"        생긴 것   x {_lo[0]:.3f}~{_hi[0]:.3f} · "
+          f"y {_lo[1]:.3f}~{_hi[1]:.3f} · z {_lo[2]:.3f}~{_hi[2]:.3f}")
+    if (abs(_lo[0] - sill_near) > 0.01 or abs(_hi[0] - sill_far) > 0.01
+            or abs(_hi[2] - args.sill) > 0.005):
+        print("        ✖ 시킨 것과 다릅니다 — 아래 숫자를 믿지 마십시오.")
+    if args.yaw:
+        print("        ✖ --yaw 와 같이 쓰면 턱을 등지고 걷습니다.")
+
 # ── 물리 엔진 ───────────────────────────────────────────────
 #
 #   ★ 왜 이걸 만질 수 있게 하는가 ★
@@ -467,6 +592,24 @@ high = args.high if args.high is not None else (0.8 if args.robot == "spot"
                                                 else 0.4)
 Kind = SpotFlatTerrainPolicy if args.robot == "spot" else Go2FlatTerrainPolicy
 made = {"prim_path": "/World/" + args.robot, "position": [0, 0, high]}
+if args.yaw:
+    # z 축으로 도는 사원수 (w, x, y, z). 반각을 쓰는 것에 주의.
+    half = math.radians(args.yaw) / 2.0
+    turned_q = [math.cos(half), 0.0, 0.0, math.sin(half)]
+    # ★ 이 클래스가 orientation 을 받는지 **물어보고** 넣습니다 ★
+    #   --policy 때와 같은 이유입니다. 박아 넣었다가 TypeError 로 죽느니,
+    #   안 받으면 안 받는다고 말하는 편이 낫습니다.
+    import inspect as _inspect
+    _takes = _inspect.signature(Kind.__init__).parameters
+    _name = "orientation" if "orientation" in _takes else (
+            "orientations" if "orientations" in _takes else None)
+    if _name:
+        made[_name] = turned_q
+        print(f" [방향] {args.yaw:+.0f} 도 돌려세웁니다 ({_name})")
+    else:
+        print(" [방향] ✖ 이 클래스는 방향을 안 받습니다 — 그냥 세웁니다")
+        print("        받는 것들: " + ", ".join(sorted(_takes)))
+        args.yaw = 0.0
 if args.usd:
     made["usd_path"] = assets_root_path + args.usd
     print(f" [자산] 기본 대신 이걸 씁니다: {args.usd}")
@@ -567,6 +710,27 @@ start = end = None
 told = -1.0
 told_gains = False        # 이득 줄은 콜백이 뛴 뒤에 생깁니다 — 한 번만 찍습니다
 
+# 방향 되먹임이 쓴 것들 — 얼마나 애썼는지 나중에 찍습니다
+aim = None                # 목표 방향 (출발할 때 본 쪽)
+turn_asked = []           # 시킨 회전 명령들 (rad/s)
+off_worst = 0.0           # 가장 크게 틀어졌던 각 (rad)
+
+# 문턱이 쓴 것들
+FRONT_PAW = 0.20          # 몸 중심에서 앞발까지 (Go2, 어림)
+reach_at = None           # 턱 앞면에 닿은 때 (무대시계)
+x_at_reach = None         # 그때의 자리 — 평지 속도를 여기서 냅니다
+over_at = None            # 몸통이 턱 뒷면을 지난 때
+clear_at = None           # 뒷발까지 다 지났을 때 (몸통이 뒷면 + 앞발거리)
+z_low = z_high = None     # 턱 언저리에서의 몸 높이 최저·최고
+z_ever = None             # 판 전체에서 가장 낮았던 몸 높이
+still_from = None         # 이 때부터 안 움직입니다
+still_at = None           # 그때의 자리
+
+
+def wrapped(a):
+    """−π ~ +π 로 접습니다. 359도와 −1도가 같은 것이 되도록."""
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
 print()
 print(f" 걸으면서 {args.warm:.1f}초 자리잡은 뒤부터 잽니다…")
 print(f"   {'무대시계':>8} {'x':>8} {'y':>8} {'z':>7}   몸 높이")
@@ -605,6 +769,69 @@ while simulation_app.is_running():
     #   첫 1초를 재기 시작점에서 빼는 것이 원래 목적이었고, 그건 이렇게
     #   해도 똑같이 됩니다.
     base_command = torch.tensor([args.speed, 0.0, 0.0], device=args.device)
+
+    # ── 방향 되먹임 (--hold) ────────────────────────────────
+    #
+    #   학습 설정의 식을 그대로 씁니다 (위 --hold 설명 참고).
+    #   여기서 고치는 것은 **명령**뿐입니다. 로봇을 붙잡거나 자리를
+    #   바로잡지 않습니다 — 그러면 재는 것이 거짓이 됩니다.
+    p_now = q_now = None
+    if args.hold or args.sill > 0:
+        try:
+            p_now, q_now = pose()
+        except Exception:
+            p_now = q_now = None    # 아직 못 읽습니다 (콜백 전). 다음 바퀴에.
+
+    if args.hold:
+        if q_now is not None:
+            yaw_now = yaw_of(q_now)
+            if aim is None:
+                aim = yaw_now       # ★ 출발할 때 본 쪽을 목표로 삼습니다 ★
+            off = wrapped(aim - yaw_now)
+            wz = max(-args.hold_max,
+                     min(args.hold_max, args.hold_gain * off))
+            base_command = torch.tensor([args.speed, 0.0, wz],
+                                        device=args.device)
+            if since >= args.warm:      # 재는 구간만 셉니다
+                turn_asked.append(wz)
+                off_worst = max(off_worst, abs(off))
+
+    # ── 문턱을 언제 넘었는가 ────────────────────────────────
+    #
+    #   ★ '넘었다' 를 **뒷발이 아니라 몸통 기준**으로 셉니다 ★
+    #     발끝을 따로 읽지 않으니, 몸통이 턱 뒷면을 지난 때를 씁니다.
+    #     실제로 발이 걸렸다가 빠져나온 경우도 '넘었다' 로 셉니다 —
+    #     그래서 걸린 시간과 몸 높이를 같이 봐야 합니다.
+    if args.sill > 0 and p_now is not None:
+        x_now, z_now = float(p_now[0]), float(p_now[2])
+        # ★ 앞발은 몸통 원점보다 앞에 있습니다 ★
+        #   2026-09-16 — 처음엔 몸통 x 로만 판정했더니, 앞발이 턱을 때리고
+        #   뒤로 밀려 넘어졌는데도 "턱 앞까지 가지도 못했다" 고 찍혔습니다.
+        #   Go2 는 몸 중심에서 앞발까지 20 cm 쯤입니다.
+        if reach_at is None and x_now >= sill_near - FRONT_PAW:
+            reach_at = now
+            x_at_reach = x_now          # 여기까지 온 속도가 '평지 속도'
+        if over_at is None and x_now >= sill_far:
+            over_at = now                      # 몸통이 뒷면을 지난 때
+        if clear_at is None and x_now >= sill_far + FRONT_PAW:
+            clear_at = now                     # 뒷발까지 다 지났을 때
+        # 멈춤 — 쓸어볼 때 '넘었다/걸렸다/넘어졌다' 를 한 줄로 가르는 것
+        if still_from is None:
+            still_from = now
+            still_at = (x_now, z_now)
+        elif (abs(x_now - still_at[0]) > 0.005
+              or abs(z_now - still_at[1]) > 0.005):
+            still_from = now
+            still_at = (x_now, z_now)
+        if sill_near - 0.40 <= x_now <= sill_far + 0.40:
+            z_low = z_now if z_low is None else min(z_low, z_now)
+            z_high = z_now if z_high is None else max(z_high, z_now)
+        # ★ 가장 낮았던 높이는 **턱에 닿은 뒤부터** 셉니다 ★
+        #   처음 0.40 m 에서 떨어뜨릴 때 다리가 접히며 낮아지는데,
+        #   그걸 같이 세면 무엇을 해도 "넘어짐" 으로 찍힙니다.
+        if reach_at is not None:
+            z_ever = z_now if z_ever is None else min(z_ever, z_now)
+
     if since >= args.warm:
         if start is None:
             start = pose()
@@ -612,12 +839,20 @@ while simulation_app.is_running():
             end = pose()
             break
 
-    if now - told >= 0.5:
+    if now - told >= args.trace:
         told = now
-        p, _ = pose()
+        p, q = pose()
+        tail = ("걸음 잡는 중" if since < args.warm else "★ 재는 중")
+        if args.sill > 0:
+            # 앞뒤로 기운 각 — 앞발을 턱에 올리면 머리가 들립니다
+            w, qx, qy, qz = [float(v) for v in q]
+            lean = math.degrees(math.asin(
+                max(-1.0, min(1.0, 2.0 * (w * qy - qz * qx)))))
+            where = ("턱 앞" if float(p[0]) < sill_near else
+                     ("턱 위" if float(p[0]) <= sill_far else "턱 뒤"))
+            tail = f"{lean:+6.1f}도  {where}"
         print(f"   {now:8.2f} {float(p[0]):+8.3f} {float(p[1]):+8.3f}"
-              f" {float(p[2]):7.3f}   "
-              + ("걸음 잡는 중" if since < args.warm else "★ 재는 중"))
+              f" {float(p[2]):7.3f}   " + tail)
         sys.stdout.flush()
 
 # ── 셈합니다 ────────────────────────────────────────────────
@@ -645,7 +880,8 @@ else:
     side = -dx * s + dy * c
     turned = math.degrees((yaw1 - yaw0 + math.pi) % (2 * math.pi) - math.pi)
 
-    print(f" 시뮬레이터의 {args.robot}")
+    print(f" 시뮬레이터의 {args.robot}"
+          + (f"   (놓을 때 {args.yaw:+.0f} 도 돌려세움)" if args.yaw else ""))
     print(f"   앞으로 간 거리   {ahead:+.3f} m   "
           f"(명령대로면 {args.speed * args.seconds:.2f} m)")
     print(f"   옆으로 밀린 양   {side * 100:+.1f} cm")
@@ -684,6 +920,121 @@ else:
         if abs(side) > 0.02 and abs(slip_part) > abs(turn_part):
             print("       ※ 도는 것보다 **미끄러지는 것**이 큽니다 —")
             print("         방향을 잡아도 안 줄어듭니다. 걸음 자체입니다.")
+
+    if args.hold:
+        print()
+        if turn_asked:
+            mean_wz = sum(turn_asked) / len(turn_asked)
+            print(f"   [되먹임] 켜짐 (이득 {args.hold_gain} · 한계 "
+                  f"±{args.hold_max} rad/s)")
+            print(f"     시킨 회전  평균 {mean_wz:+.3f} rad/s"
+                  f" · 가장 센 것 {max(turn_asked, key=abs):+.3f}")
+            print(f"     가장 크게 틀어졌던 각  "
+                  f"{math.degrees(off_worst):.1f} 도")
+            if abs(mean_wz) >= args.hold_max * 0.9:
+                print("     ✖ 한계에 붙어 있습니다 — 되먹임이 못 이깁니다.")
+            # ★ 쪼갠 값을 곧이곧대로 읽지 마십시오 ★
+            #   위의 「돌아서 생긴 휨 / 미끄러진 휨」은 **도는 빠르기가 내내
+            #   일정했다**고 치고 셈합니다. 되먹임을 켜면 방향이 0 언저리를
+            #   오락가락하므로 그 가정이 깨집니다. 끝의 각이 작으니 거의
+            #   전부가 '미끄러짐' 으로 떨어지는데, 실제로는 오락가락하는
+            #   동안 옆으로 간 것도 섞여 있습니다.
+            print("     ※ 되먹임을 켜면 위의 쪼개기는 못 믿습니다.")
+            print("       볼 것은 **옆으로 밀린 양 총합** 입니다.")
+        else:
+            print("   [되먹임] ✖ 켜졌는데 한 번도 안 셌습니다 — 방향을"
+                  " 못 읽었습니다.")
+
+    if args.sill > 0:
+        print()
+        print(f"   [문턱] 높이 {args.sill:.3f} m · "
+              f"{sill_near:.2f}~{sill_far:.2f} m")
+        # ★ 견줄 속도는 **턱에 닿기 전** 구간에서 냅니다 ★
+        #   처음엔 판 전체 평균을 썼는데, 멈춰 있던 시간까지 들어가서
+        #   "평지였다면" 이 저절로 느려졌습니다. 자기 자신을 기준으로
+        #   삼은 셈이라 아무것도 못 가립니다.
+        went = (x_at_reach / reach_at) if (reach_at and reach_at > 0.5
+                                           and x_at_reach) else 0.0
+        flat = args.sill_deep / went if went > 0.01 else None
+        frozen = (still_from is not None
+                  and (clock() - still_from) >= 2.0)
+        if reach_at is None:
+            print("     ✖ 턱 앞까지 가지도 못했습니다.")
+            print(f"       {args.seconds:.0f}초 동안 {ahead:+.3f} m — 턱은 "
+                  f"{sill_near:.2f} m 앞입니다 (앞발은 {FRONT_PAW:.2f} m 더).")
+            print("       --seconds 를 늘리거나 --sill-at 을 줄이세요.")
+        elif over_at is None:
+            print(f"     ✖ **못 넘었습니다.** {reach_at:.1f}초에 앞발이 닿았습니다.")
+            print(f"       마지막 자리 {float(p1[0]):+.3f} m")
+            if z_ever is not None:
+                print(f"       판 전체에서 가장 낮았던 몸 높이 {z_ever:.3f} m"
+                      + ("   ← 넘어졌습니다" if z_ever < 0.20 else ""))
+            if frozen:
+                how = ("넘어진 채로" if (z_ever is not None and z_ever < 0.20)
+                       else "선 채로")
+                print(f"       ★ {still_from:.1f}초부터 **한 자리도 안"
+                      f" 움직입니다** ({how}) ★")
+        else:
+            took = over_at - reach_at
+            print(f"     앞면에 닿은 때 {reach_at:.1f}초 · "
+                  f"몸통이 뒷면을 지난 때 {over_at:.1f}초")
+            print("     뒷발까지 다 지난 때 "
+                  + (f"{clear_at:.1f}초" if clear_at else "✖ 못 지났습니다"))
+            print(f"     넘는 데 걸린 시간  {took:.1f}초", end="")
+            if flat:
+                print(f"   (평지였다면 {flat:.1f}초쯤)")
+                if took > flat * 1.8:
+                    print("     ※ 넘긴 넘었는데 **붙들렸습니다.**"
+                          " 멈칫한 것입니다.")
+                elif took <= flat * 1.3:
+                    print("     ★ 거의 안 늦었습니다 — 멈추지 않고 넘었습니다 ★")
+            else:
+                print()
+            if z_low is not None:
+                print(f"     턱 언저리 몸 높이 {z_low:.3f} ~ {z_high:.3f} m"
+                      f"  (오른 폭 {z_high - z_low:.3f} m)")
+            if frozen:
+                print(f"     ★ 넘고 나서 {still_from:.1f}초부터 **멎었습니다**"
+                      f" — 자리 {float(p1[0]):.3f} m ★")
+                print("       뒷발이 뒷면 모서리에 걸렸을 수 있습니다"
+                      f" (몸통 −{FRONT_PAW:.2f} m = {float(p1[0]) - FRONT_PAW:.2f} m,"
+                      f" 모서리 {sill_far:.2f} m).")
+            if z_low is not None:
+                if z_high - z_low < args.sill * 0.6:
+                    print("     ※ 오른 폭이 턱 높이에 못 미칩니다 —"
+                          " 올라탄 게 아니라 밀고 지나갔을 수 있습니다.")
+        # ★ 쓸어볼 때 이 한 줄만 모으면 됩니다 ★
+        #
+        #   2026-09-16 — 처음에는 '몸통이 선을 지났는가' 만 봤습니다.
+        #   그랬더니 4·6 cm 는 넘어지고 8·10·12 cm 는 넘는 표가 나왔습니다.
+        #   말이 안 됩니다. 턱이 높으면 **앞으로 고꾸라지면서** 선을
+        #   지나거든요. 넘어지는 중에 선을 밟은 것을 '넘었다' 로 찍고
+        #   있었습니다.
+        #
+        #   그래서 **끝 자세**를 같이 봅니다. 넘었다고 하려면 선을 지나고
+        #   **그러고도 서 있어야** 합니다.
+        end_high = float(p1[2])
+        crossed = over_at is not None
+        fell = (z_ever is not None and z_ever < 0.20) or end_high < 0.22
+        if crossed and fell:
+            verdict = "넘다가 넘어짐"
+        elif crossed and frozen:
+            verdict = "넘고 나서 멈춤"
+        elif crossed:
+            verdict = "넘음"
+        elif reach_at is None:
+            verdict = "닿지도 못함"
+        elif fell:
+            verdict = "앞에서 넘어짐"
+        elif frozen:
+            verdict = "앞에서 멈춤"
+        else:
+            verdict = "못 넘음"
+        # 표시를 아스키로 답니다 — 글자표가 어긋나도 이 줄은 걸립니다
+        # 숫자도 같이 답니다 — 표만 보고도 이상한 줄을 알아채게
+        low = f" · 최저 {z_ever:.3f}" if z_ever is not None else ""
+        print(f"     >>> SILL {args.sill:.2f} m : {verdict}"
+              f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low})")
     print()
     if abs(ahead) <= 0.15:
         print(" ✖ 앞으로 안 갔습니다.")
@@ -701,6 +1052,13 @@ else:
         if slip_part is not None:
             print(f"     그중 미끄러짐  {slip_part / abs(ahead) * 100:+.1f} cm/m")
         print()
+        if args.yaw:
+            print()
+            print(" ※ 돌려세우고 잰 값입니다. 위 숫자는 **몸 기준**입니다.")
+            print("   0 도에서 잰 것과 부호를 견주세요 —")
+            print("     같은 부호  → 로봇·정책의 버릇 (돌려도 따라옵니다)")
+            print("     뒤집힘     → 시험대·바닥의 좌우 비대칭")
+            print()
         print(" ※ 이 둘을 빼서 실기체 보정에 쓰지 마십시오.")
         print("   서로 다른 두 보행기입니다 (자세한 것은 파일 맨 위).")
         print("   여기서 볼 것은 **미끄러짐이 학습으로 줄어드는가** 입니다.")
