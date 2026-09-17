@@ -186,6 +186,8 @@ ap.add_argument("--sill-deep", type=float, default=0.30, dest="sill_deep",
 # ★ 자취를 얼마나 촘촘히 찍을지 ★
 #   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
+ap.add_argument("--feet", action="store_true",
+                help="자취에 발 네 개의 x·z 를 함께 찍습니다 (앞쪽부터). 못 읽으면 스스로 끕니다")
 ap.add_argument("--trace", type=float, default=0.5,
                 help="자취를 몇 초마다 찍을지 (기본 0.5 · 턱 볼 때는 0.1)")
 ap.add_argument("--hold-gain", type=float, default=0.5,
@@ -705,6 +707,57 @@ def pose():
             as_numbers(quat).reshape(-1, 4)[0])
 
 
+# ★ 발 네 개의 자리 (2026-09-17, README 38-7-1) ★
+#   왜 필요한가: 같은 12 cm 턱이 자리에 따라 넘기도 하고 멎기도 합니다.
+#   몸통만 봐서는 왜 갈리는지 못 봅니다 — 발이 어디 놓이는지를 봐야
+#   합니다. 그런데 발 자리를 읽는 이름이 판마다 다릅니다.
+#   ★ 그래서 박아넣지 않고 **물어봅니다.** --yaw · --policy 와 같은 방식입니다.
+#     못 찾으면 한 번 말하고 스스로 꺼집니다 — 판을 망치지 않습니다.
+_feet_how = None          # 찾아낸 방법 (한 번만 찾습니다)
+_feet_off = False         # 못 찾았으면 다시 시도하지 않습니다
+
+
+def feet_of():
+    """네 발의 (x, y, z). 못 읽으면 None."""
+    global _feet_how, _feet_off
+    if _feet_off:
+        return None
+    art = robot.robot
+    if _feet_how is None:
+        for name in ("get_link_transforms", "get_link_poses",
+                     "get_body_poses", "get_world_poses"):
+            fn = getattr(art, name, None)
+            if fn is None:
+                continue
+            try:
+                out = fn()
+                arr = as_numbers(out[0] if isinstance(out, tuple) else out)
+                if arr.reshape(-1, arr.shape[-1]).shape[0] >= 4:
+                    _feet_how = name
+                    print(f" [발] 자리를 {name}() 으로 읽습니다"
+                          f" — 마디 {arr.reshape(-1, arr.shape[-1]).shape[0]}개")
+                    break
+            except Exception:
+                continue
+        if _feet_how is None:
+            _feet_off = True
+            names = [n for n in dir(art) if "link" in n or "bod" in n]
+            print(" [발] ✖ 발 자리를 읽는 법을 못 찾았습니다 — 끕니다.")
+            print(f"      있는 것들: {names[:8]}")
+            return None
+    try:
+        out = getattr(art, _feet_how)()
+        arr = as_numbers(out[0] if isinstance(out, tuple) else out)
+        arr = arr.reshape(-1, arr.shape[-1])[:, :3]
+        # 발은 z 가 가장 낮은 네 마디입니다 (이름 순서는 판마다 다릅니다)
+        low = arr[np.argsort(arr[:, 2])[:4]]
+        return low[np.argsort(-low[:, 0])]      # 앞쪽부터
+    except Exception as e:
+        _feet_off = True
+        print(f" [발] ✖ 읽다가 실패했습니다 — 끕니다 ({e!r})")
+        return None
+
+
 def yaw_of(q):
     w, x, y, z = [float(v) for v in q]
     return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
@@ -731,6 +784,14 @@ off_worst = 0.0           # 가장 크게 틀어졌던 각 (rad)
 
 # 문턱이 쓴 것들
 FRONT_PAW = 0.20          # 몸 중심에서 앞발까지 (Go2, 어림)
+# ★ 뒷발은 따로입니다 (2026-09-17, README 38-7-1) ★
+#   전에는 뒷발 자리도 FRONT_PAW 로 셈해서 12 cm 가 어긋났습니다.
+#   턱 자리를 여섯 곳으로 옮겨가며 잰 결과, 멎는 자리가 언제나
+#   턱 뒷면에서 0.32 m 뒤였습니다 (0.317 · 0.321 · 0.328).
+#   거기서 뒷발이 모서리에 얹혀 있으려면 0.30 m 여야 합니다.
+#   ※ 재서 얻은 게 아니라 **멎는 자리에서 거꾸로 푼 값**입니다.
+#     발 자리를 직접 기록하기 전까지는 어림으로 두십시오.
+REAR_PAW = 0.30           # 몸 중심에서 뒷발까지 (뒤로 뻗었을 때)
 reach_at = None           # 턱 앞면에 닿은 때 (무대시계)
 x_at_reach = None         # 그때의 자리 — 평지 속도를 여기서 냅니다
 over_at = None            # 몸통이 턱 뒷면을 지난 때
@@ -865,6 +926,11 @@ while simulation_app.is_running():
             where = ("턱 앞" if float(p[0]) < sill_near else
                      ("턱 위" if float(p[0]) <= sill_far else "턱 뒤"))
             tail = f"{lean:+6.1f}도  {where}"
+        if args.feet:
+            _f = feet_of()
+            if _f is not None:
+                tail += "  발x " + " ".join(f"{v[0]:+.2f}" for v in _f)
+                tail += " · 발z " + " ".join(f"{v[2]:.3f}" for v in _f)
         print(f"   {now:8.2f} {float(p[0]):+8.3f} {float(p[1]):+8.3f}"
               f" {float(p[2]):7.3f}   " + tail)
         sys.stdout.flush()
@@ -1010,9 +1076,19 @@ else:
             if frozen:
                 print(f"     ★ 넘고 나서 {still_from:.1f}초부터 **멎었습니다**"
                       f" — 자리 {float(p1[0]):.3f} m ★")
-                print("       뒷발이 뒷면 모서리에 걸렸을 수 있습니다"
-                      f" (몸통 −{FRONT_PAW:.2f} m = {float(p1[0]) - FRONT_PAW:.2f} m,"
-                      f" 모서리 {sill_far:.2f} m).")
+                _rear = float(p1[0]) - REAR_PAW
+                _gap = _rear - sill_far
+                print(f"       뒷발 자리 {_rear:.3f} m · 턱 뒷면 {sill_far:.2f} m"
+                      f"  (차이 {_gap:+.3f} m)")
+                if abs(_gap) <= 0.06:
+                    print("       → 뒷발이 뒷면 모서리 위입니다. 여기가 범인일 가능성이 큽니다.")
+                else:
+                    print("       → 뒷발은 모서리에서 떨어져 있습니다. 다른 이유입니다.")
+                if args.sill_deep <= 0.10:
+                    print("       ※ 지금 턱은 깊이 %.2f m 짜리 **띠** 입니다. 뒤가 낭떠러지라"
+                          % args.sill_deep)
+                    print("         걸릴 모서리가 있습니다. 실제 낮은 계단처럼 **올라서는 단**")
+                    print("         (--sill-deep 1.5) 으로 두면 이 모서리 자체가 없습니다.")
             if z_low is not None:
                 if z_high - z_low < args.sill * 0.6:
                     print("     ※ 오른 폭이 턱 높이에 못 미칩니다 —"
