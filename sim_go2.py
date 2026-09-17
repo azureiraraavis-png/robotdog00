@@ -129,7 +129,7 @@ ap.add_argument("--device", type=str, choices=["cpu", "cuda"], default="cpu")
 #   일어섭니다. 너무 높아 세게 떨어지는 것인지, 너무 낮아 땅에 낀 것인지
 #   코드를 안 고치고 재볼 수 있어야 합니다.
 ap.add_argument("--high", type=float, default=None,
-                help="놓는 높이 m (기본: go2 0.4 · spot 0.8)")
+                help="놓는 높이 m (기본: go2 0.32 · spot 0.8). 0.38 부터 휨이 망가지고 0.40 이면 서는 정책이 뒤집힙니다")
 # ★ 로봇을 돌려세울 수 있게 ★
 #
 #   2026-09-15, 정책 셋을 쟀더니 **셋 다 오른쪽으로** 돌았습니다
@@ -588,8 +588,22 @@ if args.look is not None:
     raise SystemExit(0)
 
 # ── 로봇 ────────────────────────────────────────────────────
+# ★ go2 기본값을 0.4 → 0.32 로 내렸습니다 (2026-09-17, README 38) ★
+#   0.4 는 제가 한 번도 안 따져본 숫자였고, 재봤더니 결과를 뒤집습니다 —
+#
+#     0.30~0.35   셋 다 같은 판 (앞으로 1.63~1.74 m · 휨 24~27 cm)
+#     0.38        걷긴 하는데 휨이 세 배 (-72.9 cm · -28.2 도)
+#     0.40        서는 정책은 뒤집혀서 못 일어남
+#
+#   ★ 기는 정책은 0.40 에서도 멀쩡합니다 ★ 배를 깔고 다리를 벌린 자세가
+#   착지하기 좋은 모양이라서입니다. 그래서 0.40 짜리 시험대는 **기는 개에게
+#   유리하고 서는 개에게 불리합니다** — 우리가 원하는 것과 정반대입니다.
+#
+#   0.32 는 넉넉한 가운데입니다 (아래 벼랑은 0.30 위로 안 재봤고,
+#   위 어깨는 0.38). spot 은 안 건드렸습니다 — 0.8 에서 멀쩡했고,
+#   한 번에 하나만 바꿉니다.
 high = args.high if args.high is not None else (0.8 if args.robot == "spot"
-                                                else 0.4)
+                                                else 0.32)
 Kind = SpotFlatTerrainPolicy if args.robot == "spot" else Go2FlatTerrainPolicy
 made = {"prim_path": "/World/" + args.robot, "position": [0, 0, high]}
 if args.yaw:
