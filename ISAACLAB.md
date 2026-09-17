@@ -285,6 +285,14 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.rel_standing_envs = 0.15
 
+        # ★ 2026-09-17 추가 (README 39) ★
+        #   커리큘럼 승급선은 판 크기의 절반 = 4.0 m 로 **고정**인데,
+        #   10초마다 가야 할 방향이 무작위로 바뀌어 원점 거리가 상쇄됩니다.
+        #   위에서 속도를 절반으로 깎아놨으므로 상쇄를 버틸 여유가 없습니다.
+        #   (0.2 m/s × 20 s = 정확히 4.00 m — 승급이 산술적으로 불가능)
+        #   속도는 그대로 두고, 한 판에 한 방향만 주도록 바꿉니다.
+        self.commands.base_velocity.resampling_time_range = (20.0, 20.0)
+
         # ★ 눈을 뗍니다 ★ — 관측 48차원 유지
         self.scene.height_scanner = None
         self.observations.policy.height_scan = None
@@ -373,10 +381,16 @@ gym.register(
 
 ---
 
-## 고친 곳 4 에 고칠 것 — ★ 아직 안 돌려봤습니다 ★
+## 고친 곳 4 에 고칠 것 — 돌려봤습니다 (2026-09-17)
 
-2026-09-16 저녁에 알아낸 것들입니다. **글로만 있고 확인은 안 했습니다.**
-붙여넣은 뒤 아래 「30초 확인」을 꼭 거치십시오.
+2026-09-16 저녁에 알아낸 것들입니다. 다음 날 아침에 돌려봤고,
+**결과는 반만 맞았습니다.** 각 항목 아래 결과를 적어뒀습니다.
+
+```
+(가) 스캐너를 관측에서만 빼기     → 먹혔습니다. 기어다니지 않습니다.
+     광선 187 → 4 로 줄이기       → ★ 헛수고였습니다 (아래 참고)
+(나) std_type = "log"             → ★ 크래시를 막지 못했습니다 (아래 참고)
+```
 
 **(가) 스캐너를 끄지 말고, 관측에서만 뺍니다**
 
@@ -413,6 +427,21 @@ gym.register(
         self.scene.height_scanner.pattern_cfg.size = [0.2, 0.2]
 ```
 
+> **결과 (2026-09-17):** 관측에서 빼는 부분은 먹혔습니다 — 48차원
+> 장님 정책이 나오고, `base_height_l2` 가 붙어서 기어다니지 않습니다.
+>
+> **광선 줄이기는 헛수고였습니다.**
+>
+> ```
+> 187 → 4 줄     초당 걸음 26,900 → 30,000    (11% 뿐)
+> ETA            01:19 → 01:25               (안 줄었습니다)
+> ```
+>
+> 비용은 광선 **개수**가 아니라 RayCaster 를 한 번이라도 돌리는
+> **고정 비용**입니다. 없애려면 스캐너를 통째로 빼고 상을
+> 다른 방식으로 줘야 합니다 (예: `몸통 z − 발 네 개의 평균 z`).
+> 두 줄을 남겨둬도 손해는 없으니 그대로 둡니다.
+
 **(나) 탐색 폭을 로그로 저장합니다**
 
 `agents\rsl_rl_ppo_cfg.py` 의 `UnitreeGo2GuideRoughPPORunnerCfg` 에 —
@@ -429,6 +458,22 @@ gym.register(
 
 이름은 `isaaclab_rl\rsl_rl\rl_cfg.py:57` 에서 확인했습니다 —
 `GaussianDistributionCfg.std_type: Literal["scalar", "log"]`.
+
+> **결과 (2026-09-17): ★ 이 고침은 크래시를 막지 못했습니다 ★**
+>
+> ```
+> scalar  →  236번째에서 죽음
+> log     →  243번째에서 죽음     (같은 오류, 같은 줄)
+> ```
+>
+> `agent.yaml` 에 `std_type: log` 가 찍혔고, `model_200.pt` 안의 이름도
+> `distribution.log_std_param` 입니다 — **제대로 걸려 있었습니다.**
+> 그런데 `exp()` 의 결과는 음수가 될 수 없으므로, 터진 값은 음수가
+> 아니라 **NaN** 입니다. std 파라미터화는 애초에 범인이 아니었습니다.
+>
+> 이 줄은 그대로 둡니다 (해롭지 않고, log 쪽이 수치적으로 낫습니다).
+> 진짜 원인은 아래 「고친 곳 5」 의 감시 장치로 쫓는 중입니다.
+> 자세한 추론 과정은 README 37번에 있습니다.
 
 **★ 30초 확인 — 이제 다섯 가지 ★**
 
@@ -447,11 +492,167 @@ gym.register(
 ```
 
 마지막 줄이 2.7만 그대로면 엉뚱한 곳을 줄인 것입니다.
+**2.7만 그대로였습니다** — 위 (가) 의 결과 상자를 보십시오.
+
+---
+
+## 고친 곳 5 — rsl_rl 의 ppo.py 에 NaN 감시 (2026-09-17)
+
+★ 이건 Isaac Lab 이 아니라 **rsl_rl 라이브러리**를 고친 것입니다. ★
+Isaac Sim 을 다시 깔면 함께 사라집니다.
+
+```
+C:\isaacsim\kit\python\Lib\site-packages\rsl_rl\algorithms\ppo.py
+```
+
+**왜 여기인가**
+
+`normal expects all elements of std >= 0.0` 로 죽습니다. 그런데
+`std_type = "log"` 라 std = `exp(log_std)` 이고, exp 는 음수를 못
+만듭니다. 그러니 터진 값은 **NaN** 입니다. 파라미터가 NaN 이 되는
+길은 `optimizer.step()` 하나뿐이므로, **그 직전**에 봅니다.
+
+★ 반드시 `clip_grad_norm_` **앞**에서 봐야 합니다. NaN 이 하나라도
+있으면 clip 계수가 `1.0 / (NaN + 1e-6)` = NaN 이 되어 멀쩡한
+기울기까지 전부 물듭니다. 뒤에서 보면 범인을 못 찾습니다.
+
+**고치는 법**
+
+`update()` 안, 이 세 줄을 찾습니다 (원본 374~376줄) —
+
+```python
+            # Apply the gradients for PPO
+            nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+            nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+```
+
+이것을 통째로 아래로 바꿉니다 (`chain` 과 `TensorDict` 는 파일 위쪽에
+이미 import 되어 있습니다) —
+
+```python
+            # ===== robotdog00 고침 (2026-09-17): NaN/inf 기울기 감시 =====
+            # 원본은 아래 clip_grad_norm_ 두 줄 + self.optimizer.step() 뿐이었습니다.
+            # 되돌리려면 같은 폴더의 ppo.py.robotdog00-orig 를 ppo.py 로 덮어쓰면 됩니다.
+            #
+            # 왜 여기인가: std 는 exp(log_std) 라 음수가 될 수 없으므로
+            # "std >= 0.0" 오류는 log_std 가 NaN 이라는 뜻이고, 파라미터가
+            # NaN 이 되는 길은 optimizer.step() 하나뿐입니다. 그 직전에 봅니다.
+            # ★ clip_grad_norm_ 앞에서 봐야 합니다. NaN 이 하나라도 있으면
+            #    clip 계수가 NaN 이 되어 전부 물들기 때문입니다.
+            _bad = []
+            for _n, _p in chain(self.actor.named_parameters(), self.critic.named_parameters()):
+                if _p.grad is not None and not bool(torch.isfinite(_p.grad).all()):
+                    _bad.append((_n, _p.grad))
+            if _bad:
+                PPO._nan_skips = getattr(PPO, "_nan_skips", 0) + 1
+                if PPO._nan_skips <= 5:
+
+                    def _rng(name, t):
+                        try:
+                            t = t.detach().float().reshape(-1)
+                            fin = torch.isfinite(t)
+                            n_bad = int((~fin).sum())
+                            n_nan = int(torch.isnan(t).sum())
+                            if int(fin.sum()) == 0:
+                                return "      %-18s ★전부 비정상 (NaN %d)" % (name, n_nan)
+                            g = t[fin]
+                            return "      %-18s %s min %-11.4g max %-11.4g |최대| %-11.4g 비정상 %d (NaN %d)" % (
+                                name,
+                                "정상  " if n_bad == 0 else "★나쁨",
+                                g.min().item(),
+                                g.max().item(),
+                                g.abs().max().item(),
+                                n_bad,
+                                n_nan,
+                            )
+                        except Exception as _e:  # noqa: BLE001
+                            return "      %-18s (검사 실패: %r)" % (name, _e)
+
+                    print("\n[NaN 감시 #%d] 기울기가 비정상입니다. 이번 minibatch 만 버립니다." % PPO._nan_skips, flush=True)
+                    print("  -- 나쁜 기울기를 가진 파라미터 --", flush=True)
+                    for _n, _g in _bad:
+                        print(_rng("grad " + _n, _g), flush=True)
+                    print("  -- 순전파 값들 (여기가 전부 정상이면 원인은 역전파/옵티마이저) --", flush=True)
+                    with torch.no_grad():
+                        print(_rng("ratio", ratio), flush=True)
+                        print(_rng("log_prob 새", actions_log_prob), flush=True)
+                        print(_rng("log_prob 옛", batch.old_actions_log_prob), flush=True)
+                        print(_rng("advantages", batch.advantages), flush=True)
+                        print(_rng("entropy", entropy), flush=True)
+                        print(_rng("values", values), flush=True)
+                        print(_rng("returns", batch.returns), flush=True)
+                        print(_rng("actions", batch.actions), flush=True)
+                        print(_rng("std", self.actor.output_std), flush=True)
+                        try:
+                            _obs = batch.observations
+                            if isinstance(_obs, TensorDict):
+                                for _k in _obs.keys():
+                                    print(_rng("obs/" + str(_k), _obs[_k]), flush=True)
+                            else:
+                                print(_rng("obs", _obs), flush=True)
+                        except Exception as _e:  # noqa: BLE001
+                            print("      obs 검사 실패: %r" % (_e,), flush=True)
+                        print(
+                            "      loss %.6g  surrogate %.6g  value %.6g  lr %.3g"
+                            % (float(loss), float(surrogate_loss), float(value_loss), self.learning_rate),
+                            flush=True,
+                        )
+                        _pbad = [
+                            _n
+                            for _n, _p in chain(self.actor.named_parameters(), self.critic.named_parameters())
+                            if not bool(torch.isfinite(_p).all())
+                        ]
+                        print("      파라미터 자체가 비정상인 것: %s" % (_pbad if _pbad else "없음 (아직 깨끗함)"), flush=True)
+                elif PPO._nan_skips % 50 == 0:
+                    print("[NaN 감시] 누적 %d 번 건너뜀" % PPO._nan_skips, flush=True)
+                # 파라미터는 건드리지 않고 이번 minibatch 만 버린다
+                self.optimizer.zero_grad(set_to_none=True)
+                continue
+            # Apply the gradients for PPO
+            nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+            nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            self.optimizer.step()
+            # ===== 고침 끝 =====
+```
+
+**되돌리는 법**
+
+같은 폴더에 원본을 `ppo.py.robotdog00-orig` 로 백업해 뒀습니다.
+
+```powershell
+cd C:\isaacsim\kit\python\Lib\site-packages\rsl_rl\algorithms
+Copy-Item ppo.py.robotdog00-orig ppo.py -Force
+```
+
+**무엇을 기대하는가**
+
+```
+[NaN 감시 #1] 기울기가 비정상입니다. 이번 minibatch 만 버립니다.
+  -- 나쁜 기울기를 가진 파라미터 --
+      grad distribution.log_std_param  ★나쁨 …
+  -- 순전파 값들 (여기가 전부 정상이면 원인은 역전파/옵티마이저) --
+      ratio            정상   min …  max …
+      …
+      파라미터 자체가 비정상인 것: 없음 (아직 깨끗함)
+```
+
+- 「나쁜 기울기」 목록이 **한 파라미터뿐**이면 그 항(예: 엔트로피)이 범인입니다.
+- **전부**면 공통 원인 — 손실 쪽입니다. 그때 `ratio` 의 |최대| 를 보십시오.
+- 「순전파 값들」이 전부 정상이면 역전파나 Adam 쪽입니다.
+
+버린 뒤에도 학습은 계속 갑니다. 1500번 중 한두 minibatch 를 버리는
+것은 무시할 만합니다. 누적 횟수가 수십 번이 되면 그건 진짜 발산이니
+`[NaN 감시] 누적 N 번 건너뜀` 줄을 보십시오.
 
 ## Isaac Lab 을 다시 깔았다면
 
 위의 「고친 곳 1·2·3·4」 와 그 아래 「고칠 것」 을 순서대로 다시 붙여넣으면 끝입니다.
-셋 다 **파일 맨 끝에 덧붙이는 것**이라 기존 내용과 부딪히지 않습니다.
+넷 다 **파일 맨 끝에 덧붙이는 것**이라 기존 내용과 부딪히지 않습니다.
+
+**「고친 곳 5」 는 Isaac Lab 이 아니라 Isaac Sim 안의 rsl_rl 입니다.**
+Isaac Lab 만 다시 깔았다면 5번은 그대로 살아 있습니다. Isaac Sim 을
+다시 깔았다면 5번도 다시 붙여야 합니다.
 
 그리고 설치에서 걸렸던 것들은 README 33-4 에 적어뒀습니다 —
 `_isaac_sim` 심볼릭 링크, `-i "rl[rsl-rl]"` (`-i rsl_rl` 은 조용히

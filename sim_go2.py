@@ -713,40 +713,92 @@ def pose():
 #   합니다. 그런데 발 자리를 읽는 이름이 판마다 다릅니다.
 #   ★ 그래서 박아넣지 않고 **물어봅니다.** --yaw · --policy 와 같은 방식입니다.
 #     못 찾으면 한 번 말하고 스스로 꺼집니다 — 판을 망치지 않습니다.
-_feet_how = None          # 찾아낸 방법 (한 번만 찾습니다)
+_feet_how = None          # 찾아낸 방법 (한 번만 찾습니다) — 부르면 되는 함수
+_feet_name = ""           # 그 방법의 이름 (사람이 읽을 것)
 _feet_off = False         # 못 찾았으면 다시 시도하지 않습니다
+
+
+# ★ 고침 (2026-09-17, README 39-3) ★
+#   처음에 넣은 목록 네 개는 **전부 빗나갔습니다.** 실제로 있던 것은
+#   `get_link_coms` · `_link_paths` · `_num_links` 뿐이었습니다.
+#   ─ 그래서 이름을 더 대보는 것으로는 부족하다고 보고, 세 갈래로 넓힙니다:
+#     (1) 관절체가 직접 주는 이름   (2) 그 안에 든 physx 뷰
+#     (3) 마디 경로로 XformPrim 을 새로 만들어 읽기
+#   ─ 그래도 못 찾으면 **get_ 로 시작하는 이름을 전부** 찍습니다.
+#     여덟 개만 잘라 찍는 바람에 한 판을 통째로 날렸습니다.
+def _feet_probe(art):
+    """(부를 함수, 이름) 을 찾습니다. 못 찾으면 (None, "")."""
+    def _ok(out):
+        arr = as_numbers(out[0] if isinstance(out, tuple) else out)
+        arr = arr.reshape(-1, arr.shape[-1])
+        return arr if arr.shape[0] >= 4 and arr.shape[1] >= 3 else None
+
+    # (1) 관절체가 직접 주는 것
+    for name in ("get_link_transforms", "get_link_poses", "get_body_poses",
+                 "get_link_world_poses", "get_links_state", "get_world_poses"):
+        fn = getattr(art, name, None)
+        if fn is None:
+            continue
+        try:
+            if _ok(fn()) is not None:
+                return fn, name + "()"
+        except Exception:
+            continue
+
+    # (2) 안에 든 physx 뷰 — 이름이 판마다 다릅니다
+    for holder in ("_physics_view", "_physics_articulation_view",
+                   "_articulation_view", "physics_view", "_view"):
+        view = getattr(art, holder, None)
+        if view is None:
+            continue
+        for name in ("get_link_transforms", "get_link_poses"):
+            fn = getattr(view, name, None)
+            if fn is None:
+                continue
+            try:
+                if _ok(fn()) is not None:
+                    return fn, holder + "." + name + "()"
+            except Exception:
+                continue
+
+    # (3) 마디 경로가 있으면 XformPrim 을 새로 만들어 읽습니다
+    paths = getattr(art, "_link_paths", None)
+    if paths:
+        flat = [p for grp in paths for p in (grp if isinstance(grp, (list, tuple)) else [grp])]
+        if len(flat) >= 4:
+            for mod, cls in (("isaacsim.core.experimental.prims", "XformPrim"),
+                             ("isaacsim.core.prims", "XFormPrim")):
+                try:
+                    import importlib
+                    P = getattr(importlib.import_module(mod), cls)
+                    prims = P(flat)
+                    if _ok(prims.get_world_poses()) is not None:
+                        return prims.get_world_poses, cls + "(마디 %d개)" % len(flat)
+                except Exception:
+                    continue
+    return None, ""
 
 
 def feet_of():
     """네 발의 (x, y, z). 못 읽으면 None."""
-    global _feet_how, _feet_off
+    global _feet_how, _feet_name, _feet_off
     if _feet_off:
         return None
     art = robot.robot
     if _feet_how is None:
-        for name in ("get_link_transforms", "get_link_poses",
-                     "get_body_poses", "get_world_poses"):
-            fn = getattr(art, name, None)
-            if fn is None:
-                continue
-            try:
-                out = fn()
-                arr = as_numbers(out[0] if isinstance(out, tuple) else out)
-                if arr.reshape(-1, arr.shape[-1]).shape[0] >= 4:
-                    _feet_how = name
-                    print(f" [발] 자리를 {name}() 으로 읽습니다"
-                          f" — 마디 {arr.reshape(-1, arr.shape[-1]).shape[0]}개")
-                    break
-            except Exception:
-                continue
+        _feet_how, _feet_name = _feet_probe(art)
         if _feet_how is None:
             _feet_off = True
-            names = [n for n in dir(art) if "link" in n or "bod" in n]
+            gets = sorted(n for n in dir(art) if n.startswith("get_"))
             print(" [발] ✖ 발 자리를 읽는 법을 못 찾았습니다 — 끕니다.")
-            print(f"      있는 것들: {names[:8]}")
+            print("      물어본 것: 관절체 이름 6 · physx 뷰 5 · XformPrim")
+            print("      %s 에 있는 get_ 전부 (%d개):" % (type(art).__name__, len(gets)))
+            for i in range(0, len(gets), 3):
+                print("        " + "  ".join(gets[i:i + 3]))
             return None
+        print(" [발] 자리를 %s 으로 읽습니다" % _feet_name)
     try:
-        out = getattr(art, _feet_how)()
+        out = _feet_how()
         arr = as_numbers(out[0] if isinstance(out, tuple) else out)
         arr = arr.reshape(-1, arr.shape[-1])[:, :3]
         # 발은 z 가 가장 낮은 네 마디입니다 (이름 순서는 판마다 다릅니다)
