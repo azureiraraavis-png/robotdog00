@@ -186,6 +186,9 @@ ap.add_argument("--sill-deep", type=float, default=0.30, dest="sill_deep",
 # ★ 자취를 얼마나 촘촘히 찍을지 ★
 #   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
+ap.add_argument("--hips", action="store_true",
+                help="엉덩이 관절 네 개의 각을 찍습니다 — 뒷다리가 정말"
+                     " 꼬이는지 **눈이 아니라 숫자로** 가릅니다 (README 40-13)")
 ap.add_argument("--feet", action="store_true",
                 help="자취에 발 네 개의 x·z 를 함께 찍습니다 (앞쪽부터). 못 읽으면 스스로 끕니다"
                      " ※ go2 에는 발 마디가 없습니다 (calf 에 붙은 충돌 도형) — 안 됩니다")
@@ -898,6 +901,115 @@ def pose():
             as_numbers(quat).reshape(-1, 4)[0])
 
 
+# ★ 엉덩이 관절 네 개 (2026-09-18, README 40-13) ★
+#
+#   왜: GUI 영상에서 뒷다리가 X 자로 엇갈려 보였습니다. 그런데 그건
+#   휴대폰으로 찍은 모니터 화면입니다 — 정말 가운데를 넘었는지 그냥
+#   가까이 지나갔는지 픽셀로는 못 가립니다. 오늘 이 저장소가 배운 것이
+#   "눈으로 보지 말고 재라" 입니다 (README 40-6, 발을 무릎으로 읽은 건).
+#
+#   무엇을 재는가: 엉덩이 관절의 기본값은 왼쪽 +0.1, 오른쪽 −0.1 입니다
+#   (unitree.py 의 UNITREE_GO2_CFG init_state). 그러니
+#
+#       벌림 = 왼쪽 힙 − 오른쪽 힙        (쉬고 있을 때 +0.20 rad)
+#
+#   이 값이 **0 아래로 내려가면 두 다리가 가운데를 넘어 자리를 바꾼 것**
+#   입니다. 이게 "꼬임"의 정의입니다. 눈대중이 아닙니다.
+#
+#   ※ 왜 애초에 꼴 수 있는가: unitree.py:155 에
+#     `enabled_self_collisions=False` 입니다. 시뮬레이터에서 Go2 의
+#     다리는 **서로를 통과합니다.** 꼬는 데 드는 비용이 0 이고, 상 열
+#     한 개 중에 자세를 나무라는 항도 없습니다
+#     (flat_orientation_l2 0.0 · dof_pos_limits 0.0).
+#     실기체에서는 부딪힙니다. 여기가 sim-to-real 틈입니다.
+_hips_how = None          # 찾아낸 읽는 방법
+_hips_idx = None          # (FL, FR, RL, RR) 의 자리번호
+_hips_off = False
+
+
+def _hips_probe(art):
+    """(읽는 함수, 이름, 자리번호 넷) 을 찾습니다. 못 찾으면 (None, "", None)."""
+    getters = ("get_dof_positions", "get_joint_positions",
+               "get_dof_position_targets")
+    holders = (None, "_physics_articulation_view", "_physics_view",
+               "_articulation_view", "_view")
+
+    def try_read(obj, name):
+        fn = getattr(obj, name, None)
+        if not callable(fn):
+            return None
+        try:
+            arr = as_numbers(fn()).reshape(-1)
+            return arr if arr.size >= 12 else None
+        except Exception:
+            return None
+
+    src = None
+    for holder in holders:
+        obj = art if holder is None else getattr(art, holder, None)
+        if obj is None:
+            continue
+        for name in getters:
+            if try_read(obj, name) is not None:
+                src = (obj, name, (name if holder is None
+                                   else f"{holder}.{name}"))
+                break
+        if src:
+            break
+    if src is None:
+        return None, "", None
+    obj, name, label = src
+
+    # ★ 자리번호는 **짐작하지 않고 이름으로 찾습니다** ★
+    #   이 판은 Isaac Sim 의 예제 래퍼를 쓰고 IsaacLab 이 아닙니다.
+    #   관절 차례가 같으리라는 보장이 없습니다.
+    names = None
+    for attr in ("dof_names", "joint_names", "_dof_names"):
+        got = getattr(art, attr, None)
+        got = got() if callable(got) else got
+        if got is not None and len(list(got)) >= 12:
+            names = [str(x) for x in got]
+            break
+    if names:
+        idx = []
+        for want in ("FL_hip", "FR_hip", "RL_hip", "RR_hip"):
+            hit = [i for i, n in enumerate(names) if want in n]
+            if len(hit) != 1:
+                idx = None
+                break
+            idx.append(hit[0])
+        if idx:
+            print(" [힙] %s · 이름으로 찾았습니다 %s"
+                  % (label, [names[i] for i in idx]))
+            return (lambda: as_numbers(getattr(obj, name)()).reshape(-1)), label, idx
+    print(" [힙] %s · ⚠ 관절 이름을 못 읽어 **앞 네 개(0~3)로 짐작합니다.**"
+          % label)
+    print("      IsaacLab 차례라면 FL/FR/RL/RR_hip 이 맞지만, 이 판은"
+          " Isaac Sim 래퍼라 확인된 것이 아닙니다.")
+    return (lambda: as_numbers(getattr(obj, name)()).reshape(-1)), label, [0, 1, 2, 3]
+
+
+def hips_of():
+    """(FL, FR, RL, RR) 엉덩이 각 [rad]. 못 읽으면 None."""
+    global _hips_how, _hips_idx, _hips_off
+    if _hips_off:
+        return None
+    if _hips_how is None:
+        fn, label, idx = _hips_probe(robot.robot)
+        if fn is None:
+            print(" [힙] ✖ 관절 각을 읽는 법을 못 찾았습니다 — 끕니다.")
+            _hips_off = True
+            return None
+        _hips_how, _hips_idx = fn, idx
+    try:
+        arr = _hips_how()
+        return tuple(float(arr[i]) for i in _hips_idx)
+    except Exception:
+        _hips_off = True
+        print(" [힙] ✖ 읽다가 실패했습니다 — 끕니다.")
+        return None
+
+
 # ★ 발 네 개의 자리 (2026-09-17, README 38-7-1) ★
 #   왜 필요한가: 같은 12 cm 턱이 자리에 따라 넘기도 하고 멎기도 합니다.
 #   몸통만 봐서는 왜 갈리는지 못 봅니다 — 발이 어디 놓이는지를 봐야
@@ -1101,6 +1213,7 @@ x_at_reach = None         # 그때의 자리 — 평지 속도를 여기서 냅�
 over_at = None            # 몸통이 턱 뒷면을 지난 때
 clear_at = None           # 뒷발까지 다 지났을 때 (몸통이 뒷면 + 앞발거리)
 gap_min = None            # 몸통이 턱 앞면에 가장 가까이 간 거리 (잰 값)
+cross_f = cross_r = None  # 앞·뒤 다리의 가장 좁았던 벌림 (음수면 꼬였습니다)
 z_low = z_high = None     # 턱 언저리에서의 몸 높이 최저·최고
 z_ever = None             # 판 전체에서 가장 낮았던 몸 높이
 still_from = None         # 이 때부터 안 움직입니다
@@ -1243,6 +1356,17 @@ while simulation_app.is_running():
             if _f is not None:
                 tail += "  발x " + " ".join(f"{v[0]:+.2f}" for v in _f)
                 tail += " · 발z " + " ".join(f"{v[2]:.3f}" for v in _f)
+        if args.hips:
+            _h = hips_of()
+            if _h is not None:
+                fl, fr, rl, rr = _h
+                f_gap, r_gap = fl - fr, rl - rr
+                cross_f = min(cross_f, f_gap) if cross_f is not None else f_gap
+                cross_r = min(cross_r, r_gap) if cross_r is not None else r_gap
+                tail += (f"  힙 {fl:+.2f} {fr:+.2f} {rl:+.2f} {rr:+.2f}"
+                         f" · 벌림 앞{f_gap:+.2f} 뒤{r_gap:+.2f}")
+                if r_gap < 0 or f_gap < 0:
+                    tail += "  ← 꼬임"
         print(f"   {now:8.2f} {float(p[0]):+8.3f} {float(p[1]):+8.3f}"
               f" {float(p[2]):7.3f}   " + tail)
         sys.stdout.flush()
@@ -1280,6 +1404,24 @@ else:
     print(f"   몸이 돌아간 각   {turned:+.1f} 도")
     print(f"   몸 높이 (끝)     {float(p1[2]):.3f} m   "
           f"(제대로 서 있으면 0.3 m 안팎)")
+
+    # ── 다리가 꼬였는가 (--hips) ────────────────────────────
+    if args.hips and (cross_f is not None or cross_r is not None):
+        print()
+        print("   [힙] 가장 좁았던 벌림 (쉴 때 +0.20 rad)")
+        for label, val in (("앞다리", cross_f), ("뒷다리", cross_r)):
+            if val is None:
+                continue
+            if val < 0:
+                mark = f"  ★ 꼬였습니다 — 가운데를 {abs(val):.2f} rad 넘었습니다 ★"
+            elif val < 0.05:
+                mark = "  ← 거의 붙었습니다"
+            else:
+                mark = ""
+            print(f"     {label}  {val:+.3f} rad{mark}")
+        print("     ※ 시뮬레이터는 다리끼리 안 부딪힙니다"
+              " (unitree.py:155 enabled_self_collisions=False).")
+        print("       여기서 꼬이는 걸음은 **실기체에서 걸립니다.**")
 
     # ── 옆으로 밀린 양을 둘로 쪼갭니다 ──────────────────────
     #
