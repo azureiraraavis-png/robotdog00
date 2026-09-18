@@ -274,43 +274,52 @@ Isaac-Velocity-Rough-Unitree-Go2-Guide-Play-v0   확인·내보내기용
 를 이미 여기서 불러오고 있고 **우리가 고친 것을 한 파일에 모아두는 편**이
 남의 저장소에서는 낫습니다.
 
+> ## ⚠ 아래 코드는 **옛날 것입니다** (2026-09-18)
+>
+> 이 문서가 코드를 베껴 적고 있었는데, 실제 파일은 그 뒤로 네 군데가
+> 더 바뀌었습니다 (스캐너를 남김 · `base_height_l2` 를 지형 기준으로
+> 다시 넣음 · 광선 187→4 · `resampling_time_range`). 베낀 것은 반드시
+> 낡습니다.
+>
+> **지금 쓰는 것은 저장소 안에 있습니다:**
+>
+> ```
+> robotdog00/isaaclab_edits/go2/flat_env_cfg.py        ← 이게 원본입니다
+> robotdog00/isaaclab_edits/go2/rough_env_cfg.py
+> robotdog00/isaaclab_edits/go2/__init__.py            (과제 등록)
+> robotdog00/isaaclab_edits/go2/agents/rsl_rl_ppo_cfg.py
+> ```
+>
+> 그 파일을 그대로 아래 자리에 덮어쓰면 됩니다
+> (**`unitree_go2` 가 아니라 `go2`** 입니다 — 2026-09-18 확인):
+>
+> ```powershell
+> $dst = "C:\Users\user123\IsaacLab\source\isaaclab_tasks\isaaclab_tasks\manager_based\locomotion\velocity\config\go2"
+> $src = "D:\workspace_raraavis\robotdog00\isaaclab_edits\go2"
+> Copy-Item "$src\*.py"        $dst          -Force
+> Copy-Item "$src\agents\*.py" "$dst\agents" -Force
+> ```
+>
+> 아래 코드 토막은 **왜 그렇게 했는지**를 읽기 위해서만 남깁니다.
+
+<details>
+<summary>옛 코드 (2026-09-16 판) — 펼치기</summary>
+
 ```python
 @configclass
 class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
     def __post_init__(self):
         super().__post_init__()
-
-        # 명령 범위 — 평지 판과 같게 (견주려면 한 가지만 달라야 합니다)
         self.commands.base_velocity.ranges.lin_vel_x = (0.2, 0.5)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.rel_standing_envs = 0.15
-
-        # ★ 2026-09-17 추가 (README 39) ★
-        #   커리큘럼 승급선은 판 크기의 절반 = 4.0 m 로 **고정**인데,
-        #   10초마다 가야 할 방향이 무작위로 바뀌어 원점 거리가 상쇄됩니다.
-        #   위에서 속도를 절반으로 깎아놨으므로 상쇄를 버틸 여유가 없습니다.
-        #   (0.2 m/s × 20 s = 정확히 4.00 m — 승급이 산술적으로 불가능)
-        #   속도는 그대로 두고, 한 판에 한 방향만 주도록 바꿉니다.
         self.commands.base_velocity.resampling_time_range = (20.0, 20.0)
-
-        # ★ 눈을 뗍니다 ★ — 관측 48차원 유지
-        self.scene.height_scanner = None
+        self.scene.height_scanner = None            # ← 지금은 남겨둡니다
         self.observations.policy.height_scan = None
-
-        # base_height_l2 는 넣지 않습니다.
-        #   거친 지형에서는 땅 높이가 자리마다 달라서, 세계 좌표 높이를
-        #   목표로 삼으면 언덕에서 몸을 낮추라고 시키게 됩니다.
-
-
-class UnitreeGo2GuideRoughEnvCfg_PLAY(UnitreeGo2GuideRoughEnvCfg):
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        self.scene.num_envs = 50
-        self.scene.env_spacing = 2.5
-        self.observations.policy.enable_corruption = False
-        self.events.base_external_force_torque = None
-        self.events.push_robot = None
+        # base_height_l2 는 넣지 않습니다              ← 지금은 넣습니다
 ```
+
+</details>
 
 **★ 왜 스캐너를 끄는가 ★**
 
@@ -331,6 +340,35 @@ class UnitreeGo2GuideRoughPPORunnerCfg(UnitreeGo2RoughPPORunnerCfg):
 
 `max_iterations` 는 거친 지형 것 그대로 **1500** 입니다 (평지는 300).
 4096 마리로 17분쯤.
+
+> ## ★ 1500 은 너무 깁니다 — 1100 에서 끊으십시오 (2026-09-18) ★
+>
+> NVIDIA 기본값이지 우리 값이 아닙니다. `2026-09-17_09-49-43` 판에서
+> `Curriculum/terrain_levels` 가 **1000번에서 꼭대기(2.56)** 를 찍고
+> 내려왔는데, **정책의 실력도 정확히 거기서 꼭대기**였습니다.
+> 1500까지 마저 돌린 400번은 실력을 깎기만 했습니다 (README 40-4).
+>
+> ```
+> 반복    400    600    800   1000   1200   1400   1499
+> 단계   2.13   2.28   2.53   2.56   2.54   2.36   2.31
+>                             ▲ 여기서 끊습니다
+> ```
+>
+> **규칙: `terrain_levels` 가 오르기를 멈추면 거기가 끝입니다.**
+> `curve.py` 로 곡선을 먼저 보고 체크포인트를 고르십시오.
+>
+> 지형 단계가 몇 cm 인지는 소스에서 나옵니다
+> (`terrain_generator.py:261`, `mesh_terrains.py:76`):
+>
+> ```
+> 계단 높이 = 0.05 + ((단계 + 0.5) / 10) × 0.18   [m]
+>
+>   단계 2.31 → 10.1 cm      단계 5.06 → 15 cm (층간 계단 아랫변)
+>   단계 4.62 → 14.2 cm      단계 6.72 → 18 cm (층간 계단 윗변)
+> ```
+>
+> ⚠ 단, **단계를 올린다고 잘 넘는 게 아닙니다.** 단계를 4.62 까지
+> 올린 정책은 10 cm 턱을 못 넘었습니다 (README 40-1·40-2).
 
 **`__init__.py` 맨 끝에 이어 붙임**
 
@@ -370,6 +408,11 @@ gym.register(
   · 상 표에 **`base_height_l2` 가 없어야** 합니다.
   · `Curriculum` 에 `terrain_levels` 가 **있어야** 합니다 (쉬운 데서 시작해
     험해집니다).
+  · `Curriculum` 에 **`stuck_frac`** 도 있어야 합니다 (2026-09-18 추가).
+    제자리에 멈춰 선 개의 비율입니다 — 0.15 언저리면 정상이고
+    (서 있으라고 **시킨** 개들), 그보다 크게 오르면 시키지도 않았는데
+    멈춘 개가 늘고 있다는 뜻입니다. 지형을 건드리지 않으므로 학습에
+    영향이 없습니다 — 눈금자입니다 (README 40-7).
 
 물려받은 기본값 때문에 상 두 개가 평지 판과 다릅니다. 알고 가야 합니다 —
 

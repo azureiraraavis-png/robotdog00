@@ -187,7 +187,12 @@ ap.add_argument("--sill-deep", type=float, default=0.30, dest="sill_deep",
 #   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
 ap.add_argument("--feet", action="store_true",
-                help="자취에 발 네 개의 x·z 를 함께 찍습니다 (앞쪽부터). 못 읽으면 스스로 끕니다")
+                help="자취에 발 네 개의 x·z 를 함께 찍습니다 (앞쪽부터). 못 읽으면 스스로 끕니다"
+                     " ※ go2 에는 발 마디가 없습니다 (calf 에 붙은 충돌 도형) — 안 됩니다")
+ap.add_argument("--nosleep", action="store_true",
+                help="PhysX 가 로봇을 재우지 못하게 합니다 (굳음이 물리 탓인지 가리는 용도)")
+ap.add_argument("--probe", action="store_true",
+                help="문턱 앞에서 +x 로 광선을 쏴 **실제로 막히는 자리**를 찍습니다")
 ap.add_argument("--trace", type=float, default=0.5,
                 help="자취를 몇 초마다 찍을지 (기본 0.5 · 턱 볼 때는 0.1)")
 ap.add_argument("--hold-gain", type=float, default=0.5,
@@ -297,6 +302,10 @@ def on_physics_step(step_size: float, context: object) -> None:
             #   덮어써집니다. 그리고 넣은 뒤 다시 읽어서 정말 들어갔는지
             #   확인합니다 — 오늘 엔진 바꾸기에서 '시킨 것'과 '된 것'이
             #   다른 걸 겪었습니다.
+            if args.nosleep:
+                no_sleep(robot.robot)
+            if args.probe:
+                probe_forward()
             if args.gains:
                 gains_said.append(put_gains(robot.robot, args.gains))
         else:
@@ -309,6 +318,117 @@ def on_physics_step(step_size: float, context: object) -> None:
 
 
 gains_said = []
+
+
+# ─────────────────────────────────────────────────────────────
+#  부딪힘판이 **실제로** 어디 있는지 (2026-09-18, README 42)
+#
+#  왜: 개가 1 cm 짜리 턱 앞에서도 멈춥니다. 상자의 **그림**은 읽어서
+#      확인했지만 (BBoxCache), 그건 눈에 보이는 상자입니다.
+#      **부딪히는 면은 한 번도 확인한 적이 없습니다.**
+#      추론하지 말고 광선을 쏴서 어디서 막히는지 직접 읽습니다.
+#
+#  쏘는 자리는 턱 앞면에서 1 m 뒤. 그러니 **1.000 이 나와야 맞습니다.**
+def probe_forward():
+    """턱 앞면에서 1 m 뒤에서 +x 로 쏩니다. 높이별로 처음 막히는 거리."""
+    try:
+        from omni.physx import get_physx_scene_query_interface
+        q = get_physx_scene_query_interface()
+    except Exception as e:
+        print(" [탐침] ✖ physx 질의 인터페이스를 못 찾았습니다 — 끕니다 (%r)" % e)
+        return
+
+    if args.sill <= 0:
+        print(" [탐침] 턱이 없습니다 — 바닥만 봅니다.")
+    x0 = sill_near - 1.0
+    print(" [탐침] x=%.3f 에서 +x 로 쏩니다 (턱 앞면은 %.3f — **1.000 이 맞는 값**)"
+          % (x0, sill_near))
+    for z in (0.005, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30):
+        try:
+            hit = q.raycast_closest((float(x0), 0.0, float(z)),
+                                    (1.0, 0.0, 0.0), 6.0)
+        except Exception as e:
+            print("        z %.3f → 쏘다가 실패 (%r)" % (z, e))
+            continue
+        if isinstance(hit, dict) and hit.get("hit"):
+            d = float(hit.get("distance", float("nan")))
+            who = str(hit.get("collision", hit.get("rigidBody", "?")))
+            mark = ""
+            if abs(d - 1.0) > 0.02:
+                mark = "   ← 1.000 이 아닙니다"
+            print("        z %.3f → %.3f m 앞에서 막힘  %s%s"
+                  % (z, d, who.rsplit("/", 1)[-1], mark))
+        else:
+            print("        z %.3f → 6 m 안에 아무것도 없음  (턱 윗면보다 높음)" % z)
+
+
+# ─────────────────────────────────────────────────────────────
+#  PhysX 가 로봇을 재우지 못하게 (2026-09-18, README 42)
+#
+#  왜: 턱 앞에서 멎은 판들이 **11초 동안 소수점 셋째 자리까지 완전히
+#      같습니다.** 550번의 정책 판단 동안 한 비트도 안 움직입니다.
+#      살아 있는 물리라면 마지막 자리는 흔들립니다. PhysX 는 움직임이
+#      임계값 아래로 떨어진 물체를 **계산에서 빼버립니다(재웁니다)**.
+#      학습판에서는 이런 멎음이 없습니다 (한 판 1000/1000 걸음).
+#
+#  ★ 이것도 **물어봅니다.** 박아넣지 않습니다 — --yaw · --policy · --feet
+#    과 같은 방식입니다. 못 하면 한 줄 말하고 그냥 넘어갑니다.
+def no_sleep(art):
+    """재우기를 끕니다. 무엇으로 껐는지 찍습니다."""
+    # (1) 관절체가 직접 주는 이름
+    for name in ("set_sleep_thresholds", "set_sleep_threshold"):
+        fn = getattr(art, name, None)
+        if fn is None:
+            continue
+        for val in (0.0, np.zeros(1, dtype=np.float32)):
+            try:
+                fn(val)
+                print(" [잠] 재우기를 껐습니다 — %s(%r)" % (name, val))
+                return True
+            except Exception:
+                continue
+
+    # (2) 안에 든 physx 뷰
+    for holder in ("_physics_articulation_view", "_physics_view",
+                   "_articulation_view", "_view"):
+        view = getattr(art, holder, None)
+        if view is None:
+            continue
+        for name in ("set_sleep_thresholds", "set_sleep_threshold"):
+            fn = getattr(view, name, None)
+            if fn is None:
+                continue
+            for val in (np.zeros(1, dtype=np.float32), 0.0):
+                try:
+                    fn(val)
+                    print(" [잠] 재우기를 껐습니다 — %s.%s(%r)"
+                          % (holder, name, val))
+                    return True
+                except Exception:
+                    continue
+
+    # (3) USD 속성을 직접
+    try:
+        from pxr import PhysxSchema
+        import isaacsim.core.utils.stage as _stage
+        paths = getattr(art, "_link_paths", None) or []
+        flat = [p for g in paths for p in (g if isinstance(g, (list, tuple)) else [g])]
+        if flat:
+            root = flat[0]
+            prim = _stage.get_current_stage().GetPrimAtPath(root)
+            api = PhysxSchema.PhysxArticulationAPI.Get(prim.GetStage(), prim.GetPath())
+            if api:
+                api.CreateSleepThresholdAttr().Set(0.0)
+                print(" [잠] 재우기를 껐습니다 — USD PhysxArticulationAPI %s" % root)
+                return True
+    except Exception:
+        pass
+
+    names = sorted({n for n in dir(art) if "sleep" in n.lower()})
+    print(" [잠] ✖ 재우기를 끄는 법을 못 찾았습니다 — 그냥 갑니다.")
+    print("      물어본 것: 관절체 이름 2 · physx 뷰 4곳 · USD 속성")
+    print("      %s 에 있는 sleep 관련: %s" % (type(art).__name__, names or "없음"))
+    return False
 
 
 def put_gains(art, spec):
@@ -779,9 +899,45 @@ def _feet_probe(art):
     return None, ""
 
 
+# ★ 고침 (2026-09-18, README 42) — 흠 14 ★
+#   처음엔 "z 가 가장 낮은 네 마디"를 발로 골랐습니다. **틀렸습니다.**
+#   걷는 중에는 뜬 다리의 발보다 **선 다리의 무릎**이 더 낮습니다. 그래서
+#   `--sill 0` 판에서 네 개가 전부 몸통보다 **앞**에 찍혔습니다
+#   (몸통 2.109 · 고른 것 2.43/2.37/2.28/2.28 — 뒷발이라면 몸통 뒤
+#    0.3 m 에 있어야 합니다). 그 잘못된 값으로 저는 "네 발이 다 떠 있다,
+#   주저앉았다"고 읽었고, 그건 취소합니다.
+#   이제 **이름으로** 고릅니다. Go2 는 FL_foot · FR_foot · RL_foot · RR_foot.
+_feet_idx = None          # 이름으로 찾은 네 마디의 번호
+_feet_label = ""          # 사람이 읽을 이름 (한 번만 찍습니다)
+
+
+def _find_foot_indices(art):
+    """마디 이름에서 발 네 개의 번호. 못 찾으면 (None, "")."""
+    names = getattr(art, "_link_names", None)
+    if not names:
+        return None, ""
+    flat = []
+    for n in names:
+        if isinstance(n, (list, tuple)):
+            flat.extend(n)
+        else:
+            flat.append(n)
+    flat = [str(n) for n in flat]
+    hits = [(i, n) for i, n in enumerate(flat)
+            if "foot" in n.lower() or n.lower().endswith("_toe")]
+    if len(hits) != 4:
+        # ★ 이름을 **전부** 찍습니다 — 잘라 찍어서 판을 날린 게 흠 12 였습니다.
+        msg = ["이름에서 발 %d개를 찾았습니다 (4개가 아닙니다)." % len(hits),
+               "      마디 %d개의 이름 전부:" % len(flat)]
+        for i in range(0, len(flat), 4):
+            msg.append("        " + "  ".join(flat[i:i + 4]))
+        return None, "\n".join(msg)
+    return [i for i, _ in hits], " · ".join(n for _, n in hits)
+
+
 def feet_of():
     """네 발의 (x, y, z). 못 읽으면 None."""
-    global _feet_how, _feet_name, _feet_off
+    global _feet_how, _feet_name, _feet_off, _feet_idx, _feet_label
     if _feet_off:
         return None
     art = robot.robot
@@ -797,13 +953,21 @@ def feet_of():
                 print("        " + "  ".join(gets[i:i + 3]))
             return None
         print(" [발] 자리를 %s 으로 읽습니다" % _feet_name)
+        _feet_idx, _feet_label = _find_foot_indices(art)
+        if _feet_idx is None:
+            print(" [발] ✖ 이름으로 발을 못 찾았습니다 — 끕니다.")
+            print("      %s" % (_feet_label or "_link_names 가 없습니다"))
+            print("      ※ 예전처럼 'z 가 낮은 네 마디'로 때우지 않습니다 —")
+            print("        그게 무릎을 발로 읽어서 흠 14 가 됐습니다.")
+            _feet_off = True
+            return None
+        print(" [발] 이름으로 고릅니다: %s" % _feet_label)
     try:
         out = _feet_how()
         arr = as_numbers(out[0] if isinstance(out, tuple) else out)
         arr = arr.reshape(-1, arr.shape[-1])[:, :3]
-        # 발은 z 가 가장 낮은 네 마디입니다 (이름 순서는 판마다 다릅니다)
-        low = arr[np.argsort(arr[:, 2])[:4]]
-        return low[np.argsort(-low[:, 0])]      # 앞쪽부터
+        feet = arr[_feet_idx]
+        return feet[np.argsort(-feet[:, 0])]     # 앞쪽부터
     except Exception as e:
         _feet_off = True
         print(f" [발] ✖ 읽다가 실패했습니다 — 끕니다 ({e!r})")
@@ -1102,10 +1266,18 @@ else:
                 print(f"       판 전체에서 가장 낮았던 몸 높이 {z_ever:.3f} m"
                       + ("   ← 넘어졌습니다" if z_ever < 0.20 else ""))
             if frozen:
-                how = ("넘어진 채로" if (z_ever is not None and z_ever < 0.20)
-                       else "선 채로")
+                # ★ 고침 (2026-09-18) — 흠 13 ★
+                #   예전에는 몸통 높이만 보고 "선 채로"라고 단정했습니다.
+                #   몸통이 0.3 m 라고 서 있는 게 아닙니다 — 무릎으로 앉아
+                #   있어도 0.3 m 입니다. 이제 자세를 단정하지 않습니다.
                 print(f"       ★ {still_from:.1f}초부터 **한 자리도 안"
-                      f" 움직입니다** ({how}) ★")
+                      f" 움직입니다** ★")
+                print("         (몸통 높이만으로는 서 있는지 앉은 건지"
+                      " 모릅니다. --feet 로 발 높이를 보십시오.)")
+                print("         ※ 학습 쪽에서는 이런 멎음이 안 나옵니다"
+                      " (한 판 1000/1000 걸음). 시험대를 의심하십시오 —")
+                print("           특히 이 판에 **문턱 상자가 있기만 해도**"
+                      " 궤적이 갈립니다 (README 42).")
         else:
             took = over_at - reach_at
             print(f"     앞면에 닿은 때 {reach_at:.1f}초 · "
