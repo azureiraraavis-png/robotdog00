@@ -321,7 +321,7 @@ gains_said = []
 
 
 # ─────────────────────────────────────────────────────────────
-#  부딪힘판이 **실제로** 어디 있는지 (2026-09-18, README 42)
+#  부딪힘판이 **실제로** 어디 있는지 (2026-09-18, README 40)
 #
 #  왜: 개가 1 cm 짜리 턱 앞에서도 멈춥니다. 상자의 **그림**은 읽어서
 #      확인했지만 (BBoxCache), 그건 눈에 보이는 상자입니다.
@@ -363,7 +363,7 @@ def probe_forward():
 
 
 # ─────────────────────────────────────────────────────────────
-#  PhysX 가 로봇을 재우지 못하게 (2026-09-18, README 42)
+#  PhysX 가 로봇을 재우지 못하게 (2026-09-18, README 40)
 #
 #  왜: 턱 앞에서 멎은 판들이 **11초 동안 소수점 셋째 자리까지 완전히
 #      같습니다.** 550번의 정책 판단 동안 한 비트도 안 움직입니다.
@@ -373,8 +373,83 @@ def probe_forward():
 #
 #  ★ 이것도 **물어봅니다.** 박아넣지 않습니다 — --yaw · --policy · --feet
 #    과 같은 방식입니다. 못 하면 한 줄 말하고 그냥 넘어갑니다.
+def _sleep_readback(art):
+    """★ 되읽기 (2026-09-18, README 40-5) ★
+
+    시킨 것과 된 것을 확인합니다. 이 저장소의 규칙인데 `no_sleep` 만
+    빠져 있었습니다 — "껐습니다"라고 찍고는 **정말 꺼졌는지 안 봤고**,
+    그 상태로 "재우기는 원인이 아니다"라는 결론까지 냈습니다.
+    그 결론은 결과적으로 맞았지만(궤적이 바이트 단위로 같았습니다),
+    근거가 모자랐습니다.
+
+    돌려주는 값: (읽은 값, 어디서 읽었는지) — 못 읽으면 (None, 이유).
+    """
+    # (1) 관절체가 직접 주는 이름
+    for name in ("get_sleep_thresholds", "get_sleep_threshold"):
+        fn = getattr(art, name, None)
+        if fn is None:
+            continue
+        try:
+            return (np.asarray(fn()).reshape(-1)[:4], name)
+        except Exception:
+            continue
+
+    # (2) 안에 든 physx 뷰
+    for holder in ("_physics_articulation_view", "_physics_view",
+                   "_articulation_view", "_view"):
+        view = getattr(art, holder, None)
+        if view is None:
+            continue
+        for name in ("get_sleep_thresholds", "get_sleep_threshold"):
+            fn = getattr(view, name, None)
+            if fn is None:
+                continue
+            try:
+                return (np.asarray(fn()).reshape(-1)[:4], "%s.%s" % (holder, name))
+            except Exception:
+                continue
+
+    # (3) USD 속성을 직접
+    try:
+        from pxr import PhysxSchema
+        import isaacsim.core.utils.stage as _stage
+        paths = getattr(art, "_link_paths", None) or []
+        flat = [p for g in paths
+                for p in (g if isinstance(g, (list, tuple)) else [g])]
+        if flat:
+            prim = _stage.get_current_stage().GetPrimAtPath(flat[0])
+            api = PhysxSchema.PhysxArticulationAPI.Get(prim.GetStage(),
+                                                       prim.GetPath())
+            if api:
+                attr = api.GetSleepThresholdAttr()
+                if attr:
+                    return (attr.Get(), "USD sleepThreshold")
+    except Exception:
+        pass
+
+    return (None, "되읽는 법이 없습니다")
+
+
+def _say_sleep(how, art):
+    """껐다고 찍고, 곧바로 되읽어서 정말 꺼졌는지 같이 찍습니다."""
+    print(" [잠] 재우기를 껐습니다 — %s" % how)
+    got, src = _sleep_readback(art)
+    if got is None:
+        print("      ⚠ 되읽기 실패 (%s) — **정말 꺼졌는지 모릅니다.**" % src)
+        print("        이 판의 '재우기 아님' 결론은 근거가 약합니다.")
+    else:
+        try:
+            ok = float(np.max(np.abs(np.asarray(got, dtype=float)))) < 1e-9
+        except Exception:
+            ok = None
+        mark = "✔ 0 입니다" if ok else ("✖ 0 이 아닙니다" if ok is False
+                                        else "? 판단 못 합니다")
+        print("      되읽음(%s): %s   %s" % (src, got, mark))
+    return True
+
+
 def no_sleep(art):
-    """재우기를 끕니다. 무엇으로 껐는지 찍습니다."""
+    """재우기를 끕니다. 무엇으로 껐는지 찍고, **되읽어서 확인합니다.**"""
     # (1) 관절체가 직접 주는 이름
     for name in ("set_sleep_thresholds", "set_sleep_threshold"):
         fn = getattr(art, name, None)
@@ -383,8 +458,7 @@ def no_sleep(art):
         for val in (0.0, np.zeros(1, dtype=np.float32)):
             try:
                 fn(val)
-                print(" [잠] 재우기를 껐습니다 — %s(%r)" % (name, val))
-                return True
+                return _say_sleep("%s(%r)" % (name, val), art)
             except Exception:
                 continue
 
@@ -401,9 +475,7 @@ def no_sleep(art):
             for val in (np.zeros(1, dtype=np.float32), 0.0):
                 try:
                     fn(val)
-                    print(" [잠] 재우기를 껐습니다 — %s.%s(%r)"
-                          % (holder, name, val))
-                    return True
+                    return _say_sleep("%s.%s(%r)" % (holder, name, val), art)
                 except Exception:
                     continue
 
@@ -419,8 +491,7 @@ def no_sleep(art):
             api = PhysxSchema.PhysxArticulationAPI.Get(prim.GetStage(), prim.GetPath())
             if api:
                 api.CreateSleepThresholdAttr().Set(0.0)
-                print(" [잠] 재우기를 껐습니다 — USD PhysxArticulationAPI %s" % root)
-                return True
+                return _say_sleep("USD PhysxArticulationAPI %s" % root, art)
     except Exception:
         pass
 
@@ -899,7 +970,7 @@ def _feet_probe(art):
     return None, ""
 
 
-# ★ 고침 (2026-09-18, README 42) — 흠 14 ★
+# ★ 고침 (2026-09-18, README 40) — 흠 14 ★
 #   처음엔 "z 가 가장 낮은 네 마디"를 발로 골랐습니다. **틀렸습니다.**
 #   걷는 중에는 뜬 다리의 발보다 **선 다리의 무릎**이 더 낮습니다. 그래서
 #   `--sill 0` 판에서 네 개가 전부 몸통보다 **앞**에 찍혔습니다
@@ -999,7 +1070,24 @@ turn_asked = []           # 시킨 회전 명령들 (rad/s)
 off_worst = 0.0           # 가장 크게 틀어졌던 각 (rad)
 
 # 문턱이 쓴 것들
-FRONT_PAW = 0.20          # 몸 중심에서 앞발까지 (Go2, 어림)
+# ★ 고침 (2026-09-18, README 40-6) ★
+#   전에는 FRONT_PAW = 0.20 을 "몸 중심에서 앞발까지"라고 적어놓고
+#   그 값으로 '앞발이 닿았다'를 판정했습니다. 그런데 Go2 에는 **발 링크가
+#   아예 없어서**(링크 13개, 발바닥은 종아리에 붙은 충돌 도형) 이 값을
+#   한 번도 재본 적이 없습니다. 실제로는 착지할 때 앞발이 몸통 앞
+#   0.5 m 까지 나갑니다. 그 바람에 발이 **닿은** 판을 "턱 앞까지 가지도
+#   못했습니다"로 찍었고, 저는 그걸 보고 "v2 는 평지도 못 걷는다"는
+#   오진을 세워 지형을 통째로 새로 짰습니다 (README 40-3).
+#
+#   그래서 이제 **앞발 자리를 아는 척하지 않습니다.**
+#   - 아래 값은 "발이 여기 있다"가 아니라 **"이쯤이면 턱에 닿았을 만하다"**
+#     는 판정선일 뿐입니다. 이름도 그렇게 바꿨습니다.
+#   - 대신 판마다 **몸통이 턱 앞면에 가장 가까이 간 거리**(gap_min)를
+#     실제로 재서 찍습니다. 이건 잰 값이라 믿을 수 있습니다.
+REACH_LINE = 0.50         # 몸통이 앞면에서 이만큼 앞에 오면 '닿았을 만하다'
+#   ※ 0.50 은 착지 때의 앞 뻗음을 눈으로 본 어림입니다. 재서 얻은 값이
+#     아닙니다. 이 선을 넘었다고 발이 닿았다는 뜻은 아닙니다.
+FRONT_PAW = REACH_LINE    # 옛 이름 — 남은 자리를 위해서만 둡니다
 # ★ 뒷발은 따로입니다 (2026-09-17, README 38-7-1) ★
 #   전에는 뒷발 자리도 FRONT_PAW 로 셈해서 12 cm 가 어긋났습니다.
 #   턱 자리를 여섯 곳으로 옮겨가며 잰 결과, 멎는 자리가 언제나
@@ -1012,6 +1100,7 @@ reach_at = None           # 턱 앞면에 닿은 때 (무대시계)
 x_at_reach = None         # 그때의 자리 — 평지 속도를 여기서 냅니다
 over_at = None            # 몸통이 턱 뒷면을 지난 때
 clear_at = None           # 뒷발까지 다 지났을 때 (몸통이 뒷면 + 앞발거리)
+gap_min = None            # 몸통이 턱 앞면에 가장 가까이 간 거리 (잰 값)
 z_low = z_high = None     # 턱 언저리에서의 몸 높이 최저·최고
 z_ever = None             # 판 전체에서 가장 낮았던 몸 높이
 still_from = None         # 이 때부터 안 움직입니다
@@ -1098,13 +1187,20 @@ while simulation_app.is_running():
         # ★ 앞발은 몸통 원점보다 앞에 있습니다 ★
         #   2026-09-16 — 처음엔 몸통 x 로만 판정했더니, 앞발이 턱을 때리고
         #   뒤로 밀려 넘어졌는데도 "턱 앞까지 가지도 못했다" 고 찍혔습니다.
-        #   Go2 는 몸 중심에서 앞발까지 20 cm 쯤입니다.
-        if reach_at is None and x_now >= sill_near - FRONT_PAW:
+        #   2026-09-18 — 그 반대쪽으로도 틀렸습니다. 20 cm 는 너무 짧아서
+        #   닿은 판을 "가지도 못했다"로 찍었습니다 (README 40-3·40-6).
+        #   이제 판정선은 REACH_LINE 이고, 아래 gap_min 을 따로 잽니다.
+        gap_now = sill_near - x_now            # 몸통에서 앞면까지 (잰 값)
+        gap_min = gap_now if gap_min is None else min(gap_min, gap_now)
+        if reach_at is None and x_now >= sill_near - REACH_LINE:
             reach_at = now
             x_at_reach = x_now          # 여기까지 온 속도가 '평지 속도'
         if over_at is None and x_now >= sill_far:
             over_at = now                      # 몸통이 뒷면을 지난 때
-        if clear_at is None and x_now >= sill_far + FRONT_PAW:
+        # ★ 고침 (2026-09-18) — 여기는 **뒷발**입니다 ★
+        #   FRONT_PAW 를 쓰고 있었습니다. 위 REAR_PAW 주석이 "뒷발은
+        #   따로"라고 적어둔 바로 그 자리인데 코드가 안 따라왔습니다.
+        if clear_at is None and x_now >= sill_far + REAR_PAW:
             clear_at = now                     # 뒷발까지 다 지났을 때
         # 멈춤 — 쓸어볼 때 '넘었다/걸렸다/넘어졌다' 를 한 줄로 가르는 것
         if still_from is None:
@@ -1255,13 +1351,26 @@ else:
         frozen = (still_from is not None
                   and (clock() - still_from) >= 2.0)
         if reach_at is None:
-            print("     ✖ 턱 앞까지 가지도 못했습니다.")
-            print(f"       {args.seconds:.0f}초 동안 {ahead:+.3f} m — 턱은 "
-                  f"{sill_near:.2f} m 앞입니다 (앞발은 {FRONT_PAW:.2f} m 더).")
+            # ★ 고침 (2026-09-18, README 40-6) ★
+            #   전에는 여기서 "턱 앞까지 가지도 못했습니다"라고 단정했습니다.
+            #   판정선이 20 cm 였던 탓에 **닿고도** 이 줄이 나왔습니다.
+            #   이제 단정하지 않고, 잰 값(가장 가까이 간 거리)을 찍습니다.
+            print(f"     ✖ 판정선({REACH_LINE:.2f} m)까지 못 갔습니다.")
+            print(f"       {args.seconds:.0f}초 동안 {ahead:+.3f} m — 턱 앞면은 "
+                  f"{sill_near:.2f} m 앞입니다.")
+            if gap_min is not None:
+                print(f"       ★ 몸통이 앞면에 가장 가까이 간 거리 "
+                      f"{gap_min:+.3f} m ★")
+                print("         (발이 닿았는지는 이 값으로 알 수 없습니다 —"
+                      " Go2 에는 발 링크가 없습니다.)")
             print("       --seconds 를 늘리거나 --sill-at 을 줄이세요.")
         elif over_at is None:
-            print(f"     ✖ **못 넘었습니다.** {reach_at:.1f}초에 앞발이 닿았습니다.")
+            print(f"     ✖ **못 넘었습니다.** {reach_at:.1f}초에 판정선"
+                  f"({REACH_LINE:.2f} m)을 지났습니다.")
             print(f"       마지막 자리 {float(p1[0]):+.3f} m")
+            if gap_min is not None:
+                print(f"       몸통이 앞면에 가장 가까이 간 거리 "
+                      f"{gap_min:+.3f} m")
             if z_ever is not None:
                 print(f"       판 전체에서 가장 낮았던 몸 높이 {z_ever:.3f} m"
                       + ("   ← 넘어졌습니다" if z_ever < 0.20 else ""))
@@ -1274,10 +1383,16 @@ else:
                       f" 움직입니다** ★")
                 print("         (몸통 높이만으로는 서 있는지 앉은 건지"
                       " 모릅니다. --feet 로 발 높이를 보십시오.)")
-                print("         ※ 학습 쪽에서는 이런 멎음이 안 나옵니다"
-                      " (한 판 1000/1000 걸음). 시험대를 의심하십시오 —")
-                print("           특히 이 판에 **문턱 상자가 있기만 해도**"
-                      " 궤적이 갈립니다 (README 42).")
+                # ★ 고침 (2026-09-18, README 40-5) ★
+                #   전에는 여기서 "문턱 상자가 있기만 해도 궤적이 갈립니다"
+                #   라고 찍었습니다. **틀렸습니다.** --sill-at 6.0 (닿지 않는
+                #   자리)으로 돌린 판의 궤적이 상자 없는 판과 바이트 단위로
+                #   같았습니다. 재우기(sleep)도 원인이 아니고, 운도 아닙니다
+                #   (여덟 판 모두 앞면에서 0.196~0.204 m). 시험대는 멀쩡합니다.
+                print("         ※ 시험대 문제가 아닙니다 — 콜라이더 자리"
+                      "(--probe)·재우기(--nosleep)·재현성 모두 확인했습니다.")
+                print("           멎는 자리는 앞면에서 0.20 m 언저리로"
+                      " 판마다 8 mm 안에 듭니다 (README 40-5).")
         else:
             took = over_at - reach_at
             print(f"     앞면에 닿은 때 {reach_at:.1f}초 · "

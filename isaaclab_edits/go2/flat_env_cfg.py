@@ -6,8 +6,11 @@
 from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg
 from isaaclab_physx.physics import PhysxCfg
 
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils.configclass import configclass
+
+import isaaclab_tasks.manager_based.locomotion.velocity.mdp as vel_mdp
 
 from isaaclab_tasks.utils import PresetCfg
 
@@ -123,7 +126,7 @@ class UnitreeGo2GuideEnvCfg_PLAY(UnitreeGo2GuideEnvCfg):
         
 
 # ─────────────────────────────────────────────────────────────
-#  robotdog00 — 우리가 실제로 걸을 곳만 담은 지형 (2026-09-18, README 41)
+#  robotdog00 — 우리가 실제로 걸을 곳만 담은 지형 (2026-09-18, README 40)
 #
 #  왜 새로 짜는가
 #  ──────────────
@@ -183,6 +186,101 @@ GUIDE_TERRAINS_CFG = TerrainGeneratorCfg(
 
 
 # ─────────────────────────────────────────────────────────────
+#  robotdog00 — 제자리에 멈춰 선 개의 비율 (2026-09-18, README 40-7)
+#
+#  커리큘럼 항의 규약을 그대로 씁니다: (env, env_ids) 를 받고 스칼라
+#  하나를 돌려주면 학습 로그에 Curriculum/<이름> 으로 찍힙니다.
+#  지형을 건드리지 않으므로 **학습에 아무 영향이 없습니다** — 눈금자입니다.
+#
+#  재는 것: 판이 끝난 개들 중, 출발 자리에서 0.5 m 도 못 벗어난 비율.
+#  거리 셈은 terrain_levels_vel 과 **똑같이** 합니다 (같은 잣대로 봐야
+#  승급선 4.0 m 와 나란히 읽힙니다).
+#    isaaclab_tasks/manager_based/locomotion/velocity/mdp/curriculums.py
+#
+#  읽는 법: 0.15 언저리면 정상입니다 (rel_standing_envs = 0.15 —
+#  서 있으라고 **시킨** 개들). 그보다 크게 올라가면 시키지도 않았는데
+#  멈춘 개가 늘고 있다는 뜻입니다.
+#
+#  ★★ 순서가 중요합니다 — 처음 판이 전부 0.0000 이었습니다 ★★
+#
+#  커리큘럼 항은 판이 끝난 개들에 대해 **차례대로** 불립니다. 그런데
+#  `terrain_levels_vel` 은 마지막에 이렇게 합니다:
+#
+#      terrain_importer.py:329
+#      self.env_origins[env_ids] = self.terrain_origins[levels, types]
+#
+#  **원점을 다른 지형 조각으로 옮겨버립니다.** 조각 간격이 8 m 라,
+#  그 뒤에 도는 항이 `env_origins` 를 읽으면 "새 원점에서의 거리"를
+#  재게 되고 언제나 몇 미터가 나옵니다. 그래서 0.5 m 미만이 하나도
+#  없어 비율이 정확히 0 으로 찍혔습니다.
+#
+#  그래서 아래 GuideCurriculumCfg 에서 **눈금자를 먼저, terrain_levels 를
+#  나중에** 두었습니다. 항 순서는 선언 순서입니다.
+# ─────────────────────────────────────────────────────────────
+#  ★★ 문턱을 0.5 → 1.0 으로 올렸습니다 (첫 판을 보고) ★★
+#
+#  판이 시작될 때 개를 원점에서 흩뿌립니다:
+#      velocity_env_cfg.py:253
+#      reset_base ... "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), ...}
+#
+#  대각선으로 최대 0.71 m 입니다. **한 걸음도 안 뗀 개가 0.71 m 로
+#  읽힐 수 있습니다.** 문턱이 0.5 m 면 얼어붙은 개의 상당수가 "안 멈췄다"
+#  로 세어집니다. 첫 판에서 반복 1 이 1.0 이 아니라 0.25 로 나온 이유입니다
+#  (무작위 정책이라 0.58초 만에 다 넘어지는데도).
+#
+#  1.0 m 는 뿌려지는 최대치보다 확실히 위이고, 승급선 4.0 m 의 1/4 이라
+#  walk_dist 와 나란히 읽힙니다.
+#
+#  ※ 반복 0 의 값은 **버리십시오.** 판 시작 때 모든 개가 한 번 리셋되는데,
+#    그때는 아직 각자의 지형 조각으로 옮겨지기 전이라 walk_dist 가 수십
+#    미터(첫 판 27.07)로 나옵니다. 반복 1부터가 실제 값입니다.
+STUCK_M = 1.0             # 이보다 덜 움직였으면 '멈춰 있었다'
+
+
+def _walked(env, env_ids):
+    """출발 자리에서 얼마나 멀어졌나 — terrain_levels_vel 과 같은 셈."""
+    import torch
+
+    asset = env.scene["robot"]
+    return torch.linalg.norm(
+        asset.data.root_pos_w.torch[env_ids, :2]
+        - env.scene.env_origins[env_ids, :2], dim=1)
+
+
+def stuck_fraction(env, env_ids):
+    """0.5 m 도 못 벗어난 개의 비율. 0.15 언저리가 정상입니다."""
+    import torch
+
+    d = _walked(env, env_ids)
+    if d.numel() == 0:
+        return torch.zeros((), device=d.device)
+    return torch.mean((d < STUCK_M).float())
+
+
+def walked_distance(env, env_ids):
+    """간 거리의 평균. 승급선이 4.0 m 라 나란히 읽으면 뜻이 생깁니다.
+
+    ※ 이 줄이 있어야 stuck_frac 이 맞는 값인지 스스로 검산됩니다.
+      거리 평균이 8 m 를 넘으면 또 원점이 옮겨진 뒤에 재고 있는 것입니다.
+    """
+    import torch
+
+    d = _walked(env, env_ids)
+    if d.numel() == 0:
+        return torch.zeros((), device=d.device)
+    return torch.mean(d)
+
+
+@configclass
+class GuideCurriculumCfg:
+    """★ 선언 순서 = 실행 순서입니다. 눈금자가 먼저입니다 ★"""
+
+    stuck_frac = CurrTerm(func=stuck_fraction)
+    walk_dist = CurrTerm(func=walked_distance)
+    terrain_levels = CurrTerm(func=vel_mdp.terrain_levels_vel)
+
+
+# ─────────────────────────────────────────────────────────────
 #  robotdog00 — 거친 지형, 눈 없이
 #
 #  평지만 배운 정책은 10 cm 턱에서 넘어집니다 (README 35).
@@ -212,7 +310,7 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #       **고정**인데 10초마다 가야 할 방향이 바뀌어 상쇄된다는 것을
         #       소스로 확인하고 고쳤습니다. **진단 자체는 맞았습니다** —
         #       지형 단계가 2.31 → 4.62 로 올랐습니다 (README 39).
-        #    ② 지형을 평지+문턱+계단만으로 새로 짰습니다 (README 41).
+        #    ② 지형을 평지+문턱+계단만으로 새로 짰습니다 (README 40).
         #
         #  무엇이 나빠졌는가 (같은 시험대, 턱을 2.0 m 에 두고 잰 값)
         #
@@ -272,6 +370,26 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #   우리: size [0.2, 0.2] · 간격 0.2 →  2 ×  2 = 4
         self.scene.height_scanner.pattern_cfg.resolution = 0.2
         self.scene.height_scanner.pattern_cfg.size = [0.2, 0.2]
+
+        # ★ 멈춰 선 개의 비율을 찍습니다 (2026-09-18, README 40-7·40-11) ★
+        #
+        #   왜 필요한가: v2 의 학습 로그는 이랬습니다 —
+        #       Mean episode length   1000/1000   (아무도 안 넘어짐)
+        #       base_contact             3.7 %    (배를 안 깖)
+        #       terrain_levels           4.62     (지형도 오름)
+        #   셋 다 좋습니다. 그리고 그 정책은 10 cm 턱을 못 넘습니다.
+        #   **가만히 서 있는 개도 이 셋이 전부 좋습니다.** 지금 지표로는
+        #   막혀 선 개가 한 마리도 안 보입니다.
+        #
+        #   커리큘럼 항으로 답니다. 판이 끝날 때 불리고, 돌려준 값이
+        #   Curriculum/<이름> 으로 그대로 찍히기 때문에 상을 건드리지 않고
+        #   **보기만** 할 수 있습니다. (상에 넣으면 학습이 바뀝니다.)
+        #
+        #   ★ 통째로 갈아끼웁니다 — 항 순서 때문입니다 ★
+        #     나중에 붙이면 terrain_levels 뒤로 가고, 그러면 원점이 이미
+        #     옮겨진 뒤에 재게 되어 값이 전부 0 으로 나옵니다.
+        #     (첫 판이 정확히 그랬습니다 — GuideCurriculumCfg 주석 참고)
+        self.curriculum = GuideCurriculumCfg()
 
 class UnitreeGo2GuideRoughEnvCfg_PLAY(UnitreeGo2GuideRoughEnvCfg):
     def __post_init__(self) -> None:
