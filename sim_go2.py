@@ -186,6 +186,9 @@ ap.add_argument("--sill-deep", type=float, default=0.30, dest="sill_deep",
 # ★ 자취를 얼마나 촘촘히 찍을지 ★
 #   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
+ap.add_argument("--legs", action="store_true",
+                help="허벅지·종아리 각을 기본값과 견줘 찍습니다 (--hips 를 켭니다)."
+                     " 엉덩이를 묶었더니 버릇이 다른 관절로 옮겨갔는지 봅니다 (README 41-9)")
 ap.add_argument("--hips", action="store_true",
                 help="엉덩이 관절 네 개의 각을 찍습니다 — 뒷다리가 정말"
                      " 꼬이는지 **눈이 아니라 숫자로** 가릅니다 (README 40-12)")
@@ -230,6 +233,8 @@ ap.add_argument("--policy", default=None,
 ap.add_argument("--gains", default=None,
                 help="강성,감쇠,힘제한 (예: 25,0.5,23.5). 깨운 직후에 넣습니다")
 args, unknown = ap.parse_known_args()
+if args.legs:
+    args.hips = True          # 관절 이름·읽는 법을 --hips 가 찾습니다
 
 print("=" * 70)
 print(" 시뮬레이터의 개 — 실기체와 같은 값을 잽니다")
@@ -925,6 +930,7 @@ def pose():
 #     넘을 수 있다"는 증거가 못 됩니다. (※ 이 정책이 실기체로 갈 일은
 #     원래 없습니다 — README 32-0 · 34-0. 문제는 배치가 아니라 **뜻**입니다.)
 _hips_how = None          # 찾아낸 읽는 방법
+_joint_names = None       # 읽어낸 관절 이름 (--legs 가 다시 씁니다)
 _hips_idx = None          # (FL, FR, RL, RR) 의 자리번호
 _hips_off = False
 
@@ -973,6 +979,8 @@ def _hips_probe(art):
             names = [str(x) for x in got]
             break
     if names:
+        global _joint_names
+        _joint_names = names
         idx = []
         for want in ("FL_hip", "FR_hip", "RL_hip", "RR_hip"):
             hit = [i for i, n in enumerate(names) if want in n]
@@ -989,6 +997,60 @@ def _hips_probe(art):
     print("      IsaacLab 차례라면 FL/FR/RL/RR_hip 이 맞지만, 이 판은"
           " Isaac Sim 래퍼라 확인된 것이 아닙니다.")
     return (lambda: as_numbers(getattr(obj, name)()).reshape(-1)), label, [0, 1, 2, 3]
+
+
+# ★ 허벅지·종아리 (2026-09-21, README 41-9) ★
+#
+#   왜: 엉덩이 벌(hip_deviation)을 걸었더니 뒷다리 꼬임은 풀렸는데,
+#   GUI 영상에서 **뒷다리가 몸 뒤로 길게 뻗은 채** 걷는 게 보였습니다
+#   (0.1초 간격으로 0.8초를 봐도 그 모양 — 한 순간이 아니라 걸음 전체).
+#   벌은 엉덩이(옆으로 벌리는 관절)에만 걸려 있고 허벅지·종아리는 아무도
+#   안 나무랍니다. **한 관절을 묶었더니 버릇이 안 묶인 관절로 옮겨갔을**
+#   수 있습니다. 눈으로 보지 말고 잽니다.
+#
+#   기본값 (unitree.py:163~167, UNITREE_GO2_CFG init_state):
+#     앞 허벅지 0.8 · 뒤 허벅지 1.0 · 종아리 전부 -1.5
+#   찍는 것은 **기본값과의 차** 입니다 (앞 둘·뒤 둘 평균).
+#   ※ 부호의 뜻(뒤로 젖힘이 + 인지)은 여기서 단정하지 않습니다. 이 셈이
+#     하는 일은 두 정책을 **같은 자로** 나란히 재는 것까지입니다.
+_LEG_NAMES = ("FL_thigh", "FR_thigh", "RL_thigh", "RR_thigh",
+              "FL_calf", "FR_calf", "RL_calf", "RR_calf")
+_LEG_DEFAULT = (0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5)
+_legs_idx = None
+_legs_off = False
+
+
+def legs_of():
+    """허벅지 넷 · 종아리 넷 [rad] (FL FR RL RR 차례). 못 읽으면 None."""
+    global _legs_idx, _legs_off
+    if _legs_off:
+        return None
+    if hips_of() is None:          # 읽는 법·이름을 여기서 찾습니다
+        return None
+    if _legs_idx is None:
+        if not _joint_names:
+            print(" [다리] ✖ 관절 이름을 못 읽어 허벅지·종아리 자리를 모릅니다"
+                  " — 짐작하지 않고 끕니다.")
+            _legs_off = True
+            return None
+        idx = []
+        for want in _LEG_NAMES:
+            hit = [i for i, n in enumerate(_joint_names) if want in n]
+            if len(hit) != 1:
+                print(f" [다리] ✖ '{want}' 가 {len(hit)}개 — 끕니다.")
+                _legs_off = True
+                return None
+            idx.append(hit[0])
+        _legs_idx = idx
+        print(" [다리] 이름으로 찾았습니다 %s"
+              % [_joint_names[i] for i in idx])
+    try:
+        arr = _hips_how()
+        return tuple(float(arr[i]) for i in _legs_idx)
+    except Exception:
+        _legs_off = True
+        print(" [다리] ✖ 읽다가 실패했습니다 — 끕니다.")
+        return None
 
 
 def hips_of():
@@ -1222,6 +1284,8 @@ cross_f = cross_r = None  # 앞·뒤 다리의 가장 좁았던 벌림 (음수�
 #   0.3도짜리 흔들림을 "꼬였습니다"로 찍었습니다. 판정에서는 빼되
 #   **숨기지 않고** 따로 찍습니다.
 cross_f0 = cross_r0 = None  # 걸음 잡기 중의 가장 좁았던 벌림 (참고용)
+leg_sum = [0.0, 0.0, 0.0, 0.0]   # 걸음 잡기 뒤 — 앞허벅지Δ 뒤허벅지Δ 앞종아리Δ 뒤종아리Δ 합
+leg_n = 0
 z_low = z_high = None     # 턱 언저리에서의 몸 높이 최저·최고
 z_ever = None             # 판 전체에서 가장 낮았던 몸 높이
 still_from = None         # 이 때부터 안 움직입니다
@@ -1379,6 +1443,18 @@ while simulation_app.is_running():
                          f" · 벌림 앞{f_gap:+.2f} 뒤{r_gap:+.2f}")
                 if r_gap < 0 or f_gap < 0:
                     tail += "  ← 꼬임"
+        if args.legs:
+            _l = legs_of()
+            if _l is not None:
+                d = [v - d0 for v, d0 in zip(_l, _LEG_DEFAULT)]
+                dl = ((d[0] + d[1]) / 2, (d[2] + d[3]) / 2,
+                      (d[4] + d[5]) / 2, (d[6] + d[7]) / 2)
+                tail += (f"  허벅지Δ 앞{dl[0]:+.2f} 뒤{dl[1]:+.2f}"
+                         f" · 종아리Δ 앞{dl[2]:+.2f} 뒤{dl[3]:+.2f}")
+                if since >= args.warm:
+                    for k in range(4):
+                        leg_sum[k] += dl[k]
+                    leg_n += 1
         print(f"   {now:8.2f} {float(p[0]):+8.3f} {float(p[1]):+8.3f}"
               f" {float(p[2]):7.3f}   " + tail)
         sys.stdout.flush()
@@ -1416,6 +1492,17 @@ else:
     print(f"   몸이 돌아간 각   {turned:+.1f} 도")
     print(f"   몸 높이 (끝)     {float(p1[2]):.3f} m   "
           f"(제대로 서 있으면 0.3 m 안팎)")
+
+    # ── 허벅지·종아리가 기본 자세에서 얼마나 벗어나 있나 (--legs) ──
+    if args.legs and leg_n > 0:
+        m = [v / leg_n for v in leg_sum]
+        print()
+        print(f"   [다리] 기본값과의 차 — 평균 (걸음 잡기 {args.warm:.1f}초 뒤, {leg_n}줄)")
+        print(f"     허벅지   앞 {m[0]:+.3f}   뒤 {m[1]:+.3f} rad"
+              f"     (기본 앞 0.8 · 뒤 1.0)")
+        print(f"     종아리   앞 {m[2]:+.3f}   뒤 {m[3]:+.3f} rad"
+              f"     (기본 -1.5)")
+        print("     ※ 부호의 뜻은 단정하지 않습니다 — 두 정책을 같은 자로 견주는 용도입니다.")
 
     # ── 다리가 꼬였는가 (--hips) ────────────────────────────
     if args.hips and (cross_f is not None or cross_r is not None):
