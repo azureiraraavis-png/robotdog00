@@ -188,7 +188,7 @@ ap.add_argument("--sill-deep", type=float, default=0.30, dest="sill_deep",
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
 ap.add_argument("--hips", action="store_true",
                 help="엉덩이 관절 네 개의 각을 찍습니다 — 뒷다리가 정말"
-                     " 꼬이는지 **눈이 아니라 숫자로** 가릅니다 (README 40-13)")
+                     " 꼬이는지 **눈이 아니라 숫자로** 가릅니다 (README 40-12)")
 ap.add_argument("--feet", action="store_true",
                 help="자취에 발 네 개의 x·z 를 함께 찍습니다 (앞쪽부터). 못 읽으면 스스로 끕니다"
                      " ※ go2 에는 발 마디가 없습니다 (calf 에 붙은 충돌 도형) — 안 됩니다")
@@ -901,7 +901,7 @@ def pose():
             as_numbers(quat).reshape(-1, 4)[0])
 
 
-# ★ 엉덩이 관절 네 개 (2026-09-18, README 40-13) ★
+# ★ 엉덩이 관절 네 개 (2026-09-18, README 40-12) ★
 #
 #   왜: GUI 영상에서 뒷다리가 X 자로 엇갈려 보였습니다. 그런데 그건
 #   휴대폰으로 찍은 모니터 화면입니다 — 정말 가운데를 넘었는지 그냥
@@ -921,7 +921,9 @@ def pose():
 #     다리는 **서로를 통과합니다.** 꼬는 데 드는 비용이 0 이고, 상 열
 #     한 개 중에 자세를 나무라는 항도 없습니다
 #     (flat_orientation_l2 0.0 · dof_pos_limits 0.0).
-#     실기체에서는 부딪힙니다. 여기가 sim-to-real 틈입니다.
+#     진짜 몸이라면 부딪힙니다. 그러니 꼬인 걸음으로 넘은 턱은 "Go2 가
+#     넘을 수 있다"는 증거가 못 됩니다. (※ 이 정책이 실기체로 갈 일은
+#     원래 없습니다 — README 32-0 · 34-0. 문제는 배치가 아니라 **뜻**입니다.)
 _hips_how = None          # 찾아낸 읽는 방법
 _hips_idx = None          # (FL, FR, RL, RR) 의 자리번호
 _hips_off = False
@@ -1214,6 +1216,12 @@ over_at = None            # 몸통이 턱 뒷면을 지난 때
 clear_at = None           # 뒷발까지 다 지났을 때 (몸통이 뒷면 + 앞발거리)
 gap_min = None            # 몸통이 턱 앞면에 가장 가까이 간 거리 (잰 값)
 cross_f = cross_r = None  # 앞·뒤 다리의 가장 좁았던 벌림 (음수면 꼬였습니다)
+# ★ 고침 (2026-09-21, README 41) — 걸음 잡기 중 값은 따로 둡니다 ★
+#   시험대의 다른 값(간 거리·미끄러짐·휨)은 전부 걸음 잡기가 끝난 뒤부터
+#   잽니다. --hips 만 처음부터 재고 있어서, 떨어뜨린 개가 자리 잡는 0.6초의
+#   0.3도짜리 흔들림을 "꼬였습니다"로 찍었습니다. 판정에서는 빼되
+#   **숨기지 않고** 따로 찍습니다.
+cross_f0 = cross_r0 = None  # 걸음 잡기 중의 가장 좁았던 벌림 (참고용)
 z_low = z_high = None     # 턱 언저리에서의 몸 높이 최저·최고
 z_ever = None             # 판 전체에서 가장 낮았던 몸 높이
 still_from = None         # 이 때부터 안 움직입니다
@@ -1361,8 +1369,12 @@ while simulation_app.is_running():
             if _h is not None:
                 fl, fr, rl, rr = _h
                 f_gap, r_gap = fl - fr, rl - rr
-                cross_f = min(cross_f, f_gap) if cross_f is not None else f_gap
-                cross_r = min(cross_r, r_gap) if cross_r is not None else r_gap
+                if since >= args.warm:
+                    cross_f = min(cross_f, f_gap) if cross_f is not None else f_gap
+                    cross_r = min(cross_r, r_gap) if cross_r is not None else r_gap
+                else:
+                    cross_f0 = min(cross_f0, f_gap) if cross_f0 is not None else f_gap
+                    cross_r0 = min(cross_r0, r_gap) if cross_r0 is not None else r_gap
                 tail += (f"  힙 {fl:+.2f} {fr:+.2f} {rl:+.2f} {rr:+.2f}"
                          f" · 벌림 앞{f_gap:+.2f} 뒤{r_gap:+.2f}")
                 if r_gap < 0 or f_gap < 0:
@@ -1408,7 +1420,7 @@ else:
     # ── 다리가 꼬였는가 (--hips) ────────────────────────────
     if args.hips and (cross_f is not None or cross_r is not None):
         print()
-        print("   [힙] 가장 좁았던 벌림 (쉴 때 +0.20 rad)")
+        print(f"   [힙] 가장 좁았던 벌림 (쉴 때 +0.20 rad · 걸음 잡기 {args.warm:.1f}초 뒤부터)")
         for label, val in (("앞다리", cross_f), ("뒷다리", cross_r)):
             if val is None:
                 continue
@@ -1419,9 +1431,15 @@ else:
             else:
                 mark = ""
             print(f"     {label}  {val:+.3f} rad{mark}")
+        if cross_f0 is not None or cross_r0 is not None:
+            print("     (걸음 잡기 중 — 판정에서 뺌:"
+                  + (f" 앞 {cross_f0:+.3f}" if cross_f0 is not None else "")
+                  + (f" · 뒤 {cross_r0:+.3f}" if cross_r0 is not None else "")
+                  + ")")
         print("     ※ 시뮬레이터는 다리끼리 안 부딪힙니다"
               " (unitree.py:155 enabled_self_collisions=False).")
-        print("       여기서 꼬이는 걸음은 **실기체에서 걸립니다.**")
+        print("       꼬인 걸음은 몸이 할 수 없는 걸음입니다 —"
+              " 그걸로 넘은 턱은 증거가 못 됩니다 (README 40-12).")
 
     # ── 옆으로 밀린 양을 둘로 쪼갭니다 ──────────────────────
     #
