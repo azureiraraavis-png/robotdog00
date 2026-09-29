@@ -1690,10 +1690,34 @@ else:
         #   그래서 **끝 자세**를 같이 봅니다. 넘었다고 하려면 선을 지나고
         #   **그러고도 서 있어야** 합니다.
         end_high = float(p1[2])
+        # ★ 고침 (2026-09-29, README 41-12) — 흠 15 ★
+        #   전에는 `over_at`(몸통이 뒷면을 지남)만 보고 "넘음"이라고
+        #   찍었습니다. 0.20·0.23 판에서 개가 **상자에 걸터앉은 채**
+        #   15초를 제자리 비틀기만 했는데도(뒷발이 끝내 안 올라옴,
+        #   앞으로 간 거리 1.9 m, 몸이 13도 돌아감) "넘음"이 나왔습니다.
+        #
+        #   넘었다고 하려면 **뒷발까지 지나야** 합니다. 그 값(clear_at)은
+        #   이미 재고 있었는데 판정에 안 쓰고 있었습니다.
+        #   ※ clear_at 은 몸통이 뒷면 + REAR_PAW 를 지난 때입니다. 발을
+        #     직접 읽는 게 아니라 어림입니다 (40-6 — Go2 에 발 링크가
+        #     없습니다). 그래도 몸통만 보는 것보다는 낫습니다.
         crossed = over_at is not None
+        cleared = clear_at is not None
         fell = (z_ever is not None and z_ever < 0.20) or end_high < 0.22
+        # ★ 고침 (2026-09-29, README 41-13) — 흠 16 ★
+        #   0.15 판에서 개가 9.96초에 **턱 위로 올라섰고** 16.0초부터
+        #   x 2.211 에 멎었는데(앞면 2.00 · 뒷면 2.30) 판정이
+        #   "앞에서 멈춤"으로 찍혔습니다. `over_at`(뒷면 통과)이 없으면
+        #   자리를 안 보고 무조건 "앞에서"라고 쓰고 있었기 때문입니다.
+        #   끝 x 가 앞면과 뒷면 사이면 개는 **턱 위**에 있습니다.
+        #   앞에서 못 올라간 것과 위에 올라섰는데 못 내려간 것은
+        #   다른 실패입니다 — 고쳐야 할 곳이 다릅니다.
+        on_top = sill_near <= float(p1[0]) <= sill_far
+        where_end = "턱 위" if on_top else "턱 앞"
         if crossed and fell:
             verdict = "넘다가 넘어짐"
+        elif crossed and not cleared:
+            verdict = "★ 걸침 — 몸통만 넘고 뒷발이 못 넘음"
         elif crossed and frozen:
             verdict = "넘고 나서 멈춤"
         elif crossed:
@@ -1701,16 +1725,21 @@ else:
         elif reach_at is None:
             verdict = "닿지도 못함"
         elif fell:
-            verdict = "앞에서 넘어짐"
+            verdict = f"{where_end}에서 넘어짐"
         elif frozen:
-            verdict = "앞에서 멈춤"
+            verdict = ("★ 턱 위에서 멈춤 — 올라섰지만 못 내려감"
+                       if on_top else "턱 앞에서 멈춤")
+        elif on_top:
+            verdict = "턱 위에서 못 내려감"
         else:
             verdict = "못 넘음"
         # 표시를 아스키로 답니다 — 글자표가 어긋나도 이 줄은 걸립니다
         # 숫자도 같이 답니다 — 표만 보고도 이상한 줄을 알아채게
         low = f" · 최저 {z_ever:.3f}" if z_ever is not None else ""
+        rear = (f" · 뒷발 {clear_at - over_at:.1f}초"
+                if (cleared and over_at is not None) else " · 뒷발 ✖")
         print(f"     >>> SILL {args.sill:.2f} m : {verdict}"
-              f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low})")
+              f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low}{rear})")
     print()
     if abs(ahead) <= 0.15:
         print(" ✖ 앞으로 안 갔습니다.")
