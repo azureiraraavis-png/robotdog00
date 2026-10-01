@@ -166,8 +166,18 @@ ap.add_argument("--yaw", type=float, default=0.0,
 #          = clip(0.5 × 오차, −1.0, +1.0)
 #
 #   목표 방향은 **출발할 때 본 방향**입니다. "저 쪽으로 곧게 가라".
-ap.add_argument("--hold", action="store_true",
-                help="방향 되먹임을 켭니다 (학습할 때와 같은 조건)")
+#
+# ★ 고침 (2026-10-01, README 41-16) — 흠 17 ★
+#   이 되먹임을 9/16 에 만들어 놓고 **기본으로 꺼 두었습니다.** 그래서
+#   명령에 `--hold` 를 빠뜨리면 정책이 배운 적 없는 조건에서 잽니다.
+#   9/29~9/30 의 판(41-13 일부 · 41-14 · 41-15)이 전부 그랬고, 그 위에
+#   "방향 가설"과 "곧게 걷는 개가 없다"를 세웠습니다. 둘 다 9/16 에
+#   이미 풀어둔 문제였습니다.
+#   이제 **기본으로 켭니다.** 열린 고리로 재려면 `--no-hold` 를 씁니다.
+#   판정 줄에 조건을 찍으니, 적어둔 결과에 조건이 따라다닙니다.
+ap.add_argument("--hold", action=argparse.BooleanOptionalAction, default=True,
+                help="방향 되먹임 (기본 켜짐 — 학습할 때와 같은 조건)."
+                     " --no-hold 로 끄면 열린 고리입니다")
 # ★ 문턱 ★
 #
 #   교수님이 계단보다 먼저 하라고 하신 것. 실측 10 cm 입니다 (README 32-8 —
@@ -240,7 +250,8 @@ print("=" * 70)
 print(" 시뮬레이터의 개 — 실기체와 같은 값을 잽니다")
 print("=" * 70)
 print(f" {args.robot} · 걸음 잡기 {args.warm:.1f}초 → 재기 {args.seconds:.1f}초"
-      f" · {args.speed:.2f} m/s · {args.device}")
+      f" · {args.speed:.2f} m/s · {args.device}"
+      f" · {'되먹임 켜짐 (학습 조건)' if args.hold else '★ 열린 고리 (--no-hold) ★'}")
 print(" ※ 처음 켜면 몇 분 걸릴 수 있습니다.")
 print()
 sys.stdout.flush()
@@ -1738,8 +1749,10 @@ else:
         low = f" · 최저 {z_ever:.3f}" if z_ever is not None else ""
         rear = (f" · 뒷발 {clear_at - over_at:.1f}초"
                 if (cleared and over_at is not None) else " · 뒷발 ✖")
+        cond = "되먹임" if args.hold else "열린고리"
         print(f"     >>> SILL {args.sill:.2f} m : {verdict}"
-              f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low}{rear})")
+              f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low}{rear}"
+              f" · {cond})")
     print()
     if abs(ahead) <= 0.15:
         print(" ✖ 앞으로 안 갔습니다.")
