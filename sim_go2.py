@@ -191,8 +191,19 @@ ap.add_argument("--sill", type=float, default=0.0,
                 help="앞길에 턱을 놓습니다. 높이 m (실측 문턱은 0.10)")
 ap.add_argument("--sill-at", type=float, default=1.0, dest="sill_at",
                 help="턱의 앞면이 몇 m 앞인지 (기본 1.0)")
-ap.add_argument("--sill-deep", type=float, default=0.30, dest="sill_deep",
-                help="턱의 깊이 m — 건너갈 윗면의 길이 (기본 0.30)")
+# ★ 고침 (2026-10-01, README 41-22) — 흠 20 ★
+#   9/17 (38-10) 에 올라서는 단(1.5 m)으로 재서 "멈춤은 블록 뒷모서리가
+#   만든 것"이라고 결론냈는데, 기본값은 0.30 으로 남아 있었고 9/18 부터
+#   10/1 까지의 턱 판이 전부 0.30 상자로 재졌습니다. 0.30 은 개 몸보다
+#   짧아서, 몸통이 뒷면을 지날 때 앞발은 이미 내려가 있고 뒷발은 올라서는
+#   동시에 내려가야 합니다 — 계단이 아니라 **허들**입니다.
+#   41장의 "0.18 벽"(일곱 체크포인트가 같은 자리에서 걸침)이 그것이었고,
+#   같은 정책 셋이 1.5 m 단에서는 0.18 을 전부 올랐다 내려왔습니다.
+#   이제 **기본을 1.5** 로 둡니다. 옛 판을 다시 재려면 --sill-deep 0.30.
+#   판정 줄에 깊이를 찍으니, 적어둔 결과에 잣대가 따라다닙니다.
+ap.add_argument("--sill-deep", type=float, default=1.5, dest="sill_deep",
+                help="턱의 깊이 m — 올라선 윗면의 길이 (기본 1.5 = 계단처럼 올라서는 단)."
+                     " 0.30 은 개 몸보다 짧은 허들입니다 (README 41-22)")
 # ★ 자취를 얼마나 촘촘히 찍을지 ★
 #   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
@@ -1752,7 +1763,7 @@ else:
         cond = "되먹임" if args.hold else "열린고리"
         print(f"     >>> SILL {args.sill:.2f} m : {verdict}"
               f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low}{rear}"
-              f" · {cond})")
+              f" · {cond} · 깊이 {args.sill_deep:.2f})")
     print()
     if abs(ahead) <= 0.15:
         print(" ✖ 앞으로 안 갔습니다.")
