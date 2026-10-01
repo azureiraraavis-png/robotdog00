@@ -438,15 +438,20 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #
         #   복사하는 이유: ROUGH_TERRAINS_CFG 는 모듈 전체가 같이 쓰는 객체라
         #   제자리에서 고치면 다른 과제(Flat 이 아닌 기본 Go2 Rough 등)까지 바뀝니다.
-        import copy
-        _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
-        _tg.sub_terrains["pyramid_stairs"].proportion = 0.10
-        _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.40
-        _tg.sub_terrains["boxes"].proportion = 0.20
-        _tg.sub_terrains["random_rough"].proportion = 0.20
-        _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
-        _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
-        self.scene.terrain.terrain_generator = _tg
+        #
+        # ★ 2026-10-01 되돌림 (README 41-20) — **효과 없음** ★
+        #   0.15: 기준판 2/4 → 2/4 · 0.18: 기준판 0/3 → 0/4 (넷 다 같은 자리에서 걸침)
+        #   경보 없음 (stuck_frac 0.050 · terrain_levels 2.80 · 평지 71% · 키 0.313)
+        #   지형 길을 접고 기준판 설정(ROUGH 그대로)으로 둡니다.
+        # import copy
+        # _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
+        # _tg.sub_terrains["pyramid_stairs"].proportion = 0.10
+        # _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.40
+        # _tg.sub_terrains["boxes"].proportion = 0.20
+        # _tg.sub_terrains["random_rough"].proportion = 0.20
+        # _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
+        # _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
+        # self.scene.terrain.terrain_generator = _tg
 
 
         # ★ 정책의 눈만 가립니다 — 스캐너는 남겨둡니다 ★
