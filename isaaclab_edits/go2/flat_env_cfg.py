@@ -155,6 +155,14 @@ class UnitreeGo2GuideEnvCfg_PLAY(UnitreeGo2GuideEnvCfg):
 import isaaclab.terrains as terrain_gen
 from isaaclab.terrains import TerrainGeneratorCfg
 
+# ※ 2026-10-01 (README 41-17): 아래 이름표가 **거꾸로** 입니다.
+#   mesh_terrains.py 의 origin 을 보면 —
+#     pyramid_stairs          origin z = +(계단수+1)×높이  → 꼭대기 출발, **내려옴**
+#     inverted_pyramid_stairs origin z = −(계단수+1)×높이  → 바닥 출발, **올라감**
+#     box                     origin z = +높이              → 상자 위 출발, **내려옴**
+#   그러니 "stairs_up" 은 내려가는 칸이고 "sill" 도 내려가기만 합니다.
+#   이 판의 실제 구성: 평지 30 · 내려가기 45 · 올라가기 25 (%).
+#   기록으로 남겨두고 쓰지 않습니다 — 아래 GUIDE_CLIMB_TERRAINS_CFG 를 씁니다.
 GUIDE_TERRAINS_CFG = TerrainGeneratorCfg(
     size=(8.0, 8.0),          # ← 승급선이 이것의 절반(4.0 m)입니다. 건드리지 마십시오 (README 39)
     border_width=20.0,
@@ -178,6 +186,55 @@ GUIDE_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         # 층간 계단 — 내려오는 쪽 (0.15 m 판에서 하산 기울기가 +34도였습니다. 더 위험합니다)
         "stairs_down": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.25, step_height_range=(0.08, 0.22), step_width=0.30,
+            platform_width=3.0, border_width=1.0, holes=False,
+        ),
+    },
+)
+
+
+# ─────────────────────────────────────────────────────────────
+#  robotdog00 — 오르기를 늘린 지형 (2026-10-01, README 41-17)
+#
+#  왜: 0.15 · 0.18 실패가 넷 다 같은 모양 — **몸통은 올라서는데 뒷발이
+#  못 따라옵니다** (41-16). 그런데 GUIDE_TERRAINS_CFG 는 올라가기가 25% 뿐
+#  이었습니다 (위 ※). 기본 ROUGH 의 20% 와 거의 같습니다.
+#
+#  바꾼 것은 한 칸입니다 — 내려가기만 하던 상자(box, 20%)를
+#  **올라서기만 하는 구덩이(pit, 20%)** 로. 구덩이 바닥에서 출발하니
+#  승급선(4.0 m)에 닿으려면 반드시 턱 하나를 올라서야 합니다.
+#  시험대의 턱과 가장 닮은 모양입니다.
+#
+#    평지 30  ·  올라가기 45 (계단 25 + 턱 20)  ·  내려가기 25 (계단)
+#
+#  높이는 계단과 같은 셈으로 맞췄습니다:
+#    높이 = 0.08 + 난이도 × 0.14    (단계 3 → 13 cm · 단계 5 → 16 cm)
+#  층간 계단 15~18 cm 이 단계 5~7 에 놓입니다.
+# ─────────────────────────────────────────────────────────────
+GUIDE_CLIMB_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(8.0, 8.0),          # ← 승급선이 이것의 절반(4.0 m)입니다. 건드리지 마십시오 (README 39)
+    border_width=20.0,
+    num_rows=10,
+    num_cols=20,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    use_cache=False,
+    sub_terrains={
+        # 복도
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.30),
+        # 턱 올라서기 — 구덩이 바닥에서 출발 (origin z = −깊이)
+        "step_up": terrain_gen.MeshPitTerrainCfg(
+            proportion=0.20, pit_depth_range=(0.08, 0.22), platform_width=2.0,
+            double_pit=False,
+        ),
+        # 계단 오르기 — inverted 가 **오르는** 쪽입니다 (바닥 출발)
+        "climb": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.25, step_height_range=(0.08, 0.22), step_width=0.30,
+            platform_width=3.0, border_width=1.0, holes=False,
+        ),
+        # 계단 내려가기 — 피라미드 꼭대기 출발
+        "descend": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.25, step_height_range=(0.08, 0.22), step_width=0.30,
             platform_width=3.0, border_width=1.0, holes=False,
         ),
@@ -341,6 +398,29 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #      (명령 평균 0.35) 그게 유일한 힌트였고 저는 넘겼습니다.
         #    · 그다음에 커리큘럼을 올릴 것. 숫자가 안 보이면 또 착시합니다.
         # ══════════════════════════════════════════════════════════
+
+        # ★ 2026-10-01 다시 켭니다 — 지형 **하나만** (README 41-17) ★
+        #
+        #   9/18 의 v3 은 ①(resampling 20초)과 ②(지형)를 **한꺼번에** 바꿨고,
+        #   v2 는 ①만 바꿨습니다. **②만 바꾼 판은 한 번도 없었습니다.**
+        #   위에 적어둔 순서의 첫 단계(멈춰 선 개의 비율 = stuck_frac)는
+        #   9/21 부터 로그에 있습니다. 이제 두 번째 단계입니다.
+        #
+        #   바꾸는 것: 지형 → GUIDE_CLIMB_TERRAINS_CFG (오르기 45%)
+        #     ※ 처음엔 GUIDE_TERRAINS_CFG 를 그대로 켜려 했으나, 소스를 보니
+        #       그 판은 올라가기가 25% 뿐이었습니다 (위 ※). 오늘 실패를
+        #       겨냥해 상자(내려가기) 칸만 구덩이(올라서기)로 바꿨습니다.
+        #   그대로 두는 것: resampling(기본 10초) · 엉덩이 벌 −0.2 · 그 밖의 전부
+        #   지켜볼 것: Curriculum/stuck_frac — 9/21·9/29 판은 0.02~0.03.
+        #              뚜렷이 오르면 v2·v3 의 병(멈춰 서기를 배움)이 도진 것.
+        #
+        # ★ 2026-10-01 되돌림 (README 41-18) — 오르기 판은 **나빠졌습니다** ★
+        #   stuck_frac 0.081 (경보) · terrain_levels 3.49 → 0.55 로 무너짐
+        #   0.15 턱: 기준판 2/4 → 0/4 (넷 다 앞면 33~39 cm 앞에서 멈춤)
+        #   원인(가설): 구덩이 하한 8 cm — 맨 아래 줄도 빠져나갈 수 없는
+        #   "갇히는 칸"이라, 커리큘럼이 못하는 개를 거기 모았고 개는
+        #   멈춰 서기를 배웠습니다. **하한은 상한만큼 중요합니다.**
+        # self.scene.terrain.terrain_generator = GUIDE_CLIMB_TERRAINS_CFG
 
 
         # ★ 정책의 눈만 가립니다 — 스캐너는 남겨둡니다 ★
