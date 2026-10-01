@@ -422,6 +422,32 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #   멈춰 서기를 배웠습니다. **하한은 상한만큼 중요합니다.**
         # self.scene.terrain.terrain_generator = GUIDE_CLIMB_TERRAINS_CFG
 
+        # ★ 2026-10-01 (README 41-19) — 기본 ROUGH 에서 **비율만** 바꿉니다 ★
+        #
+        #   41-18 의 교훈: 커리큘럼의 맨 아래 줄은 빠져나갈 수 있어야 합니다.
+        #   그래서 지형을 새로 짜지 않고, super() 가 이미 Go2 몸집에 맞게
+        #   줄여둔 ROUGH(상자 2.5~10 cm · 울퉁불퉁 1~6 cm)를 복사해서
+        #   **비율만** 고칩니다. 하한(계단 5 cm)과 디딤판은 기준판과 같습니다.
+        #
+        #                   기준판   이번
+        #     내려가는 계단    20  →  10      (pyramid_stairs: 꼭대기 출발)
+        #     오르는 계단      20  →  40      (pyramid_stairs_inv: 바닥 출발)
+        #     상자 격자        20     20
+        #     울퉁불퉁         20     20
+        #     경사 내/오     10+10  → 5+5
+        #
+        #   복사하는 이유: ROUGH_TERRAINS_CFG 는 모듈 전체가 같이 쓰는 객체라
+        #   제자리에서 고치면 다른 과제(Flat 이 아닌 기본 Go2 Rough 등)까지 바뀝니다.
+        import copy
+        _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
+        _tg.sub_terrains["pyramid_stairs"].proportion = 0.10
+        _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.40
+        _tg.sub_terrains["boxes"].proportion = 0.20
+        _tg.sub_terrains["random_rough"].proportion = 0.20
+        _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
+        _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
+        self.scene.terrain.terrain_generator = _tg
+
 
         # ★ 정책의 눈만 가립니다 — 스캐너는 남겨둡니다 ★
         #   관측에서만 빼면 정책은 여전히 48차원(장님)이라 sim_go2.py 가
