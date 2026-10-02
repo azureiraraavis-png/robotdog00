@@ -537,10 +537,16 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #   9/21 · 9/29 (기준판)       False      False      False
         #   10/01 오르는계단 판         True       False      False
         #   10/02 이어 학습 (43)        True       True       False
-        #   10/02 승급선 판 (44)        True       False      True     ← 지금
+        #   10/02 승급선 판 (44)        True       False      True
+        #
+        #   ★ 결과 (README 44-3): 승급선 판은 **나빠졌습니다** ★
+        #     지형 단계는 2.80 → 5.13 으로 올랐으나 계단 0.18 은 7/30 → 0/30 칸,
+        #     계단 0.15 는 3/3 → 1/3. 그래서 GUIDE_PROMOTION 의 기본은 False.
+        #     (씨앗 하나 — "이 한 판에서는 도움이 안 됐다"까지)
+        #   기본 = 10/01 오르는계단 판의 조합. 18 cm 는 여기에 이어 학습(43)을 얹습니다.
         STAIRS_40 = True
         FINE_TUNE_STAIRS = False
-        GUIDE_PROMOTION = True
+        GUIDE_PROMOTION = False
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
