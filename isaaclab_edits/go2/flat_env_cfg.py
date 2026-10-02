@@ -466,17 +466,27 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #   **15 cm 를 이미 오르는 정책에서 이어 학습할 때만** 씁니다 —
         #   그 정책에게 13 cm 는 빠져나갈 수 있는 바닥입니다.
         #   비율은 이어받는 판(10/01, 41-19)과 같게 둡니다 — 바뀌는 것은 높이 하나.
-        import copy
-        _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
-        _tg.sub_terrains["pyramid_stairs"].proportion = 0.10
-        _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.40
-        _tg.sub_terrains["boxes"].proportion = 0.20
-        _tg.sub_terrains["random_rough"].proportion = 0.20
-        _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
-        _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
-        _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
-        _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
-        self.scene.terrain.terrain_generator = _tg
+        #
+        #   ★ 결과 (README 43-3): 400번 이어 학습으로 18 cm 계단 열 칸을 오릅니다 ★
+        #     (마지막 세 체크포인트 중 둘 · 이어받은 판은 30칸 중 7칸)
+        #
+        #   ★ 기본은 **꺼 둡니다** (FINE_TUNE_STAIRS = False) ★
+        #     켜진 채로 처음부터 학습하면 맨 아래 줄이 갇히는 칸이 됩니다 (41-18).
+        #     이어 학습할 때만 True 로 바꾸고, 끝나면 되돌리십시오.
+        #     (return 으로 막으면 안 됩니다 — 아래의 키 상 · 엉덩이 벌 · 눈금이 다 빠집니다)
+        FINE_TUNE_STAIRS = False
+        if FINE_TUNE_STAIRS:
+            import copy
+            _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
+            _tg.sub_terrains["pyramid_stairs"].proportion = 0.10
+            _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.40
+            _tg.sub_terrains["boxes"].proportion = 0.20
+            _tg.sub_terrains["random_rough"].proportion = 0.20
+            _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
+            _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
+            _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
+            _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
+            self.scene.terrain.terrain_generator = _tg
 
 
         # ★ 정책의 눈만 가립니다 — 스캐너는 남겨둡니다 ★
