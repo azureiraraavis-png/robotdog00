@@ -332,6 +332,51 @@ def walked_distance(env, env_ids):
     return torch.mean(d)
 
 
+# ─────────────────────────────────────────────────────────────
+#  robotdog00 — 계단도 닿을 수 있는 승급선 (2026-10-02, README 44)
+#
+#  원래 규칙 (velocity/mdp/curriculums.py: terrain_levels_vel)
+#      승급  원점에서 4.0 m 넘게 감          (지형 크기 8 m 의 절반)
+#      강등  명령 거리의 절반도 못 감         (0.5 × |명령| × 20초)
+#
+#  무엇이 문제였나 (39장 · 42-7)
+#      개는 계단 한 칸(0.30 m)을 1.7~2.2초에 오릅니다 — 20초에 2.7~3.5 m.
+#      **계단을 완벽하게 올라도 승급선 4.0 m 에 못 닿습니다.**
+#      그리고 명령이 0.5 m/s 면 강등선이 5.0 m 라 계단에서는 늘 강등입니다.
+#      그래서 계단 칸의 개들은 학습 내내 10~12 cm 에 머물렀습니다.
+#
+#  고친 것 — 숫자 둘
+#      승급  2.5 m 넘게 감                   (계단을 꾸준히 오르면 닿습니다)
+#      강등  원래 식, 다만 1.5 m 를 넘지 않게  (거의 못 움직인 개만 내립니다)
+#      1.5~2.5 m 는 그대로 머무는 구간입니다.
+#
+#  나머지는 원래 함수를 **한 줄씩 그대로** 본떴습니다. 눈금을 따로 재는
+#  stuck_frac · walk_dist 와 같은 거리(_walked)를 씁니다.
+#
+#  ★ 조심 — 9/18 의 v2 는 승급을 쉽게 만들었다가 멈춰 서기를 배웠습니다 ★
+#     Curriculum/stuck_frac 을 반드시 같이 보십시오.
+# ─────────────────────────────────────────────────────────────
+PROMOTE_M = 2.5           # 이만큼 멀어지면 더 험한 데로
+DEMOTE_CAP_M = 1.5        # 강등선의 위 끝
+
+
+def terrain_levels_guide(env, env_ids):
+    """terrain_levels_vel 과 같되 승급선 2.5 m · 강등선은 1.5 m 를 넘지 않음."""
+    import torch
+
+    terrain = env.scene.terrain
+    command = env.command_manager.get_command("base_velocity")
+    distance = _walked(env, env_ids)
+    move_up = distance > PROMOTE_M
+    demote_line = torch.clamp(
+        torch.linalg.norm(command[env_ids, :2], dim=1) * env.max_episode_length_s * 0.5,
+        max=DEMOTE_CAP_M)
+    move_down = distance < demote_line
+    move_down *= ~move_up
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
+
+
 @configclass
 class GuideCurriculumCfg:
     """★ 선언 순서 = 실행 순서입니다. 눈금자가 먼저입니다 ★"""
@@ -339,6 +384,15 @@ class GuideCurriculumCfg:
     stuck_frac = CurrTerm(func=stuck_fraction)
     walk_dist = CurrTerm(func=walked_distance)
     terrain_levels = CurrTerm(func=vel_mdp.terrain_levels_vel)
+
+
+@configclass
+class GuidePromoteCurriculumCfg:
+    """승급선을 고친 묶음 (README 44). 순서는 위와 같습니다 — 눈금자가 먼저."""
+
+    stuck_frac = CurrTerm(func=stuck_fraction)
+    walk_dist = CurrTerm(func=walked_distance)
+    terrain_levels = CurrTerm(func=terrain_levels_guide)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -474,8 +528,20 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     켜진 채로 처음부터 학습하면 맨 아래 줄이 갇히는 칸이 됩니다 (41-18).
         #     이어 학습할 때만 True 로 바꾸고, 끝나면 되돌리십시오.
         #     (return 으로 막으면 안 됩니다 — 아래의 키 상 · 엉덩이 벌 · 눈금이 다 빠집니다)
+        # ── 스위치 셋 (2026-10-02) ─────────────────────────────────
+        #   STAIRS_40         오르는 계단 20 → 40 % (41-19). 10/01 판 · 이어 학습 판 · 44 판이 씀
+        #   FINE_TUNE_STAIRS  계단 높이 바닥 13 cm (43). **이어 학습할 때만**
+        #   GUIDE_PROMOTION   승급선 2.5 m · 강등선 ≤ 1.5 m (44)
+        #
+        #   판마다의 조합            STAIRS_40  FINE_TUNE  PROMOTION
+        #   9/21 · 9/29 (기준판)       False      False      False
+        #   10/01 오르는계단 판         True       False      False
+        #   10/02 이어 학습 (43)        True       True       False
+        #   10/02 승급선 판 (44)        True       False      True     ← 지금
+        STAIRS_40 = True
         FINE_TUNE_STAIRS = False
-        if FINE_TUNE_STAIRS:
+        GUIDE_PROMOTION = True
+        if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
             _tg.sub_terrains["pyramid_stairs"].proportion = 0.10
@@ -484,8 +550,9 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             _tg.sub_terrains["random_rough"].proportion = 0.20
             _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
             _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
-            _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
-            _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
+            if FINE_TUNE_STAIRS:
+                _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
+                _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
             self.scene.terrain.terrain_generator = _tg
 
 
@@ -582,7 +649,8 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     나중에 붙이면 terrain_levels 뒤로 가고, 그러면 원점이 이미
         #     옮겨진 뒤에 재게 되어 값이 전부 0 으로 나옵니다.
         #     (첫 판이 정확히 그랬습니다 — GuideCurriculumCfg 주석 참고)
-        self.curriculum = GuideCurriculumCfg()
+        self.curriculum = (GuidePromoteCurriculumCfg() if GUIDE_PROMOTION
+                           else GuideCurriculumCfg())
 
 class UnitreeGo2GuideRoughEnvCfg_PLAY(UnitreeGo2GuideRoughEnvCfg):
     def __post_init__(self) -> None:

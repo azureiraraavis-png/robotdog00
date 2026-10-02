@@ -219,6 +219,8 @@ ap.add_argument("--rise", type=float, default=0.17,
                 help="계단 한 칸의 높이 m (기본 0.17)")
 ap.add_argument("--run", type=float, default=0.30,
                 help="계단 디딤판의 깊이 m (기본 0.30 — 학습 지형과 같음)")
+ap.add_argument("--down", action="store_true",
+                help="계단을 **내려갑니다** — 꼭대기 참에서 출발해 N칸을 내려와 바닥으로 (README 44)")
 ap.add_argument("--landing", type=float, default=4.0,
                 help="꼭대기 참의 길이 m (기본 4.0 — 판이 끝나기 전에 끝에서 떨어지지 않게 넉넉히)")
 # ★ 자취를 얼마나 촘촘히 찍을지 ★
@@ -710,19 +712,30 @@ st_top = st_at + args.steps * args.run          # 마지막 칸 앞면 + run = �
 st_end = st_top + args.landing
 
 
-def stair_ground(x):
-    """x 자리의 바닥 높이 (계단 위면 그 칸의 윗면)."""
-    if args.steps <= 0 or x < st_at or x > st_end:
-        return 0.0
-    k = min(args.steps, int((x - st_at) / args.run) + 1)
-    return k * args.rise
+ST_BACK = -1.5            # 내려가기: 출발 참의 뒤 끝 (로봇은 x=0 에서 출발)
 
 
 def stair_step(x):
-    """x 자리가 몇 번째 칸 위인가 (0 = 아직 바닥, N = 꼭대기 참)."""
+    """x 자리까지 턱을 몇 개 지났는가.
+
+    오르기: 0 = 아직 바닥, N = 꼭대기 참.   내려가기: 0 = 아직 출발 참, N = 바닥.
+    """
     if args.steps <= 0 or x < st_at:
         return 0
     return min(args.steps, int((x - st_at) / args.run) + 1)
+
+
+def stair_ground(x):
+    """x 자리의 바닥 높이."""
+    if args.steps <= 0:
+        return 0.0
+    if args.down:
+        if x < ST_BACK:
+            return 0.0
+        return (args.steps - stair_step(x)) * args.rise
+    if x < st_at or x > st_end:
+        return 0.0
+    return stair_step(x) * args.rise
 
 
 if args.steps > 0:
@@ -737,28 +750,48 @@ if args.steps > 0:
         _c.GetSizeAttr().Set(1.0)
         _c.GetExtentAttr().Set([Gf.Vec3f(-0.5, -0.5, -0.5),
                                 Gf.Vec3f(0.5, 0.5, 0.5)])
-        _x0 = st_at + _i * args.run
+        if args.down:
+            # 내려가기: 높이 (i+1)×rise 짜리 상자가 출발 참 뒤 끝에서
+            #   st_at + (N−1−i)×run 까지 뻗습니다. 가장 높은 것(i=N−1)이 출발 참.
+            _xa = ST_BACK
+            _xb = st_at + (args.steps - 1 - _i) * args.run
+        else:
+            _xa = st_at + _i * args.run
+            _xb = st_end
         _h = (_i + 1) * args.rise
         _x = UsdGeom.Xformable(_st)
         _x.ClearXformOpOrder()
-        _x.AddTranslateOp().Set(Gf.Vec3d((_x0 + st_end) / 2.0, 0.0, _h / 2.0))
-        _x.AddScaleOp().Set(Gf.Vec3f(st_end - _x0, 3.0, _h))
+        _x.AddTranslateOp().Set(Gf.Vec3d((_xa + _xb) / 2.0, 0.0, _h / 2.0))
+        _x.AddScaleOp().Set(Gf.Vec3f(_xb - _xa, 3.0, _h))
         UsdPhysics.CollisionAPI.Apply(_st)
         _steps.append(_st)
     # 적어준 대로 생겼는지 읽어서 확인합니다 (첫 칸과 마지막 칸)
     _bb = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
     _r0 = _bb.ComputeWorldBound(_steps[0]).ComputeAlignedRange()
     _rN = _bb.ComputeWorldBound(_steps[-1]).ComputeAlignedRange()
-    print(f" [계단] 시킨 것   {args.steps}칸 · 높이 {args.rise:.3f} · 디딤 {args.run:.2f}"
-          f" · x {st_at:.2f}~{st_top:.2f} (참 ~{st_end:.2f})"
-          f" · 꼭대기 z {args.steps * args.rise:.3f}")
-    print(f"        생긴 것   첫 칸 x {_r0.GetMin()[0]:.3f}~ · z ~{_r0.GetMax()[2]:.3f}"
-          f"   끝 칸 x {_rN.GetMin()[0]:.3f}~{_rN.GetMax()[0]:.3f} · z ~{_rN.GetMax()[2]:.3f}")
-    if (abs(_r0.GetMin()[0] - st_at) > 0.01
-            or abs(_r0.GetMax()[2] - args.rise) > 0.005
-            or abs(_rN.GetMin()[0] - (st_top - args.run)) > 0.01
-            or abs(_rN.GetMax()[2] - args.steps * args.rise) > 0.005):
-        print("        ✖ 시킨 것과 다릅니다 — 아래 숫자를 믿지 마십시오.")
+    if args.down:
+        # 내려가기 — 출발 참(가장 높은 상자)과 맨 아래 칸(가장 낮은 상자)을 읽습니다
+        print(f" [계단] 시킨 것   **내려가기** {args.steps}칸 · 높이 {args.rise:.3f} · 디딤 {args.run:.2f}"
+              f" · 출발 참 x {ST_BACK:.2f}~{st_at:.2f} · z {args.steps * args.rise:.3f}"
+              f" · 바닥에 닿는 곳 x {st_at + (args.steps - 1) * args.run:.2f}")
+        print(f"        생긴 것   출발 참 x {_rN.GetMin()[0]:.3f}~{_rN.GetMax()[0]:.3f} · z ~{_rN.GetMax()[2]:.3f}"
+              f"   맨 아래 칸 x ~{_r0.GetMax()[0]:.3f} · z ~{_r0.GetMax()[2]:.3f}")
+        if (abs(_rN.GetMax()[0] - st_at) > 0.01
+                or abs(_rN.GetMax()[2] - args.steps * args.rise) > 0.005
+                or abs(_r0.GetMax()[0] - (st_at + (args.steps - 1) * args.run)) > 0.01
+                or abs(_r0.GetMax()[2] - args.rise) > 0.005):
+            print("        ✖ 시킨 것과 다릅니다 — 아래 숫자를 믿지 마십시오.")
+    else:
+        print(f" [계단] 시킨 것   {args.steps}칸 · 높이 {args.rise:.3f} · 디딤 {args.run:.2f}"
+              f" · x {st_at:.2f}~{st_top:.2f} (참 ~{st_end:.2f})"
+              f" · 꼭대기 z {args.steps * args.rise:.3f}")
+        print(f"        생긴 것   첫 칸 x {_r0.GetMin()[0]:.3f}~ · z ~{_r0.GetMax()[2]:.3f}"
+              f"   끝 칸 x {_rN.GetMin()[0]:.3f}~{_rN.GetMax()[0]:.3f} · z ~{_rN.GetMax()[2]:.3f}")
+        if (abs(_r0.GetMin()[0] - st_at) > 0.01
+                or abs(_r0.GetMax()[2] - args.rise) > 0.005
+                or abs(_rN.GetMin()[0] - (st_top - args.run)) > 0.01
+                or abs(_rN.GetMax()[2] - args.steps * args.rise) > 0.005):
+            print("        ✖ 시킨 것과 다릅니다 — 아래 숫자를 믿지 마십시오.")
     if args.yaw:
         print("        ✖ --yaw 와 같이 쓰면 계단을 등지고 걷습니다.")
 
@@ -905,6 +938,8 @@ if args.look is not None:
 #   한 번에 하나만 바꿉니다.
 high = args.high if args.high is not None else (0.8 if args.robot == "spot"
                                                 else 0.32)
+if args.steps > 0 and args.down:
+    high += args.steps * args.rise      # 출발 참 위에 놓습니다
 Kind = SpotFlatTerrainPolicy if args.robot == "spot" else Go2FlatTerrainPolicy
 made = {"prim_path": "/World/" + args.robot, "position": [0, 0, high]}
 if args.yaw:
@@ -1908,9 +1943,18 @@ else:
         st_fell = ((st_clr_min is not None and st_clr_min < 0.15)
                    or clr_end < 0.18)
         # 꼭대기 — 뒷발 어림자리가 참 위 **그리고** 몸통이 실제로 그만큼 올라감
-        topped = (st_kmax >= N and gained >= N * args.rise - 0.08)
+        if args.down:
+            # 내려가기 — 뒷발 어림자리가 마지막 턱을 지났고 **그리고** 몸통이 그만큼 내려옴
+            topped = (st_kmax >= N and gained <= -(N * args.rise - 0.08))
+        else:
+            topped = (st_kmax >= N and gained >= N * args.rise - 0.08)
+        _goal = "바닥까지 내려옴" if args.down else "꼭대기까지 오름"
+        _hlab = "내려온 높이" if args.down else "오른 높이"
+        _klab = "내려온 칸" if args.down else "오른 칸"
+        _sgn = -1.0 if args.down else 1.0
         print()
-        print(f"   [계단] {N}칸 · 높이 {args.rise:.3f} m · 디딤 {args.run:.2f} m"
+        print(f"   [계단{' · 내려가기' if args.down else ''}] {N}칸 · 높이 {args.rise:.3f} m"
+              f" · 디딤 {args.run:.2f} m"
               f" · {st_at:.2f}~{st_top:.2f} m (꼭대기 {N * args.rise:.2f} m)")
         if st_reach is None:
             print(f"     ✖ 계단 앞 판정선({REACH_LINE:.2f} m)까지 못 갔습니다."
@@ -1919,7 +1963,7 @@ else:
             per = None
         else:
             if st_times:
-                print("     뒷발이 칸에 올라선 때 (어림) — "
+                print("     뒷발이 턱을 지난 때 (어림) — "
                       + " ".join(f"{k}:{t:.1f}" for k, t in sorted(st_times.items())))
             per = None
             if st_kmax >= 2:
@@ -1929,7 +1973,7 @@ else:
                 print(f"     한 칸에 {per:.1f}초"
                       + (f"   (평지에서 {args.run:.2f} m 가는 데 {flat:.1f}초쯤)"
                          if flat else ""))
-            print(f"     오른 높이 {gained:+.3f} m  (꼭대기까지 {N * args.rise:.3f} m)"
+            print(f"     {_hlab} {gained:+.3f} m  (끝까지 {_sgn * N * args.rise:+.3f} m)"
                   f" · 끝 자리 x {x_end:.2f}")
             print(f"     몸통과 바닥 사이 — 가장 좁았을 때 "
                   f"{st_clr_min:.3f} m · 끝 {clr_end:.3f} m"
@@ -1944,24 +1988,26 @@ else:
                       f" (가장 멀리 x {st_xmax:.2f} · 몸통 {stair_step(st_xmax)}칸"
                       f" · 뒷발 {stair_step(st_xmax - REAR_PAW)}칸) — 제자리에서 버둥거림 ★")
             if topped and st_fell:
-                verdict = "꼭대기까지 올랐으나 넘어짐"
+                verdict = ("바닥까지 왔으나 넘어짐" if args.down
+                           else "꼭대기까지 올랐으나 넘어짐")
             elif topped:
-                verdict = "꼭대기까지 오름"
+                verdict = _goal
             elif st_fell:
                 verdict = f"★ {k_end}칸에서 넘어짐"
             elif st_frozen:
                 verdict = f"★ {k_end}칸에서 멈춤"
             elif st_stall >= 6.0:
-                verdict = f"★ {k_end}칸에서 못 올라감 (버둥거림 {st_stall:.0f}초)"
+                verdict = (f"★ {k_end}칸에서 못 나아감 (버둥거림 {st_stall:.0f}초)")
             elif st_kmax >= N:
-                verdict = "★ 참에 닿았으나 덜 올라감 (오른 높이 모자람)"
+                verdict = ("★ 끝 칸은 지났으나 높이가 안 맞음"
+                           if args.down else "★ 참에 닿았으나 덜 올라감 (오른 높이 모자람)")
             else:
                 verdict = f"{k_end}칸까지 — 시간이 모자랐습니다 (--seconds 를 늘리십시오)"
         cond = "되먹임" if args.hold else "열린고리"
-        print(f"     >>> STAIRS {N}×{args.rise:.2f} m : {verdict}"
-              f"  (오른 칸 {st_kmax}/{N}"
+        print(f"     >>> STAIRS {'DOWN ' if args.down else ''}{N}×{args.rise:.2f} m : {verdict}"
+              f"  ({_klab} {st_kmax}/{N}"
               + (f" · 한 칸 {per:.1f}초" if per is not None else "")
-              + f" · 오른 높이 {gained:.2f}"
+              + f" · {_hlab} {gained:+.2f}"
               + (f" · 최저 여유 {st_clr_min:.3f}" if st_clr_min is not None else "")
               + f" · {cond} · 디딤 {args.run:.2f})")
     print()
