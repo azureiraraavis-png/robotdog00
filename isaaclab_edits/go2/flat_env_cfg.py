@@ -453,6 +453,31 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         # _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
         # self.scene.terrain.terrain_generator = _tg
 
+        # ★ 2026-10-02 (README 43) — **이어 학습용** 지형 ★
+        #
+        #   연속 계단 시험(42장): 15 cm 열 칸은 오르고 18 cm 는 아무도 못 오릅니다.
+        #   원인은 승급선입니다 — 계단은 한 칸(0.30 m)에 2초라 20초에 3 m,
+        #   승급선 4 m 에 못 닿아 학습 내내 12 cm 언저리에 머물렀습니다 (42-7).
+        #
+        #   승급선은 그대로 두고 **계단 높이의 바닥을 올립니다.**
+        #       (0.05, 0.23) → (0.13, 0.23)
+        #       단계 0 → 13~14 cm · 단계 3 → 16~17 cm · 단계 5 → 18~19 cm
+        #   처음부터 배우는 판에 쓰면 맨 아래 줄이 "갇히는 칸"이 됩니다 (41-18).
+        #   **15 cm 를 이미 오르는 정책에서 이어 학습할 때만** 씁니다 —
+        #   그 정책에게 13 cm 는 빠져나갈 수 있는 바닥입니다.
+        #   비율은 이어받는 판(10/01, 41-19)과 같게 둡니다 — 바뀌는 것은 높이 하나.
+        import copy
+        _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
+        _tg.sub_terrains["pyramid_stairs"].proportion = 0.10
+        _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.40
+        _tg.sub_terrains["boxes"].proportion = 0.20
+        _tg.sub_terrains["random_rough"].proportion = 0.20
+        _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
+        _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
+        _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
+        _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
+        self.scene.terrain.terrain_generator = _tg
+
 
         # ★ 정책의 눈만 가립니다 — 스캐너는 남겨둡니다 ★
         #   관측에서만 빼면 정책은 여전히 48차원(장님)이라 sim_go2.py 가
