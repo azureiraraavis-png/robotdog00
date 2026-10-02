@@ -204,6 +204,23 @@ ap.add_argument("--sill-at", type=float, default=1.0, dest="sill_at",
 ap.add_argument("--sill-deep", type=float, default=1.5, dest="sill_deep",
                 help="턱의 깊이 m — 올라선 윗면의 길이 (기본 1.5 = 계단처럼 올라서는 단)."
                      " 0.30 은 개 몸보다 짧은 허들입니다 (README 41-22)")
+# ★ 연속 계단 (2026-10-02, README 42) ★
+#
+#   41-12 부터 "연속 계단은 아직 한 번도 안 재봤습니다"가 남아 있었습니다.
+#   한 칸짜리 단(--sill)과 다른 점: 몸(엉덩이 사이 0.39 m)이 디딤판(0.30 m)
+#   보다 길어 **앞발과 뒷발이 늘 다른 칸**에 있고, 뒷발이 턱을 넘는 일이
+#   칸 수만큼 되풀이됩니다.
+#   학습 지형의 오르는 계단(pyramid_stairs_inv)이 step_width 0.30 이라
+#   --run 기본을 0.30 으로 둡니다. 꼭대기에는 평평한 참(--landing)이 이어집니다.
+#   내려가는 쪽은 아직 없습니다 — 오르기부터 잽니다.
+ap.add_argument("--steps", type=int, default=0,
+                help="연속 계단의 칸 수 (0 이면 계단 없음). --sill 과 같이 못 씁니다")
+ap.add_argument("--rise", type=float, default=0.17,
+                help="계단 한 칸의 높이 m (기본 0.17)")
+ap.add_argument("--run", type=float, default=0.30,
+                help="계단 디딤판의 깊이 m (기본 0.30 — 학습 지형과 같음)")
+ap.add_argument("--landing", type=float, default=4.0,
+                help="꼭대기 참의 길이 m (기본 4.0 — 판이 끝나기 전에 끝에서 떨어지지 않게 넉넉히)")
 # ★ 자취를 얼마나 촘촘히 찍을지 ★
 #   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
@@ -683,6 +700,67 @@ if args.sill > 0:
         print("        ✖ 시킨 것과 다릅니다 — 아래 숫자를 믿지 마십시오.")
     if args.yaw:
         print("        ✖ --yaw 와 같이 쓰면 턱을 등지고 걷습니다.")
+
+# ── 연속 계단 ────────────────────────────────────────────────
+#
+#   칸마다 상자 하나. i 번째 상자는 그 칸의 앞면에서 **참 끝까지** 뻗고
+#   높이가 (i+1)×rise 입니다. 겹쳐 쌓으니 칸 사이에 틈이 없습니다.
+st_at = args.sill_at
+st_top = st_at + args.steps * args.run          # 마지막 칸 앞면 + run = 참이 시작하는 곳
+st_end = st_top + args.landing
+
+
+def stair_ground(x):
+    """x 자리의 바닥 높이 (계단 위면 그 칸의 윗면)."""
+    if args.steps <= 0 or x < st_at or x > st_end:
+        return 0.0
+    k = min(args.steps, int((x - st_at) / args.run) + 1)
+    return k * args.rise
+
+
+def stair_step(x):
+    """x 자리가 몇 번째 칸 위인가 (0 = 아직 바닥, N = 꼭대기 참)."""
+    if args.steps <= 0 or x < st_at:
+        return 0
+    return min(args.steps, int((x - st_at) / args.run) + 1)
+
+
+if args.steps > 0:
+    if args.sill > 0:
+        print(" ✖ --steps 와 --sill 은 같이 못 씁니다. --sill 을 끕니다.")
+        args.sill = 0.0
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+    _steps = []
+    for _i in range(args.steps):
+        _st = define_prim(f"/World/Stairs/Step_{_i:02d}", "Cube")
+        _c = UsdGeom.Cube(_st)
+        _c.GetSizeAttr().Set(1.0)
+        _c.GetExtentAttr().Set([Gf.Vec3f(-0.5, -0.5, -0.5),
+                                Gf.Vec3f(0.5, 0.5, 0.5)])
+        _x0 = st_at + _i * args.run
+        _h = (_i + 1) * args.rise
+        _x = UsdGeom.Xformable(_st)
+        _x.ClearXformOpOrder()
+        _x.AddTranslateOp().Set(Gf.Vec3d((_x0 + st_end) / 2.0, 0.0, _h / 2.0))
+        _x.AddScaleOp().Set(Gf.Vec3f(st_end - _x0, 3.0, _h))
+        UsdPhysics.CollisionAPI.Apply(_st)
+        _steps.append(_st)
+    # 적어준 대로 생겼는지 읽어서 확인합니다 (첫 칸과 마지막 칸)
+    _bb = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    _r0 = _bb.ComputeWorldBound(_steps[0]).ComputeAlignedRange()
+    _rN = _bb.ComputeWorldBound(_steps[-1]).ComputeAlignedRange()
+    print(f" [계단] 시킨 것   {args.steps}칸 · 높이 {args.rise:.3f} · 디딤 {args.run:.2f}"
+          f" · x {st_at:.2f}~{st_top:.2f} (참 ~{st_end:.2f})"
+          f" · 꼭대기 z {args.steps * args.rise:.3f}")
+    print(f"        생긴 것   첫 칸 x {_r0.GetMin()[0]:.3f}~ · z ~{_r0.GetMax()[2]:.3f}"
+          f"   끝 칸 x {_rN.GetMin()[0]:.3f}~{_rN.GetMax()[0]:.3f} · z ~{_rN.GetMax()[2]:.3f}")
+    if (abs(_r0.GetMin()[0] - st_at) > 0.01
+            or abs(_r0.GetMax()[2] - args.rise) > 0.005
+            or abs(_rN.GetMin()[0] - (st_top - args.run)) > 0.01
+            or abs(_rN.GetMax()[2] - args.steps * args.rise) > 0.005):
+        print("        ✖ 시킨 것과 다릅니다 — 아래 숫자를 믿지 마십시오.")
+    if args.yaw:
+        print("        ✖ --yaw 와 같이 쓰면 계단을 등지고 걷습니다.")
 
 # ── 물리 엔진 ───────────────────────────────────────────────
 #
@@ -1294,6 +1372,17 @@ FRONT_PAW = REACH_LINE    # 옛 이름 — 남은 자리를 위해서만 둡니�
 #   ※ 재서 얻은 게 아니라 **멎는 자리에서 거꾸로 푼 값**입니다.
 #     발 자리를 직접 기록하기 전까지는 어림으로 두십시오.
 REAR_PAW = 0.30           # 몸 중심에서 뒷발까지 (뒤로 뻗었을 때)
+# ── 연속 계단을 재는 값들 ──
+st_reach = None           # 계단 앞 판정선을 지난 때
+st_zflat = None           # 그때의 몸 높이 (평지에서 걷는 키)
+st_x_reach = None
+st_times = {}             # {칸: 뒷발 어림자리가 그 칸에 처음 올라선 때}
+st_kmax = 0
+st_clr_min = None         # 몸통과 그 아래 바닥 사이 — 가장 좁았던 값
+st_still_from = None
+st_still_at = None
+st_xmax = None            # 가장 멀리 간 자리
+st_prog_at = None         # 그 자리를 마지막으로 2 cm 넘게 늘린 때
 reach_at = None           # 턱 앞면에 닿은 때 (무대시계)
 x_at_reach = None         # 그때의 자리 — 평지 속도를 여기서 냅니다
 over_at = None            # 몸통이 턱 뒷면을 지난 때
@@ -1363,7 +1452,7 @@ while simulation_app.is_running():
     #   여기서 고치는 것은 **명령**뿐입니다. 로봇을 붙잡거나 자리를
     #   바로잡지 않습니다 — 그러면 재는 것이 거짓이 됩니다.
     p_now = q_now = None
-    if args.hold or args.sill > 0:
+    if args.hold or args.sill > 0 or args.steps > 0:
         try:
             p_now, q_now = pose()
         except Exception:
@@ -1426,6 +1515,41 @@ while simulation_app.is_running():
         if reach_at is not None:
             z_ever = z_now if z_ever is None else min(z_ever, z_now)
 
+    # ── 연속 계단: 몇 칸을 올랐는가 ─────────────────────────
+    #
+    #   ★ 칸은 **뒷발 어림자리**로 셉니다 (몸통 x − REAR_PAW) ★
+    #     네 발이 다 그 칸 위에 있어야 "올랐다"입니다 — 흠 15 의 교훈.
+    #     발을 직접 읽는 게 아니라 어림입니다 (Go2 에 발 링크가 없습니다).
+    #     그래서 **오른 높이**(몸통 z 가 실제로 얼마나 올라갔나)를 같이 봅니다.
+    if args.steps > 0 and p_now is not None:
+        x_now, z_now = float(p_now[0]), float(p_now[2])
+        if st_reach is None and x_now >= st_at - REACH_LINE:
+            st_reach = now
+            st_zflat = z_now
+            st_x_reach = x_now
+        if st_reach is not None:
+            k_rear = stair_step(x_now - REAR_PAW)
+            if k_rear > st_kmax:
+                for _k in range(st_kmax + 1, k_rear + 1):
+                    st_times[_k] = now
+                st_kmax = k_rear
+            clr = z_now - stair_ground(x_now)
+            st_clr_min = clr if st_clr_min is None else min(st_clr_min, clr)
+        # ★ 고침 (2026-10-02, README 42-3) — 흠 21 ★
+        #   5 mm 넘게 꿈틀거리면 "멈춤"으로 안 잡혀서, 첫 칸 앞에서 30초를
+        #   버둥거린 판이 "시간이 모자랐습니다"로 찍혔습니다.
+        #   **앞으로 나아간 지 얼마나 됐는가**를 따로 잽니다.
+        if st_xmax is None or x_now > st_xmax + 0.02:
+            st_xmax = x_now
+            st_prog_at = now
+        if st_still_from is None:
+            st_still_from = now
+            st_still_at = (x_now, z_now)
+        elif (abs(x_now - st_still_at[0]) > 0.005
+              or abs(z_now - st_still_at[1]) > 0.005):
+            st_still_from = now
+            st_still_at = (x_now, z_now)
+
     if since >= args.warm:
         if start is None:
             start = pose()
@@ -1445,6 +1569,14 @@ while simulation_app.is_running():
             where = ("턱 앞" if float(p[0]) < sill_near else
                      ("턱 위" if float(p[0]) <= sill_far else "턱 뒤"))
             tail = f"{lean:+6.1f}도  {where}"
+        if args.steps > 0:
+            w, qx, qy, qz = [float(v) for v in q]
+            lean = math.degrees(math.asin(
+                max(-1.0, min(1.0, 2.0 * (w * qy - qz * qx)))))
+            _kb = stair_step(float(p[0]))
+            _kr = stair_step(float(p[0]) - REAR_PAW)
+            tail = (f"{lean:+6.1f}도  몸통 {_kb:2d}칸 · 뒷발 {_kr:2d}칸"
+                    f" · 여유 {float(p[2]) - stair_ground(float(p[0])):.3f}")
         if args.feet:
             _f = feet_of()
             if _f is not None:
@@ -1764,6 +1896,74 @@ else:
         print(f"     >>> SILL {args.sill:.2f} m : {verdict}"
               f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low}{rear}"
               f" · {cond} · 깊이 {args.sill_deep:.2f})")
+    if args.steps > 0:
+        N = args.steps
+        x_end, z_end = float(p1[0]), float(p1[2])
+        k_end = stair_step(x_end - REAR_PAW)
+        clr_end = z_end - stair_ground(x_end)
+        gained = (z_end - st_zflat) if st_zflat is not None else 0.0
+        st_frozen = (st_still_from is not None
+                     and (clock() - st_still_from) >= 2.0)
+        # 넘어짐 — 몸통과 바닥 사이가 걷는 키의 절반쯤으로 줄었을 때 (어림)
+        st_fell = ((st_clr_min is not None and st_clr_min < 0.15)
+                   or clr_end < 0.18)
+        # 꼭대기 — 뒷발 어림자리가 참 위 **그리고** 몸통이 실제로 그만큼 올라감
+        topped = (st_kmax >= N and gained >= N * args.rise - 0.08)
+        print()
+        print(f"   [계단] {N}칸 · 높이 {args.rise:.3f} m · 디딤 {args.run:.2f} m"
+              f" · {st_at:.2f}~{st_top:.2f} m (꼭대기 {N * args.rise:.2f} m)")
+        if st_reach is None:
+            print(f"     ✖ 계단 앞 판정선({REACH_LINE:.2f} m)까지 못 갔습니다."
+                  f" 마지막 자리 {x_end:+.3f} m")
+            verdict = "계단에 닿지 못함"
+            per = None
+        else:
+            if st_times:
+                print("     뒷발이 칸에 올라선 때 (어림) — "
+                      + " ".join(f"{k}:{t:.1f}" for k, t in sorted(st_times.items())))
+            per = None
+            if st_kmax >= 2:
+                per = (st_times[st_kmax] - st_times[1]) / (st_kmax - 1)
+                went = (st_x_reach / st_reach) if st_reach > 0.5 else 0.0
+                flat = (args.run / went) if went > 0.01 else None
+                print(f"     한 칸에 {per:.1f}초"
+                      + (f"   (평지에서 {args.run:.2f} m 가는 데 {flat:.1f}초쯤)"
+                         if flat else ""))
+            print(f"     오른 높이 {gained:+.3f} m  (꼭대기까지 {N * args.rise:.3f} m)"
+                  f" · 끝 자리 x {x_end:.2f}")
+            print(f"     몸통과 바닥 사이 — 가장 좁았을 때 "
+                  f"{st_clr_min:.3f} m · 끝 {clr_end:.3f} m"
+                  "   (제대로 걸으면 0.3 안팎)")
+            if st_frozen:
+                print(f"     ★ {st_still_from:.1f}초부터 **한 자리도 안 움직입니다**"
+                      f" — x {st_still_at[0]:.3f} · 몸통 {stair_step(st_still_at[0])}칸"
+                      f" · 뒷발 {stair_step(st_still_at[0] - REAR_PAW)}칸 ★")
+            st_stall = (clock() - st_prog_at) if st_prog_at is not None else 0.0
+            if (not topped) and st_stall >= 6.0 and not st_frozen:
+                print(f"     ★ 마지막 {st_stall:.0f}초 동안 **앞으로 못 나갔습니다**"
+                      f" (가장 멀리 x {st_xmax:.2f} · 몸통 {stair_step(st_xmax)}칸"
+                      f" · 뒷발 {stair_step(st_xmax - REAR_PAW)}칸) — 제자리에서 버둥거림 ★")
+            if topped and st_fell:
+                verdict = "꼭대기까지 올랐으나 넘어짐"
+            elif topped:
+                verdict = "꼭대기까지 오름"
+            elif st_fell:
+                verdict = f"★ {k_end}칸에서 넘어짐"
+            elif st_frozen:
+                verdict = f"★ {k_end}칸에서 멈춤"
+            elif st_stall >= 6.0:
+                verdict = f"★ {k_end}칸에서 못 올라감 (버둥거림 {st_stall:.0f}초)"
+            elif st_kmax >= N:
+                verdict = "★ 참에 닿았으나 덜 올라감 (오른 높이 모자람)"
+            else:
+                verdict = f"{k_end}칸까지 — 시간이 모자랐습니다 (--seconds 를 늘리십시오)"
+        cond = "되먹임" if args.hold else "열린고리"
+        print(f"     >>> STAIRS {N}×{args.rise:.2f} m : {verdict}"
+              f"  (오른 칸 {st_kmax}/{N}"
+              + (f" · 한 칸 {per:.1f}초" if per is not None else "")
+              + f" · 오른 높이 {gained:.2f}"
+              + (f" · 최저 여유 {st_clr_min:.3f}" if st_clr_min is not None else "")
+              + f" · {cond} · 디딤 {args.run:.2f})")
     print()
     if abs(ahead) <= 0.15:
         print(" ✖ 앞으로 안 갔습니다.")
