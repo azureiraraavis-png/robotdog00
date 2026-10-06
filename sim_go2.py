@@ -119,6 +119,9 @@ for _out in (sys.stdout, sys.stderr):
 ap = argparse.ArgumentParser(description="시뮬레이터의 개를 걷게 하고 잽니다")
 ap.add_argument("--robot", choices=["go2", "spot"], default="go2")
 ap.add_argument("--gui", action="store_true")
+# 구경할 때의 카메라 (--gui 일 때만). 재는 값과는 무관합니다 (README 50-4 · 50-5).
+#   follow  개를 옆에서 따라갑니다 (기본)    side  계단 옆에 세워 둡니다    off  안 건드립니다
+ap.add_argument("--cam", choices=["follow", "side", "off"], default="follow")
 ap.add_argument("--seconds", type=float, default=3.0)
 ap.add_argument("--speed", type=float, default=0.31)
 ap.add_argument("--warm", type=float, default=2.0,
@@ -998,6 +1001,64 @@ if args.policy:
 robot = Kind(**made)
 print(f" [로봇] {args.robot} 을(를) {high:.2f} m 에 놓았습니다")
 
+# ★ 구경하기 좋게 — 조명 · 색 · 카메라 (2026-10-06, README 50-4 · 50-5) ★
+#   --gui 일 때만 합니다. 창 없는 판에는 한 줄도 닿지 않습니다.
+#   · 조명: 기본 조명 하나로는 계단과 참이 어두운 배경에 묻혔습니다 (사이안 님 영상).
+#           하늘빛(돔)과 햇빛(먼 빛)을 더합니다.
+#   · 색:   계단 · 턱을 **짙은 흙색**으로, 칸마다 어둡게 · 밝게 번갈아 칠해 칸이 세어지게 합니다.
+#           (첫 판은 조명 900 · 2600 에 밝은 모래색이라 하얗게 떴습니다 — 개도 흰색이라
+#            계단 위에서 묻혔습니다. 조명을 1/3 로, 계단을 개보다 어둡게 바꿨습니다.)
+#   · 카메라: 개를 옆에서 따라갑니다 (--cam follow). 계단 옆에 세워 두려면 --cam side.
+#   어느 것이든 못 해도 판은 그대로 돕니다. 빛 · 색 · 카메라는 부딪힘에 들지 않으니
+#   재는 값은 그대로여야 합니다 — runs.tsv 에서 창 없는 판과 견주면 확인됩니다.
+_set_cam = None
+if args.gui:
+    try:
+        import omni.usd as _ousd
+        from pxr import Gf as _Gf, Sdf as _Sdf, UsdGeom as _UG, UsdLux as _UL
+        _stg = _ousd.get_context().get_stage()
+        _dome = _UL.DomeLight.Define(_stg, _Sdf.Path("/World/ViewLights/Sky"))
+        _dome.CreateIntensityAttr(260.0)
+        _dome.CreateColorAttr(_Gf.Vec3f(0.92, 0.96, 1.0))
+        _sun = _UL.DistantLight.Define(_stg, _Sdf.Path("/World/ViewLights/Sun"))
+        _sun.CreateIntensityAttr(900.0)
+        _sun.CreateAngleAttr(1.5)
+        _sx = _UG.Xformable(_sun.GetPrim())
+        _sx.ClearXformOpOrder()
+        _sx.AddRotateXYZOp().Set(_Gf.Vec3f(48.0, 18.0, 25.0))
+        _painted = 0
+        if args.steps > 0:
+            for _i, _st in enumerate(_steps):
+                _k = 0.42 + 0.26 * (_i % 2)     # 칸마다 어둡게 · 밝게 번갈아
+                _UG.Gprim(_st).CreateDisplayColorAttr(
+                    [_Gf.Vec3f(0.80 * _k, 0.62 * _k, 0.42 * _k)])
+                _painted += 1
+        if args.sill > 0:
+            _UG.Gprim(_sill).CreateDisplayColorAttr([_Gf.Vec3f(0.42, 0.33, 0.22)])
+            _painted += 1
+        print(f" [구경] 하늘빛과 햇빛을 더했습니다 · 밝게 칠한 상자 {_painted}개")
+    except Exception as _e:
+        print(f" [구경] 조명 · 색을 못 넣었습니다 ({type(_e).__name__}: {_e}) — 판은 그대로 돕니다")
+    if args.cam != "off":
+        try:
+            from isaacsim.core.utils.viewports import set_camera_view as _set_cam
+            if args.steps > 0:
+                _top = args.steps * args.rise
+                _cx = st_at + args.steps * args.run / 2.0 + 1.0
+                _eye, _tgt = [_cx, -7.5, _top / 2.0 + 2.2], [_cx, 0.0, _top / 2.0]
+            elif args.sill > 0:
+                _eye, _tgt = [args.sill_at + 0.75, -4.5, 1.6], [args.sill_at + 0.75, 0.0, 0.2]
+            else:
+                _eye, _tgt = [0.3, -3.0, 1.2], [0.3, 0.0, 0.3]
+            _set_cam(eye=_eye, target=_tgt)
+            print(f" [구경] 카메라 — {'개를 따라갑니다' if args.cam == 'follow' else '옆에 세워 둡니다'}"
+                  " (Alt+왼쪽 끌기 · 휠 로 직접 돌리려면 --cam off)")
+        except Exception as _e:
+            _set_cam = None
+            print(f" [구경] 카메라를 못 옮겼습니다 ({type(_e).__name__}: {_e}) —"
+                  " 마우스로 돌려 보십시오 (Alt+왼쪽 끌기 · 휠).")
+_cam_at = None
+
 # ★ 눈 — 높이 스캔을 셈으로 만들어 정책에 붙입니다 (2026-10-06, README 48) ★
 #
 #   학습 쪽 (flat_env_cfg.py: UnitreeGo2GuideSeeEnvCfg 의 see_scanner) 과
@@ -1587,6 +1648,19 @@ while simulation_app.is_running():
     if began is None:
         began = now
     since = now - began
+
+    # 구경 — 카메라가 개를 옆에서 따라갑니다 (0.05초마다 · --gui --cam follow 일 때만)
+    if (args.gui and args.cam == "follow" and _set_cam is not None
+            and (_cam_at is None or now - _cam_at >= 0.05)):
+        _cam_at = now
+        try:
+            _cp, _ = robot.robot.get_world_poses()
+            _cp = _see_np(_cp).reshape(-1, 3)[0]
+            _cxx, _cyy, _czz = float(_cp[0]), float(_cp[1]), float(_cp[2])
+            _set_cam(eye=[_cxx - 0.6, _cyy - 3.4, _czz + 1.1],
+                     target=[_cxx + 0.35, _cyy, _czz - 0.05])
+        except Exception:
+            _set_cam = None       # 한 번 안 되면 그만둡니다 — 판은 그대로 돕니다
 
     # ★ 워밍업에도 **걸으라고** 합니다 ★
     #
