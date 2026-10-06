@@ -672,6 +672,62 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         self.curriculum = (GuidePromoteCurriculumCfg() if GUIDE_PROMOTION
                            else GuideCurriculumCfg())
 
+# ─────────────────────────────────────────────────────────────
+#  ★ 눈을 줍니다 — Isaac-Velocity-Rough-Unitree-Go2-GuideSee-v0 (2026-10-06, README 48) ★
+#
+#  왜: 눈 없는 정책은 이어 학습으로 18 cm 계단을 오르내리지만 평지에서 +14 ~ +20도
+#  숙이고 걷습니다 (46-3). 수평 벌로는 못 고쳤습니다 — 벌을 받으면서도 숙임이 돌아왔고
+#  계단을 잃었습니다 (47-3). 짐작: 언제 계단이 나올지 모르니 늘 대비하는 자세.
+#  맞다면 계단이 오는 것을 **알려줘야** 고쳐집니다.
+#
+#  바꾸는 것은 하나 — 관측에 높이 스캔 65점을 붙입니다 (48 → 113칸).
+#  상 · 지형 · 승급 · 명령은 UnitreeGo2GuideRoughEnvCfg 그대로 (스위치도 그대로 따라옵니다).
+#
+#  ★ 스캐너를 **따로 하나 더** 답니다 ★
+#    원래 것(height_scanner)은 키 상(base_height_l2)이 평균을 내는 데 쓰고 있고,
+#    그래서 발밑 0.2 × 0.2 m · 4점으로 줄여 두었습니다. 그것을 넓히면 **상이 바뀝니다.**
+#    정책이 보는 것은 see_scanner 로 따로 둡니다.
+#      격자  x −0.6~+0.6 · y −0.2~+0.2 · 간격 0.1 → 13 × 5 = 65점
+#      자리  몸통에서 앞으로 +0.3 → 앞뒤 −0.3 ~ +0.9 m · 좌우 ±0.2 m
+#            (디딤 0.30 인 계단이 세 칸 미리 보입니다. 뒤는 뒷발 자리까지.)
+#      방향  yaw 만 따라감 (몸이 기울어도 격자는 수평) — 원래 것과 같음
+#      값    몸통 z − 바닥 z − 0.5 · 잡음 ±0.1 · −1~+1 로 자름 — 기본 설정과 같음
+#    기본 설정(187점 · 앞뒤 ±0.8 · 좌우 ±0.5)보다 작게 잡았습니다 — 광선이 많을수록
+#    학습이 느립니다 (위 "광선을 187개 → 4개로" 주석).
+#
+#  ★ sim_go2.py 가 **같은 값**을 셈해서 줘야 합니다 ★
+#    격자 · 순서 · 값의 식을 바꾸면 sim_go2.py 의 SEE_* 와 see_scan() 도 같이 바꿉니다.
+#    맞는지는 scan_check.py 로 잽니다 (README 48-2).
+# ─────────────────────────────────────────────────────────────
+@configclass
+class UnitreeGo2GuideSeeEnvCfg(UnitreeGo2GuideRoughEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        from isaaclab.envs import mdp
+        from isaaclab.managers import ObservationTermCfg as ObsTerm
+        from isaaclab.managers import SceneEntityCfg
+        from isaaclab.sensors import RayCasterCfg, patterns
+        from isaaclab.utils.noise import UniformNoiseCfg as Unoise
+
+        self.scene.see_scanner = RayCasterCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base",
+            offset=RayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 20.0)),
+            ray_alignment="yaw",
+            pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.2, 0.4]),
+            debug_vis=False,
+            mesh_prim_paths=["/World/ground"],
+        )
+        self.scene.see_scanner.update_period = self.decimation * self.sim.dt
+
+        # 부모가 None 으로 지운 자리에 다시 넣습니다 — 자리가 맨 끝 그대로입니다.
+        self.observations.policy.height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("see_scanner")},
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            clip=(-1.0, 1.0),
+        )
+
+
 class UnitreeGo2GuideRoughEnvCfg_PLAY(UnitreeGo2GuideRoughEnvCfg):
     def __post_init__(self) -> None:
         super().__post_init__()

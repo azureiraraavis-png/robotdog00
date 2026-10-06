@@ -81,3 +81,13 @@ class UnitreeGo2GuideRoughPPORunnerCfg(UnitreeGo2RoughPPORunnerCfg):
         #   (어제 평지 판이 300번에서 끝난 건 운이 좋았던 겁니다.
         #    그때 std 가 0.26 이었으니 더 돌았으면 같은 자리에서 터졌습니다.)
         self.actor.distribution_cfg.std_type = "log"
+
+
+@configclass
+class UnitreeGo2GuideSeePPORunnerCfg(UnitreeGo2GuideRoughPPORunnerCfg):
+    """눈을 준 판 (README 48). 학습 설정은 눈 없는 판과 같고 로그 이름만 가릅니다 —
+    관측 칸 수가 달라서(48 ↔ 113) 한 폴더에 섞이면 이어 학습 때 잘못 집습니다."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "unitree_go2_guide_see"

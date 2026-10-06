@@ -229,6 +229,14 @@ ap.add_argument("--landing", type=float, default=4.0,
 ap.add_argument("--legs", action="store_true",
                 help="허벅지·종아리 각을 기본값과 견줘 찍습니다 (--hips 를 켭니다)."
                      " 엉덩이를 묶었더니 버릇이 다른 관절로 옮겨갔는지 봅니다 (README 41-9)")
+# ★ 눈 (2026-10-06, README 48) ★
+#   높이 스캔을 관측에 넣고 배운 정책(113칸)을 돌릴 때 씁니다.
+#   기본은 **정책에게 물어봅니다** — 첫 층의 입력이 48칸이면 장님, 113칸이면 눈.
+#   물어볼 수 없을 때만 --see / --no-see 로 정해 줍니다.
+ap.add_argument("--see", action=argparse.BooleanOptionalAction, default=None,
+                help="정책에 높이 스캔 65점을 붙여 줍니다 (기본: 정책 입력 칸 수로 스스로 정함)")
+ap.add_argument("--see-show", action="store_true",
+                help="자취 줄마다 스캔의 가운데 줄(앞뒤 13점)을 같이 찍습니다")
 ap.add_argument("--hips", action="store_true",
                 help="엉덩이 관절 네 개의 각을 찍습니다 — 뒷다리가 정말"
                      " 꼬이는지 **눈이 아니라 숫자로** 가릅니다 (README 40-12)")
@@ -976,6 +984,98 @@ if args.policy:
 robot = Kind(**made)
 print(f" [로봇] {args.robot} 을(를) {high:.2f} m 에 놓았습니다")
 
+# ★ 눈 — 높이 스캔을 셈으로 만들어 정책에 붙입니다 (2026-10-06, README 48) ★
+#
+#   학습 쪽 (flat_env_cfg.py: UnitreeGo2GuideSeeEnvCfg 의 see_scanner) 과
+#   **글자 그대로 같은 값**이어야 합니다. 원본에서 읽은 것 —
+#     · 격자  x −0.6~+0.6 (13) · y −0.2~+0.2 (5) · 간격 0.1 — 거기에 앞으로 +0.3
+#             → 몸통 기준 앞뒤 −0.3 ~ +0.9 m · 좌우 ±0.2 m · 65점
+#       (patterns.py grid_pattern · ray_caster.py: offset 을 ray_starts 에 더함)
+#     · 순서  y 가 바깥 고리 · x 가 안쪽 고리  (ordering="xy" → meshgrid 를 펴면 그렇게 됨)
+#     · 방향  몸통의 **yaw 만** 따라 돕니다. 숙이거나 기울어도 격자는 수평.
+#             (kernels.py update_ray_caster_kernel · ALIGNMENT_YAW —
+#              ray_starts 는 yaw 로 돌리고 ray_directions 는 그대로 아래)
+#     · 값    몸통 z − 그 점의 바닥 z − 0.5 · 그다음 −1 ~ +1 로 자름
+#             (mdp/observations.py height_scan · velocity_env_cfg.py clip)
+#     · 자리  관측의 **맨 끝** (48칸 뒤)
+#   학습 때는 여기에 ±0.1 의 잡음이 섞입니다. 시험대는 잡음 없이 줍니다 (play 와 같음).
+#
+#   광선을 쏘지 않습니다. 이 무대의 바닥 · 턱 · 계단은 제가 치수를 적어 만든
+#   상자들이라 높이를 셈으로 압니다 (계단 폭 ±1.5 m · 턱 폭 ±1.0 m — 위에서 만든 그대로).
+SEE_NX, SEE_NY = 13, 5
+SEE_X0, SEE_Y0, SEE_STEP, SEE_FWD = -0.6, -0.2, 0.1, 0.3
+SEE_N = SEE_NX * SEE_NY
+
+
+def see_ground(x, y):
+    """무대의 (x, y) 에서 바닥 높이 — 만든 상자들의 치수 그대로."""
+    if args.steps > 0 and abs(y) <= 1.5:
+        return stair_ground(x)
+    if args.sill > 0 and abs(y) <= 1.0 and sill_near <= x <= sill_far:
+        return args.sill
+    return 0.0
+
+
+def _see_np(v):
+    for how in (lambda x: x.numpy(), lambda x: x.detach().cpu().numpy()):
+        try:
+            return np.asarray(how(v))
+        except Exception:
+            continue
+    return np.asarray(v)
+
+
+def see_scan():
+    """지금 자세에서의 스캔 65점 (학습 쪽과 같은 순서 · 같은 값)."""
+    _p, _q = robot.robot.get_world_poses()
+    _p = _see_np(_p).reshape(-1, 3)[0]
+    _q = _see_np(_q).reshape(-1, 4)[0]
+    px, py, pz = float(_p[0]), float(_p[1]), float(_p[2])
+    w, qx, qy, qz = [float(v) for v in _q]
+    yaw = math.atan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    c, s = math.cos(yaw), math.sin(yaw)
+    out = []
+    for iy in range(SEE_NY):
+        ly = SEE_Y0 + SEE_STEP * iy
+        for ix in range(SEE_NX):
+            lx = SEE_X0 + SEE_STEP * ix + SEE_FWD
+            gz = see_ground(px + c * lx - s * ly, py + s * lx + c * ly)
+            out.append(max(-1.0, min(1.0, pz - gz - 0.5)))
+    return out
+
+
+see_on = args.see
+_n_in = None
+try:
+    for _prm in robot.policy.parameters():
+        if _prm.dim() == 2:
+            _n_in = int(_prm.shape[1])
+            break
+except Exception as _e:
+    print(f" [눈] 정책에게 입력 칸 수를 못 물어봤습니다 ({type(_e).__name__})")
+if see_on is None:
+    if _n_in == 48 + SEE_N:
+        see_on = True
+    elif _n_in == 48 or _n_in is None:
+        see_on = False
+    else:
+        print(f" [눈] ✖ 정책 입력이 {_n_in}칸입니다 — 48(장님)도 {48 + SEE_N}(눈)도 아닙니다.")
+        print("      이 시험대가 모르는 관측입니다. 그대로 돌리면 죽거나 엉뚱하게 걷습니다.")
+        see_on = False
+print(f" [눈] 정책 입력 {_n_in}칸 → "
+      + (f"스캔 {SEE_N}점을 붙입니다 (앞뒤 −0.3~+0.9 · 좌우 ±0.2)" if see_on
+         else "스캔 없이 돌립니다 (장님)"))
+if see_on:
+    _blind_obs = robot._compute_observation
+
+    def _see_obs(command):
+        _o = _blind_obs(command)
+        import torch as _torch
+        _s = _torch.tensor(see_scan(), device=_o.device, dtype=_o.dtype)
+        return _torch.cat([_o.reshape(-1), _s])
+
+    robot._compute_observation = _see_obs
+
 # ★ 물리 주기를 **정책에게 물어봅니다** ★
 #
 #   policy_controller.py 원본에 이 줄이 있습니다 —
@@ -1630,6 +1730,10 @@ while simulation_app.is_running():
             _kr = stair_step(float(p[0]) - REAR_PAW)
             tail = (f"{lean:+6.1f}도  몸통 {_kb:2d}칸 · 뒷발 {_kr:2d}칸"
                     f" · 여유 {float(p[2]) - stair_ground(float(p[0])):.3f}")
+        if args.see_show:
+            _sc = see_scan()
+            _mid = _sc[(SEE_NY // 2) * SEE_NX:(SEE_NY // 2 + 1) * SEE_NX]
+            tail += "  눈 " + " ".join(f"{v:+.2f}" for v in _mid)
         if args.feet:
             _f = feet_of()
             if _f is not None:
@@ -1952,7 +2056,7 @@ else:
         low = f" · 최저 {z_ever:.3f}" if z_ever is not None else ""
         rear = (f" · 뒷발 {clear_at - over_at:.1f}초"
                 if (cleared and over_at is not None) else " · 뒷발 ✖")
-        cond = "되먹임" if args.hold else "열린고리"
+        cond = ("되먹임" if args.hold else "열린고리") + (" · 눈" if see_on else "")
         print(f"     >>> SILL {args.sill:.2f} m : {verdict}"
               f"  (끝 x {float(p1[0]):.2f} · 끝높이 {end_high:.3f}{low}{rear}"
               f" · {cond} · 깊이 {args.sill_deep:.2f})")
@@ -2028,7 +2132,7 @@ else:
                            if args.down else "★ 참에 닿았으나 덜 올라감 (오른 높이 모자람)")
             else:
                 verdict = f"{k_end}칸까지 — 시간이 모자랐습니다 (--seconds 를 늘리십시오)"
-        cond = "되먹임" if args.hold else "열린고리"
+        cond = ("되먹임" if args.hold else "열린고리") + (" · 눈" if see_on else "")
         print(f"     >>> STAIRS {'DOWN ' if args.down else ''}{N}×{args.rise:.2f} m : {verdict}"
               f"  ({_klab} {st_kmax}/{N}"
               + (f" · 한 칸 {per:.1f}초" if per is not None else "")
