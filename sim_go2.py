@@ -221,8 +221,15 @@ ap.add_argument("--run", type=float, default=0.30,
                 help="계단 디딤판의 깊이 m (기본 0.30 — 학습 지형과 같음)")
 ap.add_argument("--down", action="store_true",
                 help="계단을 **내려갑니다** — 꼭대기 참에서 출발해 N칸을 내려와 바닥으로 (README 44)")
-ap.add_argument("--landing", type=float, default=4.0,
-                help="꼭대기 참의 길이 m (기본 4.0 — 판이 끝나기 전에 끝에서 떨어지지 않게 넉넉히)")
+# ★ 고침 (2026-10-06, README 49) — 흠 23 ★
+#   참이 4 m 였습니다. 그 끝(x 9.0) 너머는 꼭대기 높이만큼의 **낭떠러지**입니다.
+#   장님 정책은 모르고 지나가지만, 눈 있는 정책은 앞 0.9 m 를 보니 x 8.1 부터
+#   스캔에 낭떠러지(+1.00 으로 잘린 값)가 들어옵니다. 학습 지형에 없던 것이라
+#   몸을 낮추고 멈춥니다 — 그것을 "참에서 주저앉음"으로 두 번 적었습니다 (48-5 · 48-6).
+#   계단을 잘 오른 판일수록 멀리 가서 걸립니다. **잘한 판이 벌을 받는 무대**였습니다.
+#   40초 동안 명령대로 다 걸어도(12.4 m) 낭떠러지가 안 보이게 10 m 로 늘립니다 (끝 x 15.0).
+ap.add_argument("--landing", type=float, default=10.0,
+                help="꼭대기 참의 길이 m (기본 10.0 — 40초 판에서 눈 있는 정책에게 끝의 낭떠러지가 안 보이게)")
 # ★ 자취를 얼마나 촘촘히 찍을지 ★
 #   0.5초마다 찍으면 발이 걸렸다 빠지는 일은 줄 사이에서 다 일어납니다.
 #   턱을 볼 때는 0.1 로 내려야 무슨 일이 있었는지 보입니다.
@@ -233,6 +240,13 @@ ap.add_argument("--legs", action="store_true",
 #   높이 스캔을 관측에 넣고 배운 정책(113칸)을 돌릴 때 씁니다.
 #   기본은 **정책에게 물어봅니다** — 첫 층의 입력이 48칸이면 장님, 113칸이면 눈.
 #   물어볼 수 없을 때만 --see / --no-see 로 정해 줍니다.
+# ★ 판마다 한 줄씩 적어 둡니다 (2026-10-06, README 49-5) ★
+#   화면을 통째로 붙여 넣지 않아도 되게, 판이 끝나면 요약 한 줄을 파일에 덧붙입니다.
+#   (파이프나 Out-File 로 받지 않습니다 — 그러다 한 시간을 멈춘 적이 있습니다. 스스로 씁니다.)
+ap.add_argument("--log", default="",
+                help="판 요약을 덧붙일 파일 (기본: 이 파일 옆 sim\\runs.tsv). 'off' 면 안 씁니다")
+ap.add_argument("--tag", default="",
+                help="요약 줄에 같이 적을 꼬리표 (어느 묶음의 판인지)")
 ap.add_argument("--see", action=argparse.BooleanOptionalAction, default=None,
                 help="정책에 높이 스캔 65점을 붙여 줍니다 (기본: 정책 입력 칸 수로 스스로 정함)")
 ap.add_argument("--see-show", action="store_true",
@@ -1514,6 +1528,8 @@ st_x_reach = None
 st_times = {}             # {칸: 뒷발 어림자리가 그 칸에 처음 올라선 때}
 st_kmax = 0
 st_clr_min = None         # 몸통과 그 아래 바닥 사이 — 가장 좁았던 값
+st_cliff = None           # 눈 있는 정책에게 참 끝의 낭떠러지가 처음 보인 (때, x) — 흠 23
+SEE_REACH = 0.9           # 스캔의 맨 앞 점까지 (SEE_X0 + SEE_STEP × 12 + SEE_FWD)
 st_still_from = None
 st_still_at = None
 st_xmax = None            # 가장 멀리 간 자리
@@ -1679,6 +1695,9 @@ while simulation_app.is_running():
                 st_kmax = k_rear
             clr = z_now - stair_ground(x_now)
             st_clr_min = clr if st_clr_min is None else min(st_clr_min, clr)
+            if (see_on and not args.down and st_cliff is None
+                    and x_now + SEE_REACH > st_end):
+                st_cliff = (now, x_now)
         # ★ 고침 (2026-10-02, README 42-3) — 흠 21 ★
         #   5 mm 넘게 꿈틀거리면 "멈춤"으로 안 잡혀서, 첫 칸 앞에서 30초를
         #   버둥거린 판이 "시간이 모자랐습니다"로 찍혔습니다.
@@ -2077,6 +2096,12 @@ else:
             topped = (st_kmax >= N and gained <= -(N * args.rise - 0.08))
         else:
             topped = (st_kmax >= N and gained >= N * args.rise - 0.08)
+        # ★ 고침 (2026-10-06, README 49-5) — 흠 24 ★
+        #   뒷발 어림자리가 끝 칸을 지나고 몸통 높이가 맞으면 "꼭대기까지 오름"이었습니다.
+        #   그런데 끝 턱을 막 넘은 자리(x 5.04~5.07)에 **서 버린** 개도 그 둘을 채웁니다.
+        #   계단을 다 지났다고 하려면 참 위로 **걸어 나가야** 합니다 — 끝 칸에서 0.6 m.
+        CLEAR_PAST = 0.60
+        cleared = x_end >= st_top + CLEAR_PAST
         _goal = "바닥까지 내려옴" if args.down else "꼭대기까지 오름"
         _hlab = "내려온 높이" if args.down else "오른 높이"
         _klab = "내려온 칸" if args.down else "오른 칸"
@@ -2107,16 +2132,27 @@ else:
             print(f"     몸통과 바닥 사이 — 가장 좁았을 때 "
                   f"{st_clr_min:.3f} m · 끝 {clr_end:.3f} m"
                   "   (제대로 걸으면 0.3 안팎)")
+            if st_cliff is not None:
+                print(f"     ⚠ {st_cliff[0]:.1f}초 (x {st_cliff[1]:.2f}) 부터 **참 끝의 낭떠러지가 눈에 보였습니다**"
+                      f" (참 끝 x {st_end:.2f}).")
+                print("       그 뒤의 몸 높이 · 멈춤은 정책의 흠이 아니라 무대 탓일 수 있습니다 —"
+                      " --landing 을 늘려 다시 재십시오 (README 49).")
             if st_frozen:
                 print(f"     ★ {st_still_from:.1f}초부터 **한 자리도 안 움직입니다**"
                       f" — x {st_still_at[0]:.3f} · 몸통 {stair_step(st_still_at[0])}칸"
                       f" · 뒷발 {stair_step(st_still_at[0] - REAR_PAW)}칸 ★")
             st_stall = (clock() - st_prog_at) if st_prog_at is not None else 0.0
-            if (not topped) and st_stall >= 6.0 and not st_frozen:
+            if (not (topped and cleared)) and st_stall >= 6.0 and not st_frozen:
                 print(f"     ★ 마지막 {st_stall:.0f}초 동안 **앞으로 못 나갔습니다**"
                       f" (가장 멀리 x {st_xmax:.2f} · 몸통 {stair_step(st_xmax)}칸"
                       f" · 뒷발 {stair_step(st_xmax - REAR_PAW)}칸) — 제자리에서 버둥거림 ★")
-            if topped and st_fell:
+            if topped and not cleared and not st_fell:
+                if st_frozen or st_stall >= 6.0:
+                    verdict = ("★ 끝 턱에 걸림 — 바닥으로 못 걸어 나감" if args.down
+                               else "★ 끝 턱에 걸림 — 참으로 못 걸어 나감")
+                else:
+                    verdict = "끝 칸에 막 닿음 — 시간이 모자랐습니다 (--seconds 를 늘리십시오)"
+            elif topped and st_fell:
                 verdict = ("바닥까지 왔으나 넘어짐" if args.down
                            else "꼭대기까지 올랐으나 넘어짐")
             elif topped:
@@ -2138,7 +2174,55 @@ else:
               + (f" · 한 칸 {per:.1f}초" if per is not None else "")
               + f" · {_hlab} {gained:+.2f}"
               + (f" · 최저 여유 {st_clr_min:.3f}" if st_clr_min is not None else "")
-              + f" · {cond} · 디딤 {args.run:.2f})")
+              + f" · {cond} · 디딤 {args.run:.2f}"
+              + (" · ⚠낭떠러지 보임" if st_cliff is not None else "") + ")")
+    try:
+        if args.log.strip().lower() != "off":
+            import os as _os
+            import time as _time
+            _lp = args.log or _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), "sim", "runs.tsv")
+            _g = globals()
+            _pol = "/".join(args.policy.replace("\\", "/").split("/")[-3:]) if args.policy else "(기본)"
+            _mode = ("down" if (args.steps > 0 and args.down) else
+                     "stairs" if args.steps > 0 else
+                     "sill" if args.sill > 0 else "flat")
+            _row = [
+                ("when", _time.strftime("%Y-%m-%d %H:%M:%S")),
+                ("tag", args.tag),
+                ("policy", _pol),
+                ("mode", _mode),
+                ("rise", f"{args.rise if args.steps > 0 else args.sill:.2f}"),
+                ("steps", str(args.steps)),
+                ("at", f"{args.sill_at:.2f}"),
+                ("landing", f"{args.landing:.1f}"),
+                ("seconds", f"{args.seconds:.0f}"),
+                ("hold", "1" if args.hold else "0"),
+                ("see", "1" if see_on else "0"),
+                ("verdict", str(_g.get("verdict", "")) if _mode != "flat" else ""),
+                ("kmax", str(_g.get("st_kmax", "")) if args.steps > 0 else ""),
+                ("per_step", (f"{per:.2f}" if (args.steps > 0 and _g.get("per") is not None) else "")),
+                ("gained", (f"{gained:+.3f}" if args.steps > 0 else "")),
+                ("clr_min", (f"{st_clr_min:.3f}" if (args.steps > 0 and st_clr_min is not None) else "")),
+                ("clr_end", (f"{clr_end:.3f}" if args.steps > 0 else "")),
+                ("x_end", f"{float(p1[0]):.3f}"),
+                ("z_end", f"{float(p1[2]):.3f}"),
+                ("ahead", f"{ahead:+.3f}"),
+                ("side_cm", f"{side * 100:+.1f}"),
+                ("lean_flat", (f"{lean_sum / lean_n:+.1f}" if lean_n > 0 else "")),
+                ("hip_f", (f"{cross_f:+.3f}" if cross_f is not None else "")),
+                ("hip_r", (f"{cross_r:+.3f}" if cross_r is not None else "")),
+                ("cliff", ("1" if st_cliff is not None else "0")),
+            ]
+            _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
+            _new = not _os.path.exists(_lp)
+            with open(_lp, "a", encoding="utf-8") as _f:
+                if _new:
+                    _f.write("\t".join(k for k, _ in _row) + "\n")
+                _f.write("\t".join(v.replace("\t", " ") for _, v in _row) + "\n")
+            print(f" [기록] 요약 한 줄을 덧붙였습니다 → {_lp}")
+    except Exception as _e:
+        print(f" [기록] ✖ 요약을 못 적었습니다 ({type(_e).__name__}: {_e}) — 판 자체는 멀쩡합니다")
     print()
     if abs(ahead) <= 0.15:
         print(" ✖ 앞으로 안 갔습니다.")
