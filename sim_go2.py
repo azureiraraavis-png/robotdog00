@@ -1430,6 +1430,15 @@ cross_f = cross_r = None  # 앞·뒤 다리의 가장 좁았던 벌림 (음수�
 #   0.3도짜리 흔들림을 "꼬였습니다"로 찍었습니다. 판정에서는 빼되
 #   **숨기지 않고** 따로 찍습니다.
 cross_f0 = cross_r0 = None  # 걸음 잡기 중의 가장 좁았던 벌림 (참고용)
+# ★ 고침 (2026-10-06, README 47) — 흠 22 ★
+#   숙임 각도가 계단·턱 판의 자취에만 찍혀서, 평지 판에서는 개가 +20도
+#   숙이고 걸어도 안 보였습니다 (README 46-3 — 한 판을 헛돌렸습니다).
+#   어느 판이든 자취에 찍고, **평지 구간의 평균**을 요약에 한 줄로 찍습니다.
+#   평지 구간 = 걸음 잡기 뒤 · 장애물 앞면에서 0.6 m 넘게 앞 (앞발이 닿기 전).
+FLAT_BEFORE = 0.60
+lean_sum = 0.0
+lean_n = 0
+lean_lo = lean_hi = None
 leg_sum = [0.0, 0.0, 0.0, 0.0]   # 걸음 잡기 뒤 — 앞허벅지Δ 뒤허벅지Δ 앞종아리Δ 뒤종아리Δ 합
 leg_n = 0
 z_low = z_high = None     # 턱 언저리에서의 몸 높이 최저·최고
@@ -1595,12 +1604,21 @@ while simulation_app.is_running():
     if now - told >= args.trace:
         told = now
         p, q = pose()
-        tail = ("걸음 잡는 중" if since < args.warm else "★ 재는 중")
+        # 앞뒤로 기운 각 (+ 는 머리가 내려감) — 어느 판이든 잽니다 (흠 22)
+        w, qx, qy, qz = [float(v) for v in q]
+        lean = math.degrees(math.asin(
+            max(-1.0, min(1.0, 2.0 * (w * qy - qz * qx)))))
+        _obst = (st_at if args.steps > 0 else
+                 (sill_near if args.sill > 0 else None))
+        if since >= args.warm and (
+                _obst is None or float(p[0]) < _obst - FLAT_BEFORE):
+            lean_sum += lean
+            lean_n += 1
+            lean_lo = lean if lean_lo is None else min(lean_lo, lean)
+            lean_hi = lean if lean_hi is None else max(lean_hi, lean)
+        tail = (f"{lean:+6.1f}도  "
+                + ("걸음 잡는 중" if since < args.warm else "★ 재는 중"))
         if args.sill > 0:
-            # 앞뒤로 기운 각 — 앞발을 턱에 올리면 머리가 들립니다
-            w, qx, qy, qz = [float(v) for v in q]
-            lean = math.degrees(math.asin(
-                max(-1.0, min(1.0, 2.0 * (w * qy - qz * qx)))))
             where = ("턱 앞" if float(p[0]) < sill_near else
                      ("턱 위" if float(p[0]) <= sill_far else "턱 뒤"))
             tail = f"{lean:+6.1f}도  {where}"
@@ -1681,6 +1699,13 @@ else:
     print(f"   몸이 돌아간 각   {turned:+.1f} 도")
     print(f"   몸 높이 (끝)     {float(p1[2]):.3f} m   "
           f"(제대로 서 있으면 0.3 m 안팎)")
+    if lean_n > 0:
+        _m = lean_sum / lean_n
+        print(f"   몸 숙임 (평지)   {_m:+.1f} 도   "
+              f"({lean_lo:+.1f} ~ {lean_hi:+.1f} · {lean_n}번 · + 는 머리가 내려감)"
+              + ("  ★ 숙이고 걷습니다 ★" if abs(_m) >= 8.0 else ""))
+    else:
+        print("   몸 숙임 (평지)   — 평지 구간이 없었습니다")
 
     # ── 허벅지·종아리가 기본 자세에서 얼마나 벗어나 있나 (--legs) ──
     if args.legs and leg_n > 0:

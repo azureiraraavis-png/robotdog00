@@ -544,9 +544,23 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     계단 0.15 는 3/3 → 1/3. 그래서 GUIDE_PROMOTION 의 기본은 False.
         #     (씨앗 하나 — "이 한 판에서는 도움이 안 됐다"까지)
         #   기본 = 10/01 오르는계단 판의 조합. 18 cm 는 여기에 이어 학습(43)을 얹습니다.
+        #
+        #   FLAT_ORI_W        몸을 수평으로 두라는 벌 (flat_orientation_l2) 의 무게 (47)
+        #     왜: 이어 학습(43 · 46) 뒤 두 씨앗 모두 평지에서 +14 ~ +20도 숙이고
+        #     걷습니다. 이 항은 원래 있었지만 무게가 0 이었습니다 — 안 시킨 것.
+        #     0.0 = 끔(기본). 이어 학습할 때 FINE_TUNE_STAIRS 와 함께 −1.0 을 넣어 봅니다.
+        #     ⚠ 계단을 오를 때의 기울기(−25도쯤)도 같이 벌합니다 — 계단을 잃을 수 있습니다.
+        #   10/06 숙임 판 (47)          True       True       False   + FLAT_ORI_W = -1.0
+        #   ★ 결과 (README 47-3): −1.0 은 **답이 아니었습니다** ★
+        #     평지 숙임 14.8 → 12.0도 (조금), 계단 0.18 꼭대기 2/3 → 0/3 (잃음).
+        #     벌을 받으면서도 숙임이 돌아왔습니다 (1300 +7.7 → 1498 +12.0).
+        #     그래서 기본은 0.0. 더 센 무게는 해 보지 않았습니다 (씨앗 하나 · 무게 하나).
         STAIRS_40 = True
         FINE_TUNE_STAIRS = False
         GUIDE_PROMOTION = False
+        FLAT_ORI_W = 0.0
+        if FLAT_ORI_W:
+            self.rewards.flat_orientation_l2.weight = FLAT_ORI_W
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
