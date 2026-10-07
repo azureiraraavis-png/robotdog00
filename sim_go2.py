@@ -246,6 +246,16 @@ ap.add_argument("--legs", action="store_true",
 # ★ 판마다 한 줄씩 적어 둡니다 (2026-10-06, README 49-5) ★
 #   화면을 통째로 붙여 넣지 않아도 되게, 판이 끝나면 요약 한 줄을 파일에 덧붙입니다.
 #   (파이프나 Out-File 로 받지 않습니다 — 그러다 한 시간을 멈춘 적이 있습니다. 스스로 씁니다.)
+# ★ 발 자취를 통째로 적습니다 (2026-10-07, README 51) ★
+#   사이안 님이 눈으로 본 "오를 때 헛발질"은 몸통만 재는 자로는 안 보입니다.
+#   세는 규칙을 **짐작으로 정하지 않으려고**, 먼저 발 넷의 자리를 0.01초마다 파일에 적어
+#   실제 자취를 보고 정합니다. 이름으로 고른 발 넷을 **섞지 않고** 그 순서대로 적습니다
+#   (feet_of 는 앞쪽부터 다시 줄을 세워서 어느 발인지가 사라집니다).
+ap.add_argument("--feet-log", dest="feet_log", default="",
+                help="발 넷의 자취를 적을 파일 ('auto' 면 이 파일 옆 sim\\feet\\ 에 이름을 지어 적습니다)")
+ap.add_argument("--clock", choices=["physics", "stage"], default="physics",
+                help="때를 무엇으로 가를지. physics(기본) = 물리 걸음의 길이를 더한 것. "
+                     "stage = 옛 무대시계 (10/07 까지의 판을 그대로 되풀이할 때만 — 물리보다 4/3 빨리 갑니다, 흠 25)")
 ap.add_argument("--log", default="",
                 help="판 요약을 덧붙일 파일 (기본: 이 파일 옆 sim\\runs.tsv). 'off' 면 안 씁니다")
 ap.add_argument("--tag", default="",
@@ -335,6 +345,9 @@ torch = import_module("torch")
 first_step = True
 woke = 0                      # initialize() 를 몇 번 불렀나
 drove = 0                     # forward() 를 몇 번 불렀나
+phys_t = 0.0                  # 물리 시계 — 콜백이 받은 걸음 길이를 더한 것 (흠 25)
+phys_n = 0                    # 물리 걸음 수
+phys_lo = phys_hi = None      # 받은 걸음 길이의 가장 짧은 것 · 긴 것
 hurt = None                   # 콜백 안에서 터진 것 (Kit 이 삼킵니다)
 
 
@@ -363,9 +376,73 @@ hurt = None                   # 콜백 안에서 터진 것 (Kit 이 삼킵니�
 #   ★ 그리고 셉니다 ★
 #     '불렸겠지' 라고 여기고 세 판을 헛짚었습니다. 세어두면 다음엔
 #     그 자리에서 갈립니다.
+feet_rows = []            # --feet-log: (t, 몸통 x y z · 사원수 4, 종아리 넷 × (자리 3 · 사원수 4))
+_feet_tick = 0
+_calf_idx = None          # 종아리 마디 넷의 번호 (FL FR RL RR)
+_calf_names = ""
+
+
+def _calf_find():
+    """종아리 마디 넷을 이름으로 찾습니다 (한 번). 이 자산에는 발 마디가 따로 없습니다 —
+    마디가 13개(몸통 · 힙 4 · 허벅지 4 · 종아리 4)뿐이고 발은 종아리 끝에 붙어 있습니다.
+    그래서 종아리의 자리와 방향을 적고, 발끝은 거기서 셈합니다 (README 51-2)."""
+    global _calf_idx, _calf_names, _feet_how, _feet_name
+    art = robot.robot
+    if _feet_how is None:
+        _feet_how, _feet_name = _feet_probe(art)
+    names = getattr(art, "_link_names", None)
+    if _feet_how is None or not names:
+        _calf_idx = []
+        print(" [발] ✖ 마디 자리나 이름을 못 읽었습니다 — 자취를 안 적습니다.")
+        return
+    flat = []
+    for n in names:
+        flat.extend(n if isinstance(n, (list, tuple)) else [n])
+    flat = [str(n) for n in flat]
+    idx = []
+    for leg in ("FL", "FR", "RL", "RR"):
+        hit = [k for k, n in enumerate(flat) if n == leg + "_calf"]
+        if len(hit) != 1:
+            _calf_idx = []
+            print(f" [발] ✖ {leg}_calf 를 이름에서 못 찾았습니다 — 자취를 안 적습니다. 이름: {flat}")
+            return
+        idx.append(hit[0])
+    out = _feet_how()
+    arr = as_numbers(out[0] if isinstance(out, tuple) else out)
+    _calf_idx = idx
+    _calf_names = " ".join(flat[k] for k in idx)
+    print(f" [발] 종아리 넷을 이름으로 골랐습니다: {_calf_names} (번호 {idx})"
+          f" · 읽는 법 {_feet_name} · 한 마디에 숫자 {arr.shape[-1]}개")
+
+
+def _feet_log_step():
+    """물리 걸음 둘에 한 번(0.01초) 몸통과 종아리 넷을 적습니다. 읽기만 합니다."""
+    global _feet_tick
+    _feet_tick += 1
+    if _feet_tick % 2 or not _calf_idx:
+        return
+    out = _feet_how()
+    arr = as_numbers(out[0] if isinstance(out, tuple) else out)
+    arr = arr.reshape(-1, arr.shape[-1])
+    cv = arr[_calf_idx][:, :7]                # 이름 순서 그대로 (FL FR RL RR) — 자리 3 · 사원수 4
+    bp, bq = robot.robot.get_world_poses()
+    bp = as_numbers(bp).reshape(-1, 3)[0]
+    bq = as_numbers(bq).reshape(-1, 4)[0]
+    feet_rows.append((clock(),) + tuple(float(v) for v in bp) + tuple(float(v) for v in bq)
+                     + tuple(float(v) for v in cv.reshape(-1)))
+
+
 def on_physics_step(step_size: float, context: object) -> None:
     """첫 걸음에 깨우고, 그 뒤로는 명령을 넣습니다."""
-    global first_step, woke, drove, hurt
+    global first_step, woke, drove, hurt, phys_t, phys_n, phys_lo, phys_hi
+    try:
+        _ss = float(step_size)
+        phys_t += _ss
+        phys_n += 1
+        phys_lo = _ss if phys_lo is None else min(phys_lo, _ss)
+        phys_hi = _ss if phys_hi is None else max(phys_hi, _ss)
+    except Exception:
+        pass
     try:
         if first_step:
             robot.initialize()
@@ -385,6 +462,11 @@ def on_physics_step(step_size: float, context: object) -> None:
         else:
             robot.forward(step_size, base_command)
             drove += 1
+            if args.feet_log:
+                try:
+                    _feet_log_step()
+                except Exception:
+                    pass          # 적는 일이 판을 망치면 안 됩니다
     except Exception:
         if hurt is None:
             import traceback
@@ -1536,8 +1618,13 @@ def yaw_of(q):
     return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
-def clock():
+def stage_clock():
     return omni.timeline.get_timeline_interface().get_current_time()
+
+
+def clock():
+    """때를 가르는 시계. 기본은 물리 시계입니다 (흠 25 — 무대시계는 물리보다 4/3 빨리 갔습니다)."""
+    return phys_t if args.clock == "physics" else stage_clock()
 
 
 # ── 돌립니다 (공식 예제의 while 모양 그대로) ────────────────
@@ -1630,7 +1717,7 @@ def wrapped(a):
 
 print()
 print(f" 걸으면서 {args.warm:.1f}초 자리잡은 뒤부터 잽니다…")
-print(f"   {'무대시계':>8} {'x':>8} {'y':>8} {'z':>7}   몸 높이")
+print(f"   {('물리시계' if args.clock == 'physics' else '무대시계'):>8} {'x':>8} {'y':>8} {'z':>7}   몸 높이")
 sys.stdout.flush()
 
 while simulation_app.is_running():
@@ -1647,7 +1734,11 @@ while simulation_app.is_running():
     now = clock()
     if began is None:
         began = now
+        stage_began, phys_began = stage_clock(), phys_t
     since = now - began
+
+    if args.feet_log and _calf_idx is None:
+        _calf_find()              # 종아리 넷을 이름으로 찾아 둡니다 (한 번) — 그 뒤로 콜백이 적습니다
 
     # 구경 — 카메라가 개를 옆에서 따라갑니다 (0.05초마다 · --gui --cam follow 일 때만)
     if (args.gui and args.cam == "follow" and _set_cam is not None
@@ -1867,6 +1958,15 @@ while simulation_app.is_running():
 print()
 print("=" * 70)
 print(f" 깨운 횟수 {woke}회 · 명령한 횟수 {drove}회")
+try:
+    _st, _pt = stage_clock() - stage_began, phys_t - phys_began
+    print(f" [시계] 물리 {_pt:.2f}초 (걸음 {phys_n}번 · 한 걸음 {phys_lo:.5f}~{phys_hi:.5f}초)"
+          f" · 무대 {_st:.2f}초 · 무대/물리 {(_st / _pt if _pt > 0 else 0):.3f}"
+          f" · 때는 {'물리' if args.clock == 'physics' else '무대'}시계로 갈랐습니다")
+    if phys_lo is not None and (abs(phys_lo - 0.005) > 1e-6 or abs(phys_hi - 0.005) > 1e-6):
+        print("   ★ 물리 한 걸음이 0.005초가 아닙니다 — 정책이 배운 주기와 다릅니다. 이 판의 걸음을 믿지 마십시오 ★")
+except Exception as _e:
+    print(f" [시계] ✖ 두 시계를 못 견줬습니다 ({type(_e).__name__}: {_e})")
 if woke > 1:
     print("   ✖ 깨우기가 두 번 이상입니다 — 콜백이 오락가락했습니다.")
 if drove == 0:
@@ -2250,6 +2350,36 @@ else:
               + (f" · 최저 여유 {st_clr_min:.3f}" if st_clr_min is not None else "")
               + f" · {cond} · 디딤 {args.run:.2f}"
               + (" · ⚠낭떠러지 보임" if st_cliff is not None else "") + ")")
+    if args.feet_log:
+        try:
+            import os as _os2
+            _fp = args.feet_log
+            if _fp.strip().lower() == "auto":
+                _pn = (args.policy.replace("\\", "/").split("/") if args.policy else ["default"])
+                _nm = "_".join([
+                    (args.tag or "feet"),
+                    ("see" if see_on else "blind"),
+                    _pn[-1].replace("policy_", "").replace(".pt", ""),
+                    ("down" if (args.steps > 0 and args.down) else
+                     "up" if args.steps > 0 else "sill" if args.sill > 0 else "flat"),
+                    f"{(args.rise if args.steps > 0 else args.sill):.2f}",
+                    f"at{args.sill_at:.1f}"]) + ".csv"
+                _fp = _os2.path.join(_os2.path.dirname(_os2.path.abspath(__file__)),
+                                     "sim", "feet", _nm)
+            _os2.makedirs(_os2.path.dirname(_fp), exist_ok=True)
+            with open(_fp, "w", encoding="utf-8") as _f:
+                _f.write(f"# calves={_calf_names} how={_feet_name} steps={args.steps} rise={args.rise} run={args.run}"
+                         f" at={args.sill_at} down={int(bool(args.down))} sill={args.sill}"
+                         f" sill_deep={args.sill_deep} landing={args.landing} see={int(bool(see_on))}"
+                         f" policy={args.policy}\n")
+                _f.write("t,bx,by,bz,bq0,bq1,bq2,bq3,"
+                         + ",".join(f"{leg}_{c}" for leg in ("FL", "FR", "RL", "RR")
+                                    for c in ("px", "py", "pz", "q0", "q1", "q2", "q3")) + "\n")
+                for _r in feet_rows:
+                    _f.write(",".join(f"{v:.5f}" for v in _r) + "\n")
+            print(f" [발] 자취 {len(feet_rows)}줄을 적었습니다 → {_fp}")
+        except Exception as _e:
+            print(f" [발] ✖ 자취를 못 적었습니다 ({type(_e).__name__}: {_e})")
     try:
         if args.log.strip().lower() != "off":
             import os as _os
@@ -2287,9 +2417,18 @@ else:
                 ("hip_f", (f"{cross_f:+.3f}" if cross_f is not None else "")),
                 ("hip_r", (f"{cross_r:+.3f}" if cross_r is not None else "")),
                 ("cliff", ("1" if st_cliff is not None else "0")),
+                ("clock", args.clock),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
+            if not _new:                      # 옛 머리줄에 새 칸(clock)이 없으면 머리줄만 고칩니다
+                with open(_lp, "r", encoding="utf-8") as _f:
+                    _old = _f.read().split("\n")
+                _hd = "\t".join(k for k, _ in _row)
+                if _old and _old[0] != _hd and _hd.startswith(_old[0]):
+                    _old[0] = _hd
+                    with open(_lp, "w", encoding="utf-8") as _f:
+                        _f.write("\n".join(_old))
             with open(_lp, "a", encoding="utf-8") as _f:
                 if _new:
                     _f.write("\t".join(k for k, _ in _row) + "\n")

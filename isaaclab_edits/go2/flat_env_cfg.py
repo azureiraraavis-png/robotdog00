@@ -561,6 +561,16 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         FLAT_ORI_W = 0.0
         if FLAT_ORI_W:
             self.rewards.flat_orientation_l2.weight = FLAT_ORI_W
+        #   FEET_AIR_W        발을 오래 들고 있으라는 상 (feet_air_time) 의 무게 (README 52)
+        #     Isaac Lab 의 기본은 0.125 인데 Go2 설정(rough_env_cfg.py:39)이 0.01 로 낮춰 둡니다.
+        #     우리 걸음은 발이 공중에 0.15초쯤 있고 문턱이 0.5초라, 0.01 로는 초당 −0.02 —
+        #     추적 상(초당 +1.4)의 1.5 % 입니다. **사실상 꺼져 있었습니다.** 그래서 개는 발을
+        #     1 cm 도 안 들고(51-3), 계단의 세운 면을 열 칸에 10번 칩니다(51-6).
+        #     0.125 면 초당 −0.25 (추적 상의 18 %). 0.0 = 건드리지 않음(기본 · 0.01 그대로).
+        #   10/07 발 들기 판 (52)       True       True       False   + FEET_AIR_W = 0.125
+        FEET_AIR_W = 0.0
+        if FEET_AIR_W:
+            self.rewards.feet_air_time.weight = FEET_AIR_W
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
