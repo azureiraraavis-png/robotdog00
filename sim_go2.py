@@ -1676,6 +1676,7 @@ st_x_reach = None
 st_times = {}             # {칸: 뒷발 어림자리가 그 칸에 처음 올라선 때}
 st_kmax = 0
 st_clr_min = None         # 몸통과 그 아래 바닥 사이 — 가장 좁았던 값
+st_off_max = None         # 계단 위에서 가운데 줄(출발한 줄)에서 가장 멀리 벗어난 값 (부호 있음 · m) — 흠 26
 st_cliff = None           # 눈 있는 정책에게 참 끝의 낭떠러지가 처음 보인 (때, x) — 흠 23
 SEE_REACH = 0.9           # 스캔의 맨 앞 점까지 (SEE_X0 + SEE_STEP × 12 + SEE_FWD)
 st_still_from = None
@@ -1860,6 +1861,10 @@ while simulation_app.is_running():
                 st_kmax = k_rear
             clr = z_now - stair_ground(x_now)
             st_clr_min = clr if st_clr_min is None else min(st_clr_min, clr)
+            if st_at <= x_now <= st_top:        # 계단 위에 있는 동안만 — 세계 좌표의 옆 (계단은 y=0 가운데로 놓여 있습니다)
+                _lat = float(p_now[1])
+                if st_off_max is None or abs(_lat) > abs(st_off_max):
+                    st_off_max = _lat
             if (see_on and not args.down and st_cliff is None
                     and x_now + SEE_REACH > st_end):
                 st_cliff = (now, x_now)
@@ -1986,13 +1991,25 @@ else:
     c, s = math.cos(yaw0), math.sin(yaw0)
     ahead = dx * c + dy * s
     side = -dx * s + dy * c
+    # ★ 흠 26 (2026-10-07, README 53-5 · 54) ★
+    #   위의 side 는 **재기 시작한 순간의 몸 방향**을 앞으로 삼은 값입니다. 그 순간 몸이 2도 틀어져 있으면
+    #   8 m 가는 동안 28 cm 가 "밀림"으로 찍힙니다. 계단은 세계 좌표에 놓여 있으므로 폭을 따질 때 볼 것은
+    #   **놓은 방향(--yaw · 기본 0)을 앞으로 삼은 세계 좌표의 옆**입니다. 그것을 side_w 로 따로 셈합니다.
+    #   side 는 지우지 않습니다 — 아래의 "돌아서 생긴 휨 / 미끄러진 휨" 쪼개기가 그 틀에서 한 셈이고,
+    #   runs.tsv 의 side_cm 도 옛 판과 견줄 수 있게 그대로 둡니다 (새 칸 side_w_cm 를 덧붙입니다).
+    _lane = math.radians(args.yaw) if args.yaw else 0.0
+    _cl, _sl = math.cos(_lane), math.sin(_lane)
+    side_w = -dx * _sl + dy * _cl
+    yaw0_off = math.degrees((yaw0 - _lane + math.pi) % (2 * math.pi) - math.pi)
     turned = math.degrees((yaw1 - yaw0 + math.pi) % (2 * math.pi) - math.pi)
 
     print(f" 시뮬레이터의 {args.robot}"
           + (f"   (놓을 때 {args.yaw:+.0f} 도 돌려세움)" if args.yaw else ""))
     print(f"   앞으로 간 거리   {ahead:+.3f} m   "
           f"(명령대로면 {args.speed * args.seconds:.2f} m)")
-    print(f"   옆으로 밀린 양   {side * 100:+.1f} cm")
+    print(f"   옆으로 밀린 양   {side_w * 100:+.1f} cm   (세계 좌표 — 놓은 방향 기준)")
+    print(f"     └ 옛 자 (잴 때의 몸 방향 기준)  {side * 100:+.1f} cm"
+          f"   · 그때 몸이 {yaw0_off:+.1f}도 틀어져 있었습니다 (흠 26)")
     print(f"   몸이 돌아간 각   {turned:+.1f} 도")
     print(f"   몸 높이 (끝)     {float(p1[2]):.3f} m   "
           f"(제대로 서 있으면 0.3 m 안팎)")
@@ -2303,6 +2320,10 @@ else:
                          if flat else ""))
             print(f"     {_hlab} {gained:+.3f} m  (끝까지 {_sgn * N * args.rise:+.3f} m)"
                   f" · 끝 자리 x {x_end:.2f}")
+            if st_off_max is not None:
+                print(f"     계단 위에서 가운데 줄에서 가장 멀리 벗어난 것  {st_off_max * 100:+.1f} cm"
+                      f"   (시험대 계단 폭의 절반 150 cm · 폭 1.2 m 계단이면 60 cm)"
+                      + ("  ★ 폭 1.2 m 계단이면 가장자리입니다 ★" if abs(st_off_max) >= 0.45 else ""))
             print(f"     몸통과 바닥 사이 — 가장 좁았을 때 "
                   f"{st_clr_min:.3f} m · 끝 {clr_end:.3f} m"
                   "   (제대로 걸으면 0.3 안팎)")
@@ -2418,6 +2439,9 @@ else:
                 ("hip_r", (f"{cross_r:+.3f}" if cross_r is not None else "")),
                 ("cliff", ("1" if st_cliff is not None else "0")),
                 ("clock", args.clock),
+                ("side_w_cm", f"{side_w * 100:+.1f}"),
+                ("yaw0_off", f"{yaw0_off:+.1f}"),
+                ("st_off_max_cm", (f"{st_off_max * 100:+.1f}" if (args.steps > 0 and st_off_max is not None) else "")),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
