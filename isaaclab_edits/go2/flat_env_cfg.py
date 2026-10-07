@@ -571,6 +571,26 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         FEET_AIR_W = 0.0
         if FEET_AIR_W:
             self.rewards.feet_air_time.weight = FEET_AIR_W
+        #     ※ 10/07 결과 (52-4): 0.125 는 오르기 11/15 로 문을 못 지나 버렸습니다. 발도 안 들었습니다 —
+        #       끄는 발은 접촉 센서에게 "땅을 떠난 적 없는 발"이라 이 상의 눈에 안 보입니다.
+        #   FEET_SLIDE_W      땅에 닿은 채 움직이는 발을 벌함 (feet_slide · README 53)
+        #     velocity/mdp/rewards.py 의 함수 그대로: 접촉 힘이 1 N 넘는 발의 수평 빠르기를 더합니다.
+        #     Go2 설정에는 이 항이 아예 없습니다 (사람형 G1 −0.1 · H1 −0.25 에만 있음).
+        #     0.0 = 항을 넣지 않음(기본).
+        #   10/07 끄는 발 판 (53)       True       True       False   + FEET_SLIDE_W = -0.25
+        FEET_SLIDE_W = 0.0
+        if FEET_SLIDE_W:
+            from isaaclab.managers import RewardTermCfg as _RewTerm
+            from isaaclab.managers import SceneEntityCfg as _SceneEntityCfg
+
+            self.rewards.feet_slide = _RewTerm(
+                func=vel_mdp.feet_slide,
+                weight=FEET_SLIDE_W,
+                params={
+                    "sensor_cfg": _SceneEntityCfg("contact_forces", body_names=".*_foot"),
+                    "asset_cfg": _SceneEntityCfg("robot", body_names=".*_foot"),
+                },
+            )
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
