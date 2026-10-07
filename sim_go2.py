@@ -279,6 +279,13 @@ ap.add_argument("--trace", type=float, default=0.5,
 ap.add_argument("--hold-gain", type=float, default=0.5,
                 dest="hold_gain",
                 help="heading_control_stiffness (설정 기본값 0.5)")
+ap.add_argument("--aim", choices=["start", "lane"], default="start",
+                help="되먹임이 맞출 방향. start(기본 · 옛 그대로) = 처음 읽은 몸 방향. "
+                     "lane = 놓은 방향(--yaw · 기본 0) 그대로 — 처음 읽을 때 몸이 이미 1도쯤 흔들려 있습니다 (README 55)")
+ap.add_argument("--lane-gain", type=float, default=0.0, dest="lane_gain",
+                help="가운데 줄에서 옆으로 벗어난 만큼 그쪽 반대로 방향을 틉니다 (rad/m · 기본 0 = 끔). "
+                     "목표 방향 = 줄 방향 − lane_gain × 옆 벗어남 (±0.35 rad 에서 자름). "
+                     "길잡이(바깥 고리)가 할 일을 흉내 낸 것 — 정책은 그대로입니다 (README 55)")
 ap.add_argument("--hold-max", type=float, default=1.0,
                 dest="hold_max",
                 help="회전 명령 한계 rad/s (ang_vel_z 범위 기본값 1.0)")
@@ -1639,6 +1646,7 @@ told_gains = False        # 이득 줄은 콜백이 뛴 뒤에 생깁니다 — 
 
 # 방향 되먹임이 쓴 것들 — 얼마나 애썼는지 나중에 찍습니다
 aim = None                # 목표 방향 (출발할 때 본 쪽)
+aim_read = None           # 처음 읽은 몸 방향
 turn_asked = []           # 시킨 회전 명령들 (rad/s)
 off_worst = 0.0           # 가장 크게 틀어졌던 각 (rad)
 
@@ -1789,7 +1797,16 @@ while simulation_app.is_running():
             yaw_now = yaw_of(q_now)
             if aim is None:
                 aim = yaw_now       # ★ 출발할 때 본 쪽을 목표로 삼습니다 ★
-            off = wrapped(aim - yaw_now)
+                aim_read = yaw_now  # 처음 읽은 몸 방향 (찍어 두기만 합니다)
+                if args.aim == "lane":
+                    aim = math.radians(args.yaw) if args.yaw else 0.0
+            _aim_now = aim
+            if args.lane_gain and p_now is not None:
+                # 줄(놓은 자리에서 놓은 방향으로 뻗은 선)에서 옆으로 벗어난 양 — 세계 좌표
+                _ln = math.radians(args.yaw) if args.yaw else 0.0
+                _lat = -float(p_now[0]) * math.sin(_ln) + float(p_now[1]) * math.cos(_ln)
+                _aim_now = _ln - max(-0.35, min(0.35, args.lane_gain * _lat))
+            off = wrapped(_aim_now - yaw_now)
             wz = max(-args.hold_max,
                      min(args.hold_max, args.hold_gain * off))
             base_command = torch.tensor([args.speed, 0.0, wz],
@@ -2094,6 +2111,10 @@ else:
             mean_wz = sum(turn_asked) / len(turn_asked)
             print(f"   [되먹임] 켜짐 (이득 {args.hold_gain} · 한계 "
                   f"±{args.hold_max} rad/s)")
+            print(f"     맞춘 방향  {('놓은 방향 그대로 (--aim lane)' if args.aim == 'lane' else '처음 읽은 몸 방향 (--aim start)')}"
+                  f" {math.degrees(aim):+.2f}도"
+                  + (f" · 처음 읽은 몸 방향 {math.degrees(aim_read):+.2f}도" if aim_read is not None else "")
+                  + (f" · 줄 따라가기 {args.lane_gain} rad/m" if args.lane_gain else " · 줄 따라가기 끔"))
             print(f"     시킨 회전  평균 {mean_wz:+.3f} rad/s"
                   f" · 가장 센 것 {max(turn_asked, key=abs):+.3f}")
             print(f"     가장 크게 틀어졌던 각  "
@@ -2442,6 +2463,9 @@ else:
                 ("side_w_cm", f"{side_w * 100:+.1f}"),
                 ("yaw0_off", f"{yaw0_off:+.1f}"),
                 ("st_off_max_cm", (f"{st_off_max * 100:+.1f}" if (args.steps > 0 and st_off_max is not None) else "")),
+                ("hold_gain", f"{args.hold_gain:g}"),
+                ("aim", args.aim),
+                ("lane_gain", f"{args.lane_gain:g}"),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
