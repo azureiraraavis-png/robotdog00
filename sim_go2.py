@@ -286,6 +286,13 @@ ap.add_argument("--lane-gain", type=float, default=0.0, dest="lane_gain",
                 help="가운데 줄에서 옆으로 벗어난 만큼 그쪽 반대로 방향을 틉니다 (rad/m · 기본 0 = 끔). "
                      "목표 방향 = 줄 방향 − lane_gain × 옆 벗어남 (±0.35 rad 에서 자름). "
                      "길잡이(바깥 고리)가 할 일을 흉내 낸 것 — 정책은 그대로입니다 (README 55)")
+ap.add_argument("--vy", type=float, default=0.0,
+                help="옆으로 가라는 명령 m/s (+ 는 왼쪽 · 기본 0). 정책이 옆 명령을 듣는지 볼 때 (README 57)")
+ap.add_argument("--lane-vy", type=float, default=0.0, dest="lane_vy",
+                help="가운데 줄에서 옆으로 벗어난 만큼 반대쪽 옆 명령을 줍니다 (m/s per m · 기본 0 = 끔). "
+                     "옆 명령 = --vy − lane_vy × 옆 벗어남 (±--vy-max 에서 자름) (README 57)")
+ap.add_argument("--vy-max", type=float, default=0.2, dest="vy_max",
+                help="옆 명령의 한계 m/s (기본 0.2 = 학습 때 연 범위)")
 ap.add_argument("--hold-max", type=float, default=1.0,
                 dest="hold_max",
                 help="회전 명령 한계 rad/s (ang_vel_z 범위 기본값 1.0)")
@@ -1647,6 +1654,7 @@ told_gains = False        # 이득 줄은 콜백이 뛴 뒤에 생깁니다 — 
 # 방향 되먹임이 쓴 것들 — 얼마나 애썼는지 나중에 찍습니다
 aim = None                # 목표 방향 (출발할 때 본 쪽)
 aim_read = None           # 처음 읽은 몸 방향
+vy_asked = []             # 시킨 옆 명령들 (m/s)
 turn_asked = []           # 시킨 회전 명령들 (rad/s)
 off_worst = 0.0           # 가장 크게 틀어졌던 각 (rad)
 
@@ -1778,7 +1786,7 @@ while simulation_app.is_running():
     #   **'걸음이 자리잡을 때까지 기다리는 시간'**. 떨어지고 비틀거리는
     #   첫 1초를 재기 시작점에서 빼는 것이 원래 목적이었고, 그건 이렇게
     #   해도 똑같이 됩니다.
-    base_command = torch.tensor([args.speed, 0.0, 0.0], device=args.device)
+    base_command = torch.tensor([args.speed, args.vy, 0.0], device=args.device)
 
     # ── 방향 되먹임 (--hold) ────────────────────────────────
     #
@@ -1809,8 +1817,16 @@ while simulation_app.is_running():
             off = wrapped(_aim_now - yaw_now)
             wz = max(-args.hold_max,
                      min(args.hold_max, args.hold_gain * off))
-            base_command = torch.tensor([args.speed, 0.0, wz],
+            _vy = args.vy
+            if args.lane_vy and p_now is not None:
+                _ln2 = math.radians(args.yaw) if args.yaw else 0.0
+                _lat2 = -float(p_now[0]) * math.sin(_ln2) + float(p_now[1]) * math.cos(_ln2)
+                _vy = args.vy - args.lane_vy * _lat2
+            _vy = max(-args.vy_max, min(args.vy_max, _vy)) if (args.vy or args.lane_vy) else 0.0
+            base_command = torch.tensor([args.speed, _vy, wz],
                                         device=args.device)
+            if since >= args.warm:
+                vy_asked.append(_vy)
             if since >= args.warm:      # 재는 구간만 셉니다
                 turn_asked.append(wz)
                 off_worst = max(off_worst, abs(off))
@@ -2115,6 +2131,11 @@ else:
                   f" {math.degrees(aim):+.2f}도"
                   + (f" · 처음 읽은 몸 방향 {math.degrees(aim_read):+.2f}도" if aim_read is not None else "")
                   + (f" · 줄 따라가기 {args.lane_gain} rad/m" if args.lane_gain else " · 줄 따라가기 끔"))
+            if args.vy or args.lane_vy:
+                _mv = sum(vy_asked) / max(len(vy_asked), 1)
+                print(f"     시킨 옆 명령  평균 {_mv:+.3f} m/s · 가장 센 것 {max(vy_asked, key=abs):+.3f}"
+                      f"   (--vy {args.vy:g} · 줄 따라 옆으로 {args.lane_vy:g} · 한계 ±{args.vy_max:g})")
+                print(f"     옆으로 실제로 간 빠르기  {side_w / max(args.seconds, 1e-9):+.3f} m/s   (세계 좌표 · 재는 {args.seconds:g}초 동안)")
             print(f"     시킨 회전  평균 {mean_wz:+.3f} rad/s"
                   f" · 가장 센 것 {max(turn_asked, key=abs):+.3f}")
             print(f"     가장 크게 틀어졌던 각  "
@@ -2466,6 +2487,8 @@ else:
                 ("hold_gain", f"{args.hold_gain:g}"),
                 ("aim", args.aim),
                 ("lane_gain", f"{args.lane_gain:g}"),
+                ("vy", f"{args.vy:g}"),
+                ("lane_vy", f"{args.lane_vy:g}"),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)

@@ -591,6 +591,15 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                     "asset_cfg": _SceneEntityCfg("robot", body_names=".*_foot"),
                 },
             )
+        #     ※ 10/07 결과 (53-4): −0.25 로 발을 들고(평지 0.1~0.8 → 3.1~9.8 cm) 턱 치기가 10 → 3 으로 줄었습니다.
+        #       오르기 · 내려가기 15/15 그대로. **가장 나은 정책(2026-10-07_13-24-29)이 이 값으로 나왔습니다.**
+        #   LIN_VEL_Y         옆으로 가라는 명령의 범위 ±m/s (README 57)
+        #     0.0 = 옆 명령 없음(기본 — 지금까지의 모든 판). 계단 위에서 몸은 곧은데 옆으로 10~25 cm
+        #     미끄러지는 몫을, 도는 명령 하나로는 못 지웁니다 (55-4). 옆 명령을 들을 줄 알아야 길잡이가 되돌립니다.
+        #   10/08 옆 명령 판 (57)       True       True       False   + FEET_SLIDE_W = -0.25 + LIN_VEL_Y = 0.2
+        LIN_VEL_Y = 0.0
+        if LIN_VEL_Y:
+            self.commands.base_velocity.ranges.lin_vel_y = (-LIN_VEL_Y, LIN_VEL_Y)
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
