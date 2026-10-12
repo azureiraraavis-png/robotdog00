@@ -4,7 +4,8 @@
     python feet_read.py sim\\feet\\51_see_1400_up_0.18_at2.0.csv [...]   (--list 면 사건을 하나씩, --table 이면 묶음 표,
                                                                         --slip 이면 디딘 발의 미끄러짐 — --contacts 자취만, README 61,
                                                                         --slip2 이면 닿는 점을 계단 모양에서 구한 미끄러짐 — README 62-1 (못 믿음),
-                                                                        --slip3 이면 발 공이 닿아 있을 때만 · 정강이 얹힘 따로 — README 62-3)
+                                                                        --slip3 이면 발 공이 닿아 있을 때만 · 정강이 얹힘 따로 — README 62-3,
+                                                                        --shin 이면 발이 따로인 자산의 정강이 시간 — README 64)
 
  세는 것 (README 51-3 의 정의)
    턱 치기    발이 다음 칸의 세운 면에 닿은 채(면에서 1.5 cm 안) 디딤판 위 3 cm 넘는 높이에서 0.05초 넘게 멈춤
@@ -554,8 +555,69 @@ def slip3_table(files):
               + ("주로 모서리에서 미끄러진다" if e > 0.5 else "주로 판판한 면에서 미끄러진다" if e < 0.25 else "둘 다"))
 
 
+def shin(fn):
+    """64 — 발이 따로인 자산(훈련 자산)에서: 종아리 마디 힘 = 정강이 힘. 발마다 20 N · 1 N 넘는 시간(계단 구간)."""
+    meta, a = load(fn)
+    if a.shape[1] < 48:
+        return None
+    steps, at, run = int(meta["steps"]), float(meta["at"]), float(meta["run"])
+    P, K = stair_poly(meta)
+    E = P[K == 2]
+    out = {"file": fn, "meta": meta, "legs": {}}
+    for i, leg in enumerate(LEGS):
+        cc = 8 + 7 * i
+        knee = a[:, cc:cc + 3]
+        c = tip(knee, a[:, cc + 3:cc + 7])
+        Fm = np.linalg.norm(a[:, 36 + 3 * i:39 + 3 * i], axis=1)
+        reg = (c[:, 0] > at - STAIR_PAD) & (c[:, 0] < at + steps * run) if steps else np.ones(len(c), bool)
+        f20, f1 = (Fm > F_ON) & reg, (Fm > 1.0) & reg
+        if len(E) and f20.any():
+            sd = np.min(np.stack([_seg_dist(e, c[f20][:, [0, 2]], knee[f20][:, [0, 2]]) for e in E]), 0)
+        else:
+            sd = np.array([])
+        out["legs"][leg] = dict(t20=float(f20.sum() * DT), t1=float(f1.sum() * DT), sd=sd)
+    return out
+
+
+def shin_table(files):
+    """64-1 의 S 와 읽기. 묶음 = 파일 이름에서 _at… 을 뗀 것."""
+    import os
+    import re
+    grp = {}
+    for fn in files:
+        r = shin(fn)
+        if r is None:
+            print(f"  (접촉 힘 없음 — 건너뜀) {fn}")
+            continue
+        base = os.path.basename(fn.replace(chr(92), "/"))
+        key = re.sub(r"_at[0-9.]+\.csv$", "", base).replace(".csv", "")
+        L = r["legs"]
+        grp.setdefault(key, []).append(dict(fn=base, t20=sum(L[l]["t20"] for l in LEGS), t1=sum(L[l]["t1"] for l in LEGS),
+                                            legs=L, sd=np.concatenate([L[l]["sd"] for l in LEGS]),
+                                            flat=int(r["meta"]["steps"]) == 0))
+    print("정강이 시간 (초 · 네 발 합 · 종아리 힘 > %.0f N · 계단 구간, 평지 판은 판 전체) — 발이 따로인 자산에서만 뜻이 있습니다" % F_ON)
+    for key in sorted(grp):
+        rows = grp[key]
+        print(f"\n  {key} · {len(rows)}판")
+        for x in rows:
+            L = x["legs"]
+            sd = f"  정강이 선-모서리 거리 가운데값 {np.median(x['sd']) * 1000:.0f} mm" if len(x["sd"]) else ""
+            print(f"    {x['fn']:30s} > 20 N {x['t20']:5.2f}초 (" + " ".join(f"{l} {L[l]['t20']:.2f}" for l in LEGS)
+                  + f")  > 1 N {x['t1']:5.2f}초{sd}")
+        S = float(np.median([x["t20"] for x in rows]))
+        S1 = float(np.median([x["t1"] for x in rows]))
+        line = f"    가운데값 S = {S:.2f}초 · > 1 N {S1:.2f}초"
+        if not rows[0]["flat"]:
+            line += "  → " + ("훈련 자산에서도 정강이가 얹힌다" if S >= 3.9 else
+                              "훈련 자산에서는 얹히지 않는다" if S < 0.8 else "조금 얹힌다") + " (64-1 의 문턱 · 견줄 값 7.71초)"
+        print(line)
+
+
 if __name__ == "__main__":
     show = "--list" in sys.argv
+    if "--shin" in sys.argv:
+        shin_table([x for x in sys.argv[1:] if not x.startswith("--")])
+        sys.exit(0)
     if "--slip3" in sys.argv:
         slip3_table([x for x in sys.argv[1:] if not x.startswith("--")])
         sys.exit(0)

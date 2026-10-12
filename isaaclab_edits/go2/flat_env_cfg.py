@@ -600,6 +600,23 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         LIN_VEL_Y = 0.0
         if LIN_VEL_Y:
             self.commands.base_velocity.ranges.lin_vel_y = (-LIN_VEL_Y, LIN_VEL_Y)
+        #   CALF_CONTACT_W    정강이(종아리 마디)가 무엇에 닿으면 벌함 (README 63)
+        #     왜: 접촉 힘을 재 보니 내려갈 때 정강이가 칸 모서리에 얹힙니다 — 힘을 받은 시간의 20~32 % (62-4).
+        #     Go2 설정(rough_env_cfg.py)은 몸 닿음 벌(undesired_contacts)을 아예 끕니다 (= None).
+        #     함수는 Isaac Lab 의 undesired_contacts 그대로: 힘이 1 N 넘는 종아리 마디의 수를 셉니다.
+        #     훈련 쪽 로봇은 발(.*_foot)이 종아리와 따로라, 발 디딤은 이 벌에 들지 않습니다.
+        #     0.0 = 항을 넣지 않음(기본).
+        CALF_CONTACT_W = 0.0
+        if CALF_CONTACT_W:
+            import isaaclab.envs.mdp as _env_mdp
+            from isaaclab.managers import RewardTermCfg as _RewTerm2
+            from isaaclab.managers import SceneEntityCfg as _SceneEntityCfg2
+
+            self.rewards.calf_contact = _RewTerm2(
+                func=_env_mdp.undesired_contacts,
+                weight=CALF_CONTACT_W,
+                params={"sensor_cfg": _SceneEntityCfg2("contact_forces", body_names=".*_calf"), "threshold": 1.0},
+            )
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
