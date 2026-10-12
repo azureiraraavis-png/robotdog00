@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """feet_read.py — sim_go2.py 의 --feet-log 자취(CSV)를 읽어 헛발질을 셉니다. 시뮬레이터가 필요 없습니다.
 
-    python feet_read.py sim\\feet\\51_see_1400_up_0.18_at2.0.csv [...]   (--list 면 사건을 하나씩, --table 이면 묶음 표)
+    python feet_read.py sim\\feet\\51_see_1400_up_0.18_at2.0.csv [...]   (--list 면 사건을 하나씩, --table 이면 묶음 표,
+                                                                        --slip 이면 디딘 발의 미끄러짐 — --contacts 자취만, README 61)
 
  세는 것 (README 51-3 의 정의)
    턱 치기    발이 다음 칸의 세운 면에 닿은 채(면에서 1.5 cm 안) 디딤판 위 3 cm 넘는 높이에서 0.05초 넘게 멈춤
@@ -140,8 +141,111 @@ def table(files):
         print(f"    앞선 발 바뀜 {q('lead')}")
 
 
+F_ON = 20.0                    # 61: 이 힘(N)보다 세게 누르는 동안만 '디딘 발'로 셉니다
+STAIR_PAD = 0.30               # 61: 계단 구간 = 첫 칸 앞 30 cm ~ 끝 칸 끝
+
+
+def _rotvec(q1, q2):
+    """줄마다 종아리가 돈 양(세계 좌표 회전 벡터, rad) — q2 ⊗ q1⁻¹, 사원수 xyzw."""
+    x1, y1, z1, w1 = (-q1[:, 0], -q1[:, 1], -q1[:, 2], q1[:, 3])
+    x2, y2, z2, w2 = q2.T
+    w = w2 * w1 - x2 * x1 - y2 * y1 - z2 * z1
+    v = np.stack([w2 * x1 + x2 * w1 + y2 * z1 - z2 * y1,
+                  w2 * y1 - x2 * z1 + y2 * w1 + z2 * x1,
+                  w2 * z1 + x2 * y1 - y2 * x1 + z2 * w1], 1)
+    v = np.where(w[:, None] < 0, -v, v)
+    w = np.abs(w)
+    s = np.linalg.norm(v, axis=1)
+    ang = 2 * np.arctan2(s, w)
+    k = np.where(s > 1e-12, ang / np.maximum(s, 1e-12), 2.0)
+    return v * k[:, None]
+
+
+def slip(fn):
+    """61 — 디딘 발의 미끄러짐. 발마다 '닿는 점'의 수평 이동(cm)을, 수직 힘이 F_ON 넘는 동안만 더합니다.
+    닿는 점 = 발끝 공 중심 + 종아리가 돈 양 × (0, 0, −R0) — 공이 굴러서 생기는 중심 이동은 미끄러짐이 아니므로 뺍니다.
+    stairs = 발끝 x 가 계단 구간에 있을 때만, all = 판 전체.  --contacts 없이 적은 자취면 None."""
+    meta, a = load(fn)
+    if a.shape[1] < 48:
+        return None
+    steps, at, run = int(meta["steps"]), float(meta["at"]), float(meta["run"])
+    out = {"file": fn, "meta": meta, "legs": {}}
+    for i, leg in enumerate(LEGS):
+        c = 8 + 7 * i
+        f = tip(a[:, c:c + 3], a[:, c + 3:c + 7])
+        q = a[:, c + 3:c + 7]
+        dc = np.diff(f, axis=0) + np.cross(_rotvec(q[:-1], q[1:]), np.array([0.0, 0.0, -R0]))
+        dn = np.diff(f, axis=0)
+        fz = a[:, 36 + 3 * i + 2]
+        on = (fz[1:] > F_ON) & (fz[:-1] > F_ON)
+        xm = 0.5 * (f[1:, 0] + f[:-1, 0])
+        inst = on & (xm > at - STAIR_PAD) & (xm < at + steps * run) if steps else on & False
+        hs = np.linalg.norm(dc[:, :2], axis=1)
+        out["legs"][leg] = dict(stairs=float(hs[inst].sum() * 100), all=float(hs[on].sum() * 100),
+                                center_all=float(np.linalg.norm(dn[on, :2], axis=1).sum() * 100),
+                                n_on=int(np.sum(np.diff(on.astype(int)) == 1)),
+                                stairs_s=float(inst.sum() * DT))
+    return out
+
+
+def _who(meta):
+    p = meta.get("policy", "").replace(chr(92), "/").split("/")
+    run = p[-3] if len(p) >= 3 else "?"
+    ck = p[-1].replace("policy_", "").replace(".pt", "")
+    return run, ck
+
+
+def slip_table(files):
+    """61-3 — 판마다 미끄러짐, 묶음마다 가운데값, 그리고 61-3 의 두 물음을 미리 정한 문턱으로 읽습니다."""
+    grp = {}
+    for fn in files:
+        r = slip(fn)
+        if r is None:
+            print(f"  (접촉 힘 없음 — 건너뜀) {fn}")
+            continue
+        m, L = r["meta"], r["legs"]
+        run, ck = _who(m)
+        if int(m["steps"]) == 0:
+            print(f"  평지 {fn} · 판 전체 " + " ".join(f"{l} {L[l]['all']:.1f}" for l in LEGS)
+                  + f" cm · (구름을 빼지 않은 중심 이동 " + " ".join(f"{L[l]['center_all']:.1f}" for l in LEGS) + ")")
+            continue
+        key = (run, ck, "내려가기" if int(m["down"]) else "오르기", m["rise"])
+        fr = L["FL"]["stairs"] + L["FR"]["stairs"]
+        rr = L["RL"]["stairs"] + L["RR"]["stairs"]
+        grp.setdefault(key, []).append(dict(fn=fn, tot=fr + rr, fr=fr, rr=rr, ratio=fr / rr if rr > 0.1 else float("inf"),
+                                             all=sum(L[l]["all"] for l in LEGS), legs=L, t=L["FL"]["stairs_s"]))
+    print("디딘 발의 미끄러짐 (cm · 수직 힘 > %.0f N 인 동안 닿는 점의 수평 이동 · 계단 구간) — 판마다" % F_ON)
+    for key in sorted(grp):
+        print(f"\n  {key[0]} · {key[1]} · {key[2]} {key[3]} · {len(grp[key])}판")
+        for x in grp[key]:
+            L = x["legs"]
+            print(f"    {x['fn'].replace(chr(92), '/').split('/')[-1]:34s} 모두 {x['tot']:5.1f}  "
+                  + " ".join(f"{l} {L[l]['stairs']:4.1f}" for l in LEGS)
+                  + f"  앞÷뒤 {x['ratio']:4.2f}  (판 전체 {x['all']:5.1f})")
+        v = np.array([x["tot"] for x in grp[key]])
+        rt = np.array([x["ratio"] for x in grp[key]])
+        print(f"    가운데값  모두 {np.median(v):.1f} ({v.min():.1f}~{v.max():.1f})  앞÷뒤 {np.median(rt):.2f}")
+
+    def verdict(r, hi, lo, a, b):
+        return f"{r:.2f} → " + (a if r > 1.5 else b if r < 0.67 else "비슷하다")
+    best = [k for k in grp if k[0] == "2026-10-08_12-46-57" and k[1] == "1498"]
+    dn = [k for k in best if k[2] == "내려가기"]
+    up = [k for k in best if k[2] == "오르기"]
+    print("\n61-3 의 물음 (문턱은 docs 61-3 에 미리 적은 대로)")
+    if dn and up:
+        r1 = np.median([x["tot"] for x in grp[dn[0]]]) / max(np.median([x["tot"] for x in grp[up[0]]]), 1e-6)
+        print("  물음 1 · 1498 내려가기 ÷ 오르기 가운데값 = " + verdict(r1, 1.5, 0.67, "내려갈 때 더 미끄러진다", "오를 때 더 미끄러진다"))
+    allr = [x["ratio"] for k in grp if k[2] == "내려가기" for x in grp[k]]
+    if allr:
+        r2 = float(np.median(allr))
+        print(f"  물음 2 · 내려가기 {len(allr)}판의 앞÷뒤 가운데값 = " + verdict(r2, 1.5, 0.67, "앞발이 더 미끄러진다", "뒷발이 더 미끄러진다"))
+
+
 if __name__ == "__main__":
     show = "--list" in sys.argv
+    if "--slip" in sys.argv:
+        slip_table([x for x in sys.argv[1:] if not x.startswith("--")])
+        sys.exit(0)
     if "--table" in sys.argv:
         table([x for x in sys.argv[1:] if not x.startswith("--")])
         sys.exit(0)

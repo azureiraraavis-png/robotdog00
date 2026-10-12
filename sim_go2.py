@@ -251,6 +251,9 @@ ap.add_argument("--legs", action="store_true",
 #   세는 규칙을 **짐작으로 정하지 않으려고**, 먼저 발 넷의 자리를 0.01초마다 파일에 적어
 #   실제 자취를 보고 정합니다. 이름으로 고른 발 넷을 **섞지 않고** 그 순서대로 적습니다
 #   (feet_of 는 앞쪽부터 다시 줄을 세워서 어느 발인지가 사라집니다).
+ap.add_argument("--contacts", action="store_true",
+                help="종아리 넷(발이 붙은 마디)에 접촉 보고를 켜고, --feet-log 의 줄마다 발이 받는 힘(세계 좌표 N)을 덧붙입니다. "
+                     "끝에 네 발 수직 힘의 평균과 몸무게를 견줍니다 (README · docs 61)")
 ap.add_argument("--feet-log", dest="feet_log", default="",
                 help="발 넷의 자취를 적을 파일 ('auto' 면 이 파일 옆 sim\\feet\\ 에 이름을 지어 적습니다)")
 ap.add_argument("--clock", choices=["physics", "stage"], default="physics",
@@ -429,6 +432,69 @@ def _calf_find():
           f" · 읽는 법 {_feet_name} · 한 마디에 숫자 {arr.shape[-1]}개")
 
 
+_cviews = None            # 종아리마다 하나씩의 접촉 뷰 (FL FR RL RR)
+_cview_how = ""
+_c_sum_fz = 0.0           # 네 발 수직 힘의 합을 더한 것 (몸무게와 견줌)
+_c_n = 0
+
+
+def _contact_make():
+    """물리가 돈 뒤에 한 번 — 종아리마다 접촉 뷰를 만듭니다."""
+    global _cviews, _cview_how
+    _cviews = []
+    if not _contact_paths:
+        return
+    sv = None
+    for how in ("get_physics_sim_view", "get_simulation_view"):
+        fn = getattr(SimulationManager, how, None)
+        if fn is None:
+            continue
+        try:
+            sv = fn()
+            if sv is not None:
+                _cview_how = "SimulationManager." + how + "()"
+                break
+        except Exception:
+            continue
+    if sv is None:
+        try:
+            import omni.physics.tensors as _opt
+            sv = _opt.create_simulation_view("numpy")
+            sv.set_subspace_roots("/")
+            _cview_how = "omni.physics.tensors.create_simulation_view('numpy')"
+        except Exception as _e:
+            print(f" [접촉] ✖ 물리 뷰를 못 얻었습니다 ({type(_e).__name__}: {_e})")
+            return
+    try:
+        vs = [sv.create_rigid_contact_view(p, [], 0) for p in _contact_paths]
+        f = [as_numbers(v.get_net_contact_forces(1.0 / 200.0)).reshape(-1) for v in vs]
+        _cviews = vs
+        print(f" [접촉] 뷰 넷을 만들었습니다 ({_cview_how}) · 첫 읽기 Fz = "
+              + " · ".join(f"{x[2]:+.1f}" for x in f) + " N")
+    except Exception as _e:
+        print(f" [접촉] ✖ 접촉 뷰를 못 만들었습니다 ({type(_e).__name__}: {_e})")
+        _cviews = []
+
+
+def _contact_read():
+    """네 발이 받는 힘 (세계 좌표 · N) 12개. 못 읽으면 nan."""
+    global _c_sum_fz, _c_n
+    if not _cviews:
+        return (float("nan"),) * 12
+    out = []
+    for v in _cviews:
+        try:
+            x = as_numbers(v.get_net_contact_forces(1.0 / 200.0)).reshape(-1)[:3]
+            out += [float(x[0]), float(x[1]), float(x[2])]
+        except Exception:
+            out += [float("nan")] * 3
+    fz = out[2] + out[5] + out[8] + out[11]
+    if fz == fz:
+        _c_sum_fz += fz
+        _c_n += 1
+    return tuple(out)
+
+
 def _feet_log_step():
     """물리 걸음 둘에 한 번(0.01초) 몸통과 종아리 넷을 적습니다. 읽기만 합니다."""
     global _feet_tick
@@ -442,8 +508,11 @@ def _feet_log_step():
     bp, bq = robot.robot.get_world_poses()
     bp = as_numbers(bp).reshape(-1, 3)[0]
     bq = as_numbers(bq).reshape(-1, 4)[0]
-    feet_rows.append((clock(),) + tuple(float(v) for v in bp) + tuple(float(v) for v in bq)
-                     + tuple(float(v) for v in cv.reshape(-1)))
+    row = ((clock(),) + tuple(float(v) for v in bp) + tuple(float(v) for v in bq)
+           + tuple(float(v) for v in cv.reshape(-1)))
+    if args.contacts:
+        row = row + _contact_read()
+    feet_rows.append(row)
 
 
 def on_physics_step(step_size: float, context: object) -> None:
@@ -1284,6 +1353,38 @@ base_command = torch.zeros(3, device=args.device)
 _physics_callback_id = SimulationManager.register_callback(
     on_physics_step, IsaacEvents.POST_PHYSICS_STEP)
 
+# ── 접촉 보고 (--contacts · docs 61) ─────────────────────────
+#   PhysX 는 접촉 보고 API 가 붙은 강체에 대해서만 접촉 힘을 모아 줍니다. 그래서 재생하기 **전에**
+#   종아리 넷에 붙입니다. 이 API 는 힘을 '보고'만 하고 물리를 바꾸지 않는다고 봅니다 — 그래서
+#   --contacts 를 켠 판과 끈 판이 숫자 그대로 같은지를 첫 확인으로 잽니다.
+_contact_paths = []
+if args.contacts and not args.feet_log:
+    print(" [접촉] ✖ --contacts 는 --feet-log 와 함께 써야 합니다 (힘은 발 자취의 줄마다 적습니다) — 끕니다")
+    args.contacts = False
+if args.contacts:
+    try:
+        import omni.usd as _ousd2
+        from pxr import PhysxSchema, UsdPhysics
+        _cst = _ousd2.get_context().get_stage()
+        _want = {"FL_calf": None, "FR_calf": None, "RL_calf": None, "RR_calf": None}
+        for _prm in _cst.Traverse():
+            _pp = str(_prm.GetPath())
+            if not _pp.startswith(made["prim_path"] + "/"):
+                continue
+            if _prm.GetName() in _want and _want[_prm.GetName()] is None and _prm.HasAPI(UsdPhysics.RigidBodyAPI):
+                _cr = PhysxSchema.PhysxContactReportAPI.Apply(_prm)
+                _cr.CreateThresholdAttr().Set(0.0)
+                _want[_prm.GetName()] = _pp
+        _contact_paths = [_want[k] for k in ("FL_calf", "FR_calf", "RL_calf", "RR_calf")]
+        if None in _contact_paths:
+            print(f" [접촉] ✖ 종아리 넷을 다 못 찾았습니다 (강체로 찾은 것: {_want}) — 접촉 힘을 안 적습니다")
+            _contact_paths = []
+        else:
+            print(f" [접촉] 접촉 보고를 켰습니다: {' · '.join(_contact_paths)}")
+    except Exception as _e:
+        print(f" [접촉] ✖ 접촉 보고를 못 켰습니다 ({type(_e).__name__}: {_e})")
+        _contact_paths = []
+
 omni.timeline.get_timeline_interface().play()
 simulation_app.update()
 
@@ -1756,6 +1857,8 @@ while simulation_app.is_running():
 
     if args.feet_log and _calf_idx is None:
         _calf_find()              # 종아리 넷을 이름으로 찾아 둡니다 (한 번) — 그 뒤로 콜백이 적습니다
+        if args.contacts and _cviews is None:
+            _contact_make()
 
     # 구경 — 카메라가 개를 옆에서 따라갑니다 (0.05초마다 · --gui --cam follow 일 때만)
     if (args.gui and args.cam == "follow" and _set_cam is not None
@@ -2437,10 +2540,22 @@ else:
                          f" policy={args.policy}\n")
                 _f.write("t,bx,by,bz,bq0,bq1,bq2,bq3,"
                          + ",".join(f"{leg}_{c}" for leg in ("FL", "FR", "RL", "RR")
-                                    for c in ("px", "py", "pz", "q0", "q1", "q2", "q3")) + "\n")
+                                    for c in ("px", "py", "pz", "q0", "q1", "q2", "q3"))
+                         + ("," + ",".join(f"{leg}_{c}" for leg in ("FL", "FR", "RL", "RR")
+                                           for c in ("fx", "fy", "fz")) if args.contacts else "")
+                         + "\n")
                 for _r in feet_rows:
                     _f.write(",".join(f"{v:.5f}" for v in _r) + "\n")
             print(f" [발] 자취 {len(feet_rows)}줄을 적었습니다 → {_fp}")
+            if args.contacts:
+                try:
+                    _ms = as_numbers(robot.robot._physics_articulation_view.get_masses()).reshape(-1)
+                    _w = float(_ms.sum()) * 9.81
+                except Exception:
+                    _w = float("nan")
+                _mf = _c_sum_fz / _c_n if _c_n else float("nan")
+                print(f" [접촉] 네 발 수직 힘 평균 {_mf:.1f} N ({_c_n}번) · 몸무게 {_w:.1f} N"
+                      f" · 비 {(_mf / _w if _w == _w and _w else float('nan')):.3f}   (1.00 안팎이어야 합니다)")
         except Exception as _e:
             print(f" [발] ✖ 자취를 못 적었습니다 ({type(_e).__name__}: {_e})")
     try:
