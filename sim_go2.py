@@ -296,6 +296,20 @@ ap.add_argument("--lane-vy", type=float, default=0.0, dest="lane_vy",
                      "옆 명령 = --vy − lane_vy × 옆 벗어남 (±--vy-max 에서 자름) (README 57)")
 ap.add_argument("--vy-max", type=float, default=0.2, dest="vy_max",
                 help="옆 명령의 한계 m/s (기본 0.2 = 학습 때 연 범위)")
+# ★ 참에서 도는 계단 (2026-10-13, README 68) ★
+#   시설의 층간 계단: 한 층 20칸 = 10칸 · 참 · 10칸, 참에서 왼쪽으로 90도 + 90도 (올라갈 때).
+#   첫 단은 +x 로 오르고, 참에서 왼쪽(+y)으로 돌아, 둘째 단은 −x 로 오릅니다 (둘째 단은 첫 단의 왼쪽 옆).
+#   길잡이: 꺾은 줄 셋(첫 단 · 참 가로지르기 · 둘째 단)을 차례로 따라갑니다 — 도는 명령은 --hold-gain × 방향 차
+#   (학습의 heading 되먹임 0.5 와 같은 꼴), 옆 명령은 --lane-vy × 줄에서 벗어난 양. 꺾을 때는 앞 빠르기를 0.2 로 줄입니다.
+ap.add_argument("--switchback", action="store_true",
+                help="참에서 도는 계단 (10칸 · 참 · 10칸 · 왼쪽으로 180도). --down 이면 거꾸로 내려옵니다. --steps · --sill 과 같이 못 씀")
+ap.add_argument("--sb-steps", type=int, default=10, dest="sb_steps", help="한 단의 칸 수 (기본 10)")
+ap.add_argument("--sb-width", type=float, default=1.2, dest="sb_width", help="한 단의 폭 m (기본 1.2)")
+ap.add_argument("--sb-landing", type=float, default=1.2, dest="sb_landing", help="참의 깊이 m (기본 1.2)")
+ap.add_argument("--sb-gap", type=float, default=0.1, dest="sb_gap", help="두 단 사이 칸막이 두께 m (기본 0.1)")
+ap.add_argument("--sb-top", type=float, default=3.0, dest="sb_top", help="둘째 단 위 참의 깊이 m (기본 3.0)")
+ap.add_argument("--sb-walls", action=argparse.BooleanOptionalAction, default=True, dest="sb_walls",
+                help="바깥 벽 · 칸막이 · 참 끝 벽 (기본 켬 · --no-sb-walls 로 끔)")
 ap.add_argument("--hold-max", type=float, default=1.0,
                 dest="hold_max",
                 help="회전 명령 한계 rad/s (ang_vel_z 범위 기본값 1.0)")
@@ -985,6 +999,91 @@ if args.steps > 0:
     if args.yaw:
         print("        ✖ --yaw 와 같이 쓰면 계단을 등지고 걷습니다.")
 
+# ── 참에서 도는 계단 (--switchback · README 68) ──────────────
+SB = None
+if args.switchback:
+    if args.steps > 0 or args.sill > 0:
+        print(" ✖ --switchback 은 --steps · --sill 과 같이 못 씁니다 — 둘을 끕니다.")
+        args.steps = 0
+        args.sill = 0.0
+    from pxr import Gf as _SGf, UsdGeom as _SUsdGeom, UsdPhysics as _SUsdPhysics
+    _N, _r, _u = args.sb_steps, args.rise, args.run
+    _W, _D, _gp, _T, _wt = args.sb_width, args.sb_landing, args.sb_gap, args.sb_top, 0.10
+    _at = args.sill_at
+    _xt = _at + _N * _u          # 첫 단이 끝나고 참이 시작하는 곳
+    _xl = _xt + _D               # 참의 먼 끝 (벽)
+    _xf = _at - _T               # 둘째 단 위 참의 뒤 끝
+    _yB = _W + _gp               # 둘째 단의 가운데 줄
+    SB = dict(N=_N, rise=_r, run=_u, W=_W, D=_D, gap=_gp, T=_T, at=_at, xt=_xt, xl=_xl, xf=_xf, yB=_yB,
+              xc=_xt + _D / 2.0, ymid=_W / 2.0 + _gp / 2.0)
+    _bx = []   # (이름, x0, x1, y0, y1, 윗면 z, 바닥인가)
+    for _i in range(_N):                                    # 첫 단: i 번째 상자가 참 끝까지 뻗음 (겹쳐 쌓기)
+        _bx.append((f"A_{_i:02d}", _at + _i * _u, _xl, -_W / 2, _W / 2, (_i + 1) * _r, True))
+    _bx.append(("Landing_B", _xt, _xl, _W / 2, _yB + _W / 2, _N * _r, True))   # 참의 둘째 단 쪽 반
+    for _j in range(1, _N + 1):                             # 둘째 단: −x 로 오름, j 번째 상자가 위 참 끝까지
+        _bx.append((f"B_{_j:02d}", _xf, _xt - (_j - 1) * _u, _yB - _W / 2, _yB + _W / 2, (_N + _j) * _r, True))
+    if args.sb_walls:
+        _zt = 2 * _N * _r + 1.0
+        _bx += [("Wall_A", min(-1.0, _xf) - _wt, _xl + _wt, -_W / 2 - _wt, -_W / 2, _zt, False),
+                ("Wall_B", _xf - _wt, _xl + _wt, _yB + _W / 2, _yB + _W / 2 + _wt, _zt, False),
+                ("Wall_far", _xl, _xl + _wt, -_W / 2 - _wt, _yB + _W / 2 + _wt, _zt, False),
+                ("Divider", _xf - _wt, _xt, _W / 2, _W / 2 + _gp, _zt, False),
+                ("Wall_backB", _xf - _wt, _xf, _W / 2 + _gp, _yB + _W / 2, _zt, False)]
+    SB["boxes"] = _bx
+    for (_nm, _x0, _x1, _y0, _y1, _z1, _fl) in _bx:
+        _sp = define_prim(f"/World/Switchback/{_nm}", "Cube")
+        _sc = _SUsdGeom.Cube(_sp)
+        _sc.GetSizeAttr().Set(1.0)
+        _sc.GetExtentAttr().Set([_SGf.Vec3f(-0.5, -0.5, -0.5), _SGf.Vec3f(0.5, 0.5, 0.5)])
+        _sx = _SUsdGeom.Xformable(_sp)
+        _sx.ClearXformOpOrder()
+        _sx.AddTranslateOp().Set(_SGf.Vec3d((_x0 + _x1) / 2.0, (_y0 + _y1) / 2.0, _z1 / 2.0))
+        _sx.AddScaleOp().Set(_SGf.Vec3f(_x1 - _x0, _y1 - _y0, _z1))
+        _SUsdPhysics.CollisionAPI.Apply(_sp)
+    if args.down:   # 위 참에서 +x 로 둘째 단을 내려와 참에서 오른쪽으로 두 번 돌아 첫 단을 −x 로 내려감
+        SB["start"] = (_at - 0.8, _yB)
+        SB["path"] = [(_at - 0.8, _yB), (SB["xc"], _yB), (SB["xc"], 0.0), (_at - 1.5, 0.0)]
+    else:           # 바닥에서 +x 로 첫 단을 올라 참에서 왼쪽으로 두 번 돌아 둘째 단을 −x 로 오름
+        SB["start"] = (0.0, 0.0)
+        SB["path"] = [(0.0, 0.0), (SB["xc"], 0.0), (SB["xc"], _yB), (_xf + 0.8, _yB)]
+    print(f" [참 계단] {'내려가기' if args.down else '오르기'} · {_N}칸 + 참 + {_N}칸 · 높이 {_r:.3f} · 디딤 {_u:.2f}"
+          f" · 폭 {_W:.2f} · 참 깊이 {_D:.2f} · 칸막이 {_gp:.2f} · 벽 {'있음' if args.sb_walls else '없음'}")
+    print(f"        첫 단 x {_at:.2f}~{_xt:.2f} (y 0) · 참 x {_xt:.2f}~{_xl:.2f} · 둘째 단 x {_xt:.2f}~{_at + _u:.2f} (y {_yB:.2f})"
+          f" · 꼭대기 z {2 * _N * _r:.3f} · 상자 {len(_bx)}개")
+    print("        길잡이 줄: " + " → ".join(f"({_a:.2f}, {_b:.2f})" for _a, _b in SB["path"]))
+    if args.yaw:
+        print("        ✖ --yaw 는 이 무대에서 쓰지 않습니다 — 0 으로 둡니다.")
+        args.yaw = 0.0
+
+
+def sb_ground(x, y, walls=False):
+    """참 계단에서 (x, y) 의 높이 — 기본은 바닥만 (벽은 빼고), walls=True 면 벽 윗면까지 (스캔용)."""
+    z = 0.0
+    for (_nm, _x0, _x1, _y0, _y1, _z1, _fl) in SB["boxes"]:
+        if (_fl or walls) and _x0 <= x <= _x1 and _y0 <= y <= _y1 and _z1 > z:
+            z = _z1
+    return z
+
+
+def sb_where(x, y):
+    """참 계단에서 어디쯤인가 — (몇째 단 또는 참, 지난 칸 수 0..2N) . 뒷발 어림자리로 셉니다."""
+    N, u, at, xt = SB["N"], SB["run"], SB["at"], SB["xt"]
+    a_side = y < SB["ymid"]
+    if x >= xt:
+        return "참", N
+    if not args.down:
+        if a_side:
+            return "첫 단", max(0, min(N, int(math.floor((x - REAR_PAW - at) / u)) + 1)) if x - REAR_PAW >= at else 0
+        k = max(0, min(N, int(math.floor((xt - (x + REAR_PAW)) / u)) + 1)) if x + REAR_PAW <= xt else 0
+        return "둘째 단", N + k
+    if not a_side:
+        k = max(0, min(N, int(math.floor((x - REAR_PAW - (at + u)) / u)) + 1)) if x - REAR_PAW >= at + u else 0
+        return "둘째 단", k
+    top = at + (N - 1) * u
+    k = max(0, min(N, int(math.floor((top - (x + REAR_PAW)) / u)) + 1)) if x + REAR_PAW <= top else 0
+    return "첫 단", N + k
+
+
 # ── 물리 엔진 ───────────────────────────────────────────────
 #
 #   ★ 왜 이걸 만질 수 있게 하는가 ★
@@ -1132,6 +1231,10 @@ if args.steps > 0 and args.down:
     high += args.steps * args.rise      # 출발 참 위에 놓습니다
 Kind = SpotFlatTerrainPolicy if args.robot == "spot" else Go2FlatTerrainPolicy
 made = {"prim_path": "/World/" + args.robot, "position": [0, 0, high]}
+if SB is not None:
+    if args.down:
+        high += 2 * SB["N"] * SB["rise"]       # 위 참 위에 놓습니다
+    made["position"] = [SB["start"][0], SB["start"][1], high]
 if args.yaw:
     # z 축으로 도는 사원수 (w, x, y, z). 반각을 쓰는 것에 주의.
     half = math.radians(args.yaw) / 2.0
@@ -1249,6 +1352,9 @@ SEE_N = SEE_NX * SEE_NY
 
 def see_ground(x, y):
     """무대의 (x, y) 에서 바닥 높이 — 만든 상자들의 치수 그대로."""
+    if SB is not None:
+        # 참 계단: 위에서 아래로 쏜 광선이 처음 맞는 높이 — 벽 · 칸막이도 그 윗면으로 보입니다 (README 68-1)
+        return sb_ground(x, y, walls=True)
     if args.steps > 0 and abs(y) <= 1.5:
         return stair_ground(x)
     if args.sill > 0 and abs(y) <= 1.0 and sill_near <= x <= sill_far:
@@ -1795,6 +1901,19 @@ st_kmax = 0
 st_clr_min = None         # 몸통과 그 아래 바닥 사이 — 가장 좁았던 값
 st_off_max = None         # 계단 위에서 가운데 줄(출발한 줄)에서 가장 멀리 벗어난 값 (부호 있음 · m) — 흠 26
 st_cliff = None           # 눈 있는 정책에게 참 끝의 낭떠러지가 처음 보인 (때, x) — 흠 23
+# 참 계단 (--switchback · README 68)
+SB_SWITCH = 0.30          # 꺾는 곳에서 이만큼 앞에서 다음 줄로 넘어갑니다 (m)
+SB_SLOW, SB_SLOW_ANG = 0.20, 0.35   # 방향이 이만큼(rad) 넘게 틀어져 있으면 앞 빠르기를 0.2 로 (학습 범위의 아래 끝)
+sb_seg = 0                # 지금 따라가는 줄의 번호 (0 첫 줄 · 1 참 가로지르기 · 2 마지막 줄)
+sb_seg_at = {}            # {줄 번호: 그 줄로 넘어간 때}
+sb_k = 0                  # 가장 멀리 간 칸 (0..2N · 참 = N)
+sb_k_at = None            # 그 칸에 처음 닿은 때
+sb_where_now = ("", 0)
+sb_clr_min = None         # 몸통과 바로 아래 바닥 사이 — 가장 좁았던 값 (재는 구간)
+sb_offA = sb_offB = None  # 첫 단 · 둘째 단 위에서 그 단의 가운데 줄에서 가장 멀리 벗어난 값 (부호 · m)
+sb_land_in = sb_land_out = None   # 참에 들어선 때 · 다음 단의 첫 칸을 지난 때
+sb_xmax_land = None       # 참에서 가장 멀리 간 x (참 끝 벽까지 남은 거리를 냅니다)
+sb_goal_at = None         # 목표(위 참 · 바닥)에 닿은 때
 SEE_REACH = 0.9           # 스캔의 맨 앞 점까지 (SEE_X0 + SEE_STEP × 12 + SEE_FWD)
 st_still_from = None
 st_still_at = None
@@ -1897,7 +2016,7 @@ while simulation_app.is_running():
     #   여기서 고치는 것은 **명령**뿐입니다. 로봇을 붙잡거나 자리를
     #   바로잡지 않습니다 — 그러면 재는 것이 거짓이 됩니다.
     p_now = q_now = None
-    if args.hold or args.sill > 0 or args.steps > 0:
+    if args.hold or args.sill > 0 or args.steps > 0 or SB is not None:
         try:
             p_now, q_now = pose()
         except Exception:
@@ -1933,6 +2052,61 @@ while simulation_app.is_running():
             if since >= args.warm:      # 재는 구간만 셉니다
                 turn_asked.append(wz)
                 off_worst = max(off_worst, abs(off))
+
+    # ── 참 계단: 꺾은 줄 따라가기 · 어디까지 갔나 (--switchback · README 68) ──
+    if SB is not None and p_now is not None and q_now is not None:
+        _px, _py, _pz = float(p_now[0]), float(p_now[1]), float(p_now[2])
+        _yw = yaw_of(q_now)
+        _pts = SB["path"]
+        while True:
+            (_ax, _ay), (_bx2, _by2) = _pts[sb_seg], _pts[sb_seg + 1]
+            _L = math.hypot(_bx2 - _ax, _by2 - _ay)
+            _ux, _uy = (_bx2 - _ax) / _L, (_by2 - _ay) / _L
+            _t = (_px - _ax) * _ux + (_py - _ay) * _uy
+            if sb_seg + 2 < len(_pts) and _t >= _L - SB_SWITCH:
+                sb_seg += 1
+                sb_seg_at[sb_seg] = now
+                continue
+            break
+        _e = -(_px - _ax) * _uy + (_py - _ay) * _ux          # 줄의 왼쪽이 +
+        _off = wrapped(math.atan2(_uy, _ux) - _yw)
+        _wz = max(-args.hold_max, min(args.hold_max, args.hold_gain * _off))
+        _vw = -args.lane_vy * _e                               # 줄 쪽으로 (줄의 왼쪽 방향 성분)
+        _vy = _vw * (_uy * math.sin(_yw) + _ux * math.cos(_yw))  # 줄의 왼쪽 단위를 몸의 왼쪽에 비춤
+        _vy = max(-args.vy_max, min(args.vy_max, _vy))
+        _vx = args.speed if abs(_off) < SB_SLOW_ANG else min(args.speed, SB_SLOW)
+        base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
+        if since >= args.warm:
+            if args.hold and turn_asked and vy_asked:   # 위 --hold 칸이 이번 바퀴에 적은 것을 이 길잡이의 값으로 바꿉니다
+                vy_asked[-1], turn_asked[-1] = _vy, _wz
+            else:
+                vy_asked.append(_vy)
+                turn_asked.append(_wz)
+        sb_where_now = sb_where(_px, _py)
+        if sb_where_now[1] > sb_k:
+            sb_k, sb_k_at = sb_where_now[1], now
+        if since >= args.warm:
+            _clr = _pz - sb_ground(_px, _py)
+            sb_clr_min = _clr if sb_clr_min is None else min(sb_clr_min, _clr)
+        _aS = _py < SB["ymid"]
+        if SB["at"] <= _px <= SB["xt"]:
+            if _aS and (sb_offA is None or abs(_py) > abs(sb_offA)):
+                sb_offA = _py
+            if (not _aS) and (sb_offB is None or abs(_py - SB["yB"]) > abs(sb_offB)):
+                sb_offB = _py - SB["yB"]
+        if _px >= SB["xt"]:
+            if sb_land_in is None:
+                sb_land_in = now
+            sb_xmax_land = _px if sb_xmax_land is None else max(sb_xmax_land, _px)
+        _second = (not _aS) if not args.down else _aS
+        if sb_land_in is not None and sb_land_out is None and _second and _px <= SB["xt"] - SB["run"]:
+            sb_land_out = now
+        if sb_goal_at is None and sb_k >= 2 * SB["N"]:
+            if (not args.down and (not _aS) and _px <= SB["at"]
+                    and _pz - 2 * SB["N"] * SB["rise"] > 0.15):
+                sb_goal_at = now
+            if args.down and _aS and _px <= SB["at"] - 0.4 and _pz < 0.6:
+                sb_goal_at = now
 
     # ── 문턱을 언제 넘었는가 ────────────────────────────────
     #
@@ -2516,6 +2690,45 @@ else:
               + (f" · 최저 여유 {st_clr_min:.3f}" if st_clr_min is not None else "")
               + f" · {cond} · 디딤 {args.run:.2f}"
               + (" · ⚠낭떠러지 보임" if st_cliff is not None else "") + ")")
+    # ── 참 계단의 판정 (--switchback · README 68) ──────────────
+    if SB is not None:
+        _N2 = 2 * SB["N"]
+        _ex, _ey, _ez = float(p1[0]), float(p1[1]), float(p1[2])
+        _ew, _ek = sb_where(_ex, _ey)
+
+        def _sb_place(w, k):
+            return "참" if w == "참" else f"{w} {k if k <= SB['N'] else k - SB['N']}칸"
+        sb_fell = ((sb_clr_min is not None and sb_clr_min < 0.15)
+                   or (_ez - sb_ground(_ex, _ey)) < 0.15)
+        if sb_goal_at is not None and not sb_fell:
+            verdict = "바닥까지 내려옴" if args.down else "꼭대기까지 오름"
+        elif sb_goal_at is not None:
+            verdict = "목표에 닿았으나 넘어짐"
+        elif sb_fell:
+            verdict = f"★ {_sb_place(_ew, _ek)}에서 넘어짐"
+        elif sb_k_at is not None and now - sb_k_at > 5.0:
+            verdict = f"★ {_sb_place(*sb_where_now) if sb_where_now[1] == sb_k else _sb_place(_ew, _ek)}에서 멈춤"
+        else:
+            verdict = f"{_sb_place(_ew, _ek)}까지 — 시간이 모자랐습니다 (--seconds 를 늘리십시오)"
+        st_kmax = sb_k
+        _land = (sb_land_out - sb_land_in) if (sb_land_in is not None and sb_land_out is not None) else None
+        _wall = (SB["xl"] - sb_xmax_land) if sb_xmax_land is not None else None
+        st_off_max = None
+        for _o in (sb_offA, sb_offB):
+            if _o is not None and (st_off_max is None or abs(_o) > abs(st_off_max)):
+                st_off_max = _o
+        print()
+        print(f"     >>> SWITCHBACK {'DOWN ' if args.down else ''}2×{SB['N']}×{args.rise:.2f} m : {verdict}"
+              f"  (간 칸 {sb_k}/{_N2} · 줄 {sb_seg + 1}/{len(SB['path']) - 1}"
+              + (f" · 목표까지 {sb_goal_at - began:.1f}초" if sb_goal_at is not None else "") + ")")
+        print("       단 위에서 가운데 줄에서 벗어난 가장 큰 값  "
+              + f"첫 단 {('%+.1f cm' % (sb_offA * 100)) if sb_offA is not None else '—'}"
+              + f" · 둘째 단 {('%+.1f cm' % (sb_offB * 100)) if sb_offB is not None else '—'}"
+              + f"   (단 폭 {SB['W']:.2f} m · 벽까지 {SB['W'] / 2 * 100:.0f} cm)")
+        print("       참  " + (f"머문 시간 {_land:.1f}초" if _land is not None else "머문 시간 —")
+              + (f" · 참 끝 벽까지 남은 거리(몸 중심) {_wall * 100:.0f} cm" if _wall is not None else "")
+              + (f" · 몸통-바닥 최저 {sb_clr_min:.3f} m" if sb_clr_min is not None else "")
+              + "   · 줄을 넘긴 때 " + (", ".join(f"{k}번 {t - began:.1f}초" for k, t in sorted(sb_seg_at.items())) or "—"))
     if args.feet_log:
         try:
             import os as _os2
@@ -2526,9 +2739,10 @@ else:
                     (args.tag or "feet"),
                     ("see" if see_on else "blind"),
                     _pn[-1].replace("policy_", "").replace(".pt", ""),
-                    ("down" if (args.steps > 0 and args.down) else
+                    ("sbdown" if (SB is not None and args.down) else "sbup" if SB is not None else
+                     "down" if (args.steps > 0 and args.down) else
                      "up" if args.steps > 0 else "sill" if args.sill > 0 else "flat"),
-                    f"{(args.rise if args.steps > 0 else args.sill):.2f}",
+                    f"{(args.rise if (args.steps > 0 or SB is not None) else args.sill):.2f}",
                     f"at{args.sill_at:.1f}"]) + ".csv"
                 _fp = _os2.path.join(_os2.path.dirname(_os2.path.abspath(__file__)),
                                      "sim", "feet", _nm)
@@ -2566,26 +2780,28 @@ else:
                 _os.path.dirname(_os.path.abspath(__file__)), "sim", "runs.tsv")
             _g = globals()
             _pol = "/".join(args.policy.replace("\\", "/").split("/")[-3:]) if args.policy else "(기본)"
-            _mode = ("down" if (args.steps > 0 and args.down) else
+            _mode = ("sb-down" if (SB is not None and args.down) else "sb-up" if SB is not None else
+                     "down" if (args.steps > 0 and args.down) else
                      "stairs" if args.steps > 0 else
                      "sill" if args.sill > 0 else "flat")
+            _sbk = SB is not None
             _row = [
                 ("when", _time.strftime("%Y-%m-%d %H:%M:%S")),
                 ("tag", args.tag),
                 ("policy", _pol),
                 ("mode", _mode),
-                ("rise", f"{args.rise if args.steps > 0 else args.sill:.2f}"),
-                ("steps", str(args.steps)),
+                ("rise", f"{args.rise if (args.steps > 0 or _sbk) else args.sill:.2f}"),
+                ("steps", str(2 * SB["N"] if _sbk else args.steps)),
                 ("at", f"{args.sill_at:.2f}"),
                 ("landing", f"{args.landing:.1f}"),
                 ("seconds", f"{args.seconds:.0f}"),
                 ("hold", "1" if args.hold else "0"),
                 ("see", "1" if see_on else "0"),
                 ("verdict", str(_g.get("verdict", "")) if _mode != "flat" else ""),
-                ("kmax", str(_g.get("st_kmax", "")) if args.steps > 0 else ""),
+                ("kmax", str(_g.get("st_kmax", "")) if (args.steps > 0 or _sbk) else ""),
                 ("per_step", (f"{per:.2f}" if (args.steps > 0 and _g.get("per") is not None) else "")),
                 ("gained", (f"{gained:+.3f}" if args.steps > 0 else "")),
-                ("clr_min", (f"{st_clr_min:.3f}" if (args.steps > 0 and st_clr_min is not None) else "")),
+                ("clr_min", (f"{sb_clr_min:.3f}" if (_sbk and sb_clr_min is not None) else f"{st_clr_min:.3f}" if (args.steps > 0 and st_clr_min is not None) else "")),
                 ("clr_end", (f"{clr_end:.3f}" if args.steps > 0 else "")),
                 ("x_end", f"{float(p1[0]):.3f}"),
                 ("z_end", f"{float(p1[2]):.3f}"),
@@ -2598,12 +2814,18 @@ else:
                 ("clock", args.clock),
                 ("side_w_cm", f"{side_w * 100:+.1f}"),
                 ("yaw0_off", f"{yaw0_off:+.1f}"),
-                ("st_off_max_cm", (f"{st_off_max * 100:+.1f}" if (args.steps > 0 and st_off_max is not None) else "")),
+                ("st_off_max_cm", (f"{st_off_max * 100:+.1f}" if ((args.steps > 0 or _sbk) and st_off_max is not None) else "")),
                 ("hold_gain", f"{args.hold_gain:g}"),
                 ("aim", args.aim),
                 ("lane_gain", f"{args.lane_gain:g}"),
                 ("vy", f"{args.vy:g}"),
                 ("lane_vy", f"{args.lane_vy:g}"),
+                ("sb_offA_cm", (f"{sb_offA * 100:+.1f}" if (_sbk and sb_offA is not None) else "")),
+                ("sb_offB_cm", (f"{sb_offB * 100:+.1f}" if (_sbk and sb_offB is not None) else "")),
+                ("sb_land_s", (f"{_land:.1f}" if (_sbk and _land is not None) else "")),
+                ("sb_wall_cm", (f"{_wall * 100:.0f}" if (_sbk and _wall is not None) else "")),
+                ("sb_goal_s", (f"{sb_goal_at - began:.1f}" if (_sbk and sb_goal_at is not None) else "")),
+                ("sb_shape", (f"w{SB['W']:g}_l{SB['D']:g}_{'walls' if args.sb_walls else 'open'}" if _sbk else "")),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
