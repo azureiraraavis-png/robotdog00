@@ -326,6 +326,14 @@ ap.add_argument("--sb-wait", type=str, default="", dest="sb_wait",
 ap.add_argument("--sb-wait-s", type=float, default=10.0, dest="sb_wait_s", help="한 번 기다리는 초 (기본 10)")
 ap.add_argument("--sb-wait-ramp", type=float, default=0.0, dest="sb_wait_ramp",
                 help="멈출 때 앞 빠르기를 이 초 동안 0.2 (학습한 가장 느린 걸음) 까지 줄인 뒤 0 으로 (기본 0 = 한 번에 · README 72-3)")
+ap.add_argument("--sb-seed", type=int, default=None, dest="sb_seed",
+                help="참 계단 · 여러 층: 사람과 문을 이 씨앗으로 무작위로 넣음 (README 74). 기본 없음")
+ap.add_argument("--sb-people-max", type=int, default=3, dest="sb_people_max", help="한 판에 사람 일 최대 (기본 3 · 사이안 님 10/14)")
+ap.add_argument("--sb-doors-max", type=int, default=3, dest="sb_doors_max", help="한 판에 문 열림 최대 (기본 3)")
+ap.add_argument("--sb-closed", type=str, default="2,7", dest="sb_closed", help="늘 닫힌 층 (기본 2,7 · 시설)")
+ap.add_argument("--sb-door-w", type=float, default=0.90, dest="sb_door_w", help="문 폭 m (기본 0.90 · 짐작 — 재면 바꿈)")
+ap.add_argument("--sb-door-y", type=float, default=None, dest="sb_door_y",
+                help="문 가운데의 y (층 계단참 뒤 벽 위 · 기본 = 참 폭의 가운데 · 짐작)")
 ap.add_argument("--sb-peek", action=argparse.BooleanOptionalAction, default=True, dest="sb_peek",
                 help="--gui 일 때 카메라 쪽 바깥 벽과 칸막이를 **그림에서만** 감춤 (부딪힘은 그대로 · 기본 켬 · README 69-3)")
 ap.add_argument("--hold-max", type=float, default=1.0,
@@ -1219,6 +1227,311 @@ def sb_where(x, y, z=None, yaw=None):
     return "첫 단", N + k
 
 
+# ─────────────────────────────────────────────────────────────
+#  사람과 문 (--sb-seed · README 74)
+#
+#  씨앗 하나로 그 판의 일(사람 · 문짝)이 모두 정해집니다 — 같은 씨앗 = 같은 판.
+#  사람 · 문짝은 엔진이 움직이는 물체(키네마틱)입니다. 개를 밀 수 있으니, 사람은 개와 가까워지면
+#  비키거나 섭니다 (사람이 개를 밀어 넘어뜨리는 일은 이 판의 물음이 아님 · 74-0).
+#  개는 74 에서 아직 앞을 보고 서지 않습니다 (75). 높이 스캔에는 사람 · 문짝이 벽처럼 보입니다.
+# ─────────────────────────────────────────────────────────────
+SBX = None
+SBX_PW, SBX_PD, SBX_PH = 0.45, 0.30, 1.70     # 사람: 어깨 폭 · 두께 · 키 (m)
+SBX_DT, SBX_DH = 0.05, 2.00                   # 문짝: 두께 · 높이 (m)
+SBX_RL, SBX_RW = 0.70, 0.31                   # 개의 몸 (재기용 네모): 길이 · 폭 (m)
+
+
+def _sbx_rect_pts(cx, cy, yaw, L, W):
+    c, s = math.cos(yaw), math.sin(yaw)
+    out = []
+    for a in (-0.5, 0.0, 0.5):
+        for b in (-0.5, 0.0, 0.5):
+            if a == 0.0 and b == 0.0:
+                continue
+            u, v = a * L, b * W
+            out.append((cx + u * c - v * s, cy + u * s + v * c))
+    return out
+
+
+def _sbx_rect_dist(px, py, cx, cy, yaw, L, W):
+    """점에서 돌린 네모까지 거리 (안이면 음수)."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    dx, dy = px - cx, py - cy
+    u, v = dx * c + dy * s, -dx * s + dy * c
+    qx, qy = abs(u) - L / 2.0, abs(v) - W / 2.0
+    out = math.hypot(max(qx, 0.0), max(qy, 0.0))
+    return out + min(max(qx, qy), 0.0)
+
+
+def _sbx_clear(rx, ry, ryaw, cx, cy, yaw, L, W):
+    """개의 몸 네모와 물체 네모 사이 거리의 어림 (개 가장자리 점 8개 · 0 이하면 닿음)."""
+    d = min(_sbx_rect_dist(px, py, cx, cy, yaw, L, W) for px, py in _sbx_rect_pts(rx, ry, ryaw, SBX_RL, SBX_RW))
+    d2 = min(_sbx_rect_dist(px, py, rx, ry, ryaw, SBX_RL, SBX_RW) for px, py in _sbx_rect_pts(cx, cy, yaw, L, W))
+    return min(d, d2)
+
+
+def sbx_make():
+    import random as _random
+    from pxr import Gf as _XGf, UsdGeom as _XGeom, UsdPhysics as _XPhys
+    rng = _random.Random(args.sb_seed)
+    P = SB["path"]
+    cum = [0.0]
+    for (ax, ay), (bx, by) in zip(P[:-1], P[1:]):
+        cum.append(cum[-1] + math.hypot(bx - ax, by - ay))
+    tot_s = cum[-1]
+
+    def pos(s):
+        s = max(0.0, min(tot_s, s))
+        for i in range(len(P) - 1):
+            if s <= cum[i + 1] or i == len(P) - 2:
+                (ax, ay), (bx, by) = P[i], P[i + 1]
+                L = max(cum[i + 1] - cum[i], 1e-9)
+                f = (s - cum[i]) / L
+                return ax + (bx - ax) * f, ay + (by - ay) * f, math.atan2(by - ay, bx - ax)
+    # 길을 따라 바닥 높이 (몸 아래 처음 맞는 바닥 · 2 cm 마다)
+    prof, zg = [], (SB["K"] * SB["H"] if args.down else 0.0)
+    n = int(tot_s / 0.02) + 2
+    for i in range(n):
+        x, y, _h = pos(i * 0.02)
+        zg = _sb_ground_multi(x, y, False, zg + 0.35)
+        prof.append(zg)
+
+    def ground(s):
+        return prof[max(0, min(len(prof) - 1, int(round(s / 0.02))))]
+
+    def body(name, sx, sy, sz, color):
+        pr = define_prim(f"/World/SBX/{name}", "Cube")
+        cb = _XGeom.Cube(pr)
+        cb.GetSizeAttr().Set(1.0)
+        cb.GetExtentAttr().Set([_XGf.Vec3f(-0.5, -0.5, -0.5), _XGf.Vec3f(0.5, 0.5, 0.5)])
+        cb.CreateDisplayColorAttr([_XGf.Vec3f(*color)])
+        xf = _XGeom.Xformable(pr)
+        xf.ClearXformOpOrder()
+        t, r, sc = xf.AddTranslateOp(), xf.AddRotateZOp(), xf.AddScaleOp()
+        t.Set(_XGf.Vec3d(0.0, 0.0, -30.0))
+        r.Set(0.0)
+        sc.Set(_XGf.Vec3f(sx, sy, sz))
+        _XPhys.CollisionAPI.Apply(pr)
+        _XPhys.RigidBodyAPI.Apply(pr).CreateKinematicEnabledAttr(True)
+        return {"prim": pr, "path": f"/World/SBX/{name}", "t": t, "r": r, "Gf": _XGf}
+
+    K, N, H = SB["K"], SB["N"], SB["H"]
+    tot = 2 * N * K
+    closed = {int(v) for v in args.sb_closed.split(",") if v.strip()}
+    doors = {}
+    _yc = (-SB["W"] / 2.0 + SB["yB"] + SB["W"] / 2.0) / 2.0 if args.sb_door_y is None else args.sb_door_y
+    for f in range(2, K + 2):                     # 층 계단참 = 2층 ~ (K+1)층 · 뒤 벽 x = xF
+        hy = _yc - args.sb_door_w / 2.0           # 경첩 (y 가 작은 쪽)
+        d = body(f"Door_F{f}", args.sb_door_w, SBX_DT, SBX_DH, (0.55, 0.36, 0.20))
+        d.update({"f": f, "hx": SB["xF"] + SBX_DT / 2.0 + 0.005, "hy": hy, "z0": (f - 1) * H + 0.01,
+                  "ang": 0.0, "closed": f in closed, "q": [], "now": None, "near": None})
+        doors[f] = d
+    # 일 정하기 — 진행(칸)으로 깨웁니다 (사람: 1 ~ 최대 · 문: 1 ~ 최대 · 열 수 있는 층에서만)
+    ev_p, ev_d = [], []
+    if args.sb_people_max > 0:
+        for _ in range(rng.randint(1, args.sb_people_max)):
+            ev_p.append({"k": rng.randint(3, max(3, tot - 6)), "kind": rng.choice(["stand", "oncoming", "ahead"]),
+                         "u": rng.random(), "v": rng.random(), "w": rng.random()})
+        ev_p.sort(key=lambda e: e["k"])
+    ok_f = []
+    for f in doors:
+        kf = (f - 1) * 2 * N if not args.down else tot - (f - 1) * 2 * N
+        if not doors[f]["closed"] and kf > 3:
+            ok_f.append((f, kf))
+    if args.sb_doors_max > 0 and ok_f:
+        for _ in range(rng.randint(1, args.sb_doors_max)):
+            f, kf = rng.choice(ok_f)
+            ev_d.append({"k": max(1, kf - rng.randint(1, 5)), "f": f, "hold": 3.0 + 5.0 * rng.random(),
+                         "out": rng.random() < 0.5, "w": rng.random()})
+        ev_d.sort(key=lambda e: e["k"])
+    person = body("Person", SBX_PD, SBX_PW, SBX_PH, (0.20, 0.45, 0.80))
+    person.update({"on": None})
+    return {"rng": rng, "pos": pos, "ground": ground, "cum": cum, "tot_s": tot_s, "doors": doors, "person": person,
+            "ev_p": ev_p, "ev_d": ev_d, "log": [], "clr_p": None, "clr_d": None, "checked": False}
+
+
+def _sbx_door_xy(d):
+    a = math.radians(d["ang"])                    # 0 = 닫힘 (+y 로 누움) · 90 = 다 열림 (+x · 참 안쪽)
+    ux, uy = math.sin(a), math.cos(a)
+    w = args.sb_door_w
+    return d["hx"] + ux * w / 2.0, d["hy"] + uy * w / 2.0, math.atan2(uy, ux)
+
+
+def sbx_blocks(x, y, zref):
+    """높이 스캔: (x, y) 에 사람 · 문짝이 몸 높이 언저리에 있으면 True (벽처럼 봄)."""
+    if SBX is None:
+        return False
+    p = SBX["person"]
+    if p["on"] is not None:
+        cx, cy, yaw, zc = p["on"]["xyz"]
+        if abs(zc - zref) <= SBX_PH / 2.0 + SB_SEE_UP and _sbx_rect_dist(x, y, cx, cy, yaw, SBX_PD, SBX_PW) <= 0.0:
+            return True
+    for d in SBX["doors"].values():
+        if abs(d["z0"] + SBX_DH / 2.0 - zref) <= SBX_DH / 2.0 + SB_SEE_UP:
+            cx, cy, yaw = _sbx_door_xy(d)
+            if _sbx_rect_dist(x, y, cx, cy, yaw, args.sb_door_w, SBX_DT) <= 0.0:
+                return True
+    return False
+
+
+def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
+    """한 바퀴마다: 일 깨우기 · 사람과 문짝 움직이기 · 개와의 거리 재기."""
+    X = SBX
+    p = X["person"]
+    dt = 0.0 if X.get("t_last") is None else max(0.0, min(0.1, now - X["t_last"]))
+    X["t_last"] = now
+    Gf = p["Gf"]
+    # ── 문 ──
+    while X["ev_d"] and sb_k >= X["ev_d"][0]["k"]:
+        e = X["ev_d"].pop(0)
+        X["doors"][e["f"]]["q"].append(e)
+    for d in X["doors"].values():
+        if d["now"] is None and d["q"]:
+            d["now"] = dict(d["q"].pop(0), t0=now, phase="open")
+            X["log"].append(f"d{d['f']}@{t_run:.1f}")
+            print(f" [문] {t_run:.1f}초 · {d['f']}층 문이 열립니다 ({d['now']['hold']:.1f}초 열려 있음"
+                  + (" · 사람이 나옴" if d["now"]["out"] else "") + f") · 개는 {sb_where_now[0]}")
+        ev = d["now"]
+        if ev is not None:
+            age = now - ev["t0"]
+            if ev["phase"] == "open":
+                d["ang"] = min(90.0, 90.0 * age / 2.0)
+                if age >= 2.0:
+                    ev["phase"], ev["t0"] = "hold", now
+                    if not d.get("checked"):              # 다 열린 문짝을 위에서 쏴서 엔진의 부딪힘판도 따라왔는가
+                        d["checked"] = True
+                        try:
+                            from omni.physx import get_physx_scene_query_interface as _gq
+                            _cx, _cy, _yw0 = _sbx_door_xy(dict(d, ang=90.0))
+                            hit = _gq().raycast_closest((float(_cx), float(_cy), float(d["z0"] + SBX_DH + 0.5)), (0.0, 0.0, -1.0), 1.5)
+                            hp = str(hit.get("collision", "")) if hit and hit.get("hit") else ""
+                            print(f" [문] 엔진 확인 {'✔' if hp.startswith(d['path']) else '✖'} — 다 열린 문짝 위에서 쏜 광선이 맞은 것: {hp or '없음'}")
+                        except Exception as _e:
+                            print(f" [문] 엔진 확인 못 함 ({type(_e).__name__}: {_e})")
+                    if ev["out"] and p["on"] is None:   # 문에서 사람이 나와 참으로 1 m 걸어 들어옴
+                        X["ev_p"].insert(0, {"k": -1, "kind": "door", "f": d["f"], "u": ev["w"], "v": 0.5, "w": 0.5})
+            elif ev["phase"] == "hold" and age >= ev["hold"]:
+                ev["phase"], ev["t0"] = "close", now
+            elif ev["phase"] == "close":
+                d["ang"] = max(0.0, 90.0 - 90.0 * age / 2.0)
+                if age >= 2.0:
+                    d["ang"], d["now"] = 0.0, None
+                    print(f" [문] {t_run:.1f}초 · {d['f']}층 문이 닫혔습니다")
+        cx, cy, yaw = _sbx_door_xy(d)
+        d["t"].Set(Gf.Vec3d(cx, cy, d["z0"] + SBX_DH / 2.0))
+        d["r"].Set(math.degrees(yaw))
+        if abs(d["z0"] - (rz - 0.30)) < 1.0:
+            c = _sbx_clear(rx, ry, ryaw, cx, cy, yaw, args.sb_door_w, SBX_DT)
+            X["clr_d"] = c if X["clr_d"] is None else min(X["clr_d"], c)
+    # ── 사람 (한 번에 한 명) ──
+    if p["on"] is None and X["ev_p"] and (X["ev_p"][0]["k"] < 0 or sb_k >= X["ev_p"][0]["k"]):
+        e = X["ev_p"].pop(0)
+        on = {"kind": e["kind"], "t0": now, "lat": 0.0, "state": "go", "xyz": None, "check": False}
+        if e["kind"] == "stand":
+            on.update(s=s_r + 2.5 + 1.5 * e["u"], ds=0.0, lat=-0.25 + 0.5 * e["v"], life=5.0 + 15.0 * e["w"])
+        elif e["kind"] == "oncoming":
+            on.update(s=s_r + 4.0 + 2.0 * e["u"], ds=-0.5, life=60.0)
+        elif e["kind"] == "ahead":
+            on.update(s=s_r + 1.5 + 1.0 * e["u"], ds=0.18 + 0.06 * e["v"], life=60.0)
+        else:                                       # 문에서 나온 사람: 문 앞 길 위에서 개 쪽으로
+            d = X["doors"][e["f"]]
+            best, bs = 1e9, s_r
+            for i in range(0, int(X["tot_s"] / 0.05) + 1):
+                x, y, _h = X["pos"](i * 0.05)
+                if abs(X["ground"](i * 0.05) - (d["z0"] - 0.01)) < 0.05:
+                    dd = math.hypot(x - (d["hx"] + 0.6), y - (d["hy"] + args.sb_door_w / 2.0))
+                    if dd < best:
+                        best, bs = dd, i * 0.05
+            on.update(s=bs, ds=(-0.5 if bs > s_r else 0.5), life=30.0)
+        if on["s"] >= X["tot_s"] - 0.3 or on["s"] <= 0.3:
+            print(f" [사람] {t_run:.1f}초 · {on['kind']} — 길 끝 너머라 건너뜁니다")
+        else:
+            p["on"] = on
+            X["log"].append(f"p:{on['kind']}@{t_run:.1f}")
+            _x, _y, _h = X["pos"](on["s"])
+            print(f" [사람] {t_run:.1f}초 · " + {"stand": "서 있는 사람", "oncoming": "마주 오는 사람", "ahead": "앞서 가는 사람",
+                                                 "door": "문에서 나온 사람"}[on["kind"]]
+                  + f" · 개 앞 {on['s'] - s_r:+.1f} m (길 따라) · ({_x:.2f}, {_y:.2f}) · 개는 {sb_where_now[0]}")
+    on = p["on"]
+    if on is not None:
+        age = now - on["t0"]
+        gap = on["s"] - s_r                          # 길 따라 개보다 얼마나 앞인가 (+ 앞)
+        cx, cy, yaw = X["pos"](on["s"])
+        nx, ny = -math.sin(yaw), math.cos(yaw)      # 길의 왼쪽
+        px_, py_ = cx + nx * on["lat"], cy + ny * on["lat"]
+        clr = _sbx_clear(rx, ry, ryaw, px_, py_, yaw, SBX_PD, SBX_PW)
+        if abs(X["ground"](on["s"]) - (rz - 0.30)) > 1.0:   # 다른 층 높이 (위 · 아래 단) 면 안 닿음
+            clr = 9.0
+        # 비키기 (사이안 님 10/14: 사람이 옆으로 비켜 가게) — 마주 오거나 앞서 가는 사람이 개와 2.5 m (앞서 가면 1.2 m) 안이면 단의 바깥쪽으로
+        side_max = SB["W"] / 2.0 - SBX_PW / 2.0 - 0.02
+        if on["kind"] in ("oncoming", "door") and 0.0 < gap < 2.5 and on["state"] == "go":
+            on["state"] = "yield"
+            on["side"] = -1.0 if e_r > 0 else 1.0
+            print(f" [사람] {t_run:.1f}초 · 비켜 섭니다 ({'왼' if on['side'] > 0 else '오른'}쪽 · 개와 {clr * 100:.0f} cm)")
+        if on["kind"] == "ahead" and 0.0 < gap < 1.2 and on["state"] == "go":
+            on["state"] = "yield"
+            on["side"] = -1.0 if e_r > 0 else 1.0
+            print(f" [사람] {t_run:.1f}초 · 앞서 가다 비켜 줍니다 ({'왼' if on['side'] > 0 else '오른'}쪽 · 개와 {clr * 100:.0f} cm)")
+        if on["state"] == "yield":
+            tgt = on["side"] * side_max
+            on["lat"] += max(-0.5 * dt, min(0.5 * dt, tgt - on["lat"]))
+        # 개를 밀지 않기: 10 cm 안이면 그 자리에 섬
+        moving = on["ds"]
+        if on["kind"] == "ahead" and on["state"] == "yield":
+            moving = 0.08
+        frozen = clr < 0.10
+        if frozen and not on.get("frozen"):
+            on["fz0"] = now
+            print(f" [사람] {t_run:.1f}초 · 개와 {clr * 100:.0f} cm — 사람이 멈춥니다")
+        on["frozen"] = frozen
+        if frozen and now - on.get("fz0", now) >= 15.0 and on["kind"] != "stand":   # 15초를 기다려도 못 지나가면 돌아감
+            on["life"], on["gaveup"] = 0.0, True
+        if not frozen:
+            on["s"] += moving * dt
+        # 사라지기: 수명 · 개를 지나 3 m · 길 끝
+        gone = (age >= on["life"] or (on["ds"] < 0 and gap < -3.0) or (on["kind"] == "ahead" and gap < -3.0)
+                or on["s"] <= 0.05 or on["s"] >= X["tot_s"] - 0.05)
+        cx, cy, yaw = X["pos"](on["s"])
+        nx, ny = -math.sin(yaw), math.cos(yaw)
+        px_, py_ = cx + nx * on["lat"], cy + ny * on["lat"]
+        zc = X["ground"](on["s"]) + SBX_PH / 2.0 + 0.005
+        on["xyz"] = (px_, py_, yaw, zc)
+        X["clr_p"] = clr if X["clr_p"] is None else min(X["clr_p"], clr)
+        if gone:
+            p["t"].Set(Gf.Vec3d(0.0, 0.0, -30.0))
+            print(f" [사람] {t_run:.1f}초 · " + ("15초를 기다려도 못 지나가 돌아갑니다" if on.get("gaveup") else "사라집니다")
+                  + f" (개와 가장 가까웠던 거리 {X['clr_p'] * 100:.0f} cm · 지금까지)")
+            p["on"] = None
+        else:
+            p["t"].Set(Gf.Vec3d(px_, py_, zc))
+            p["r"].Set(math.degrees(yaw))
+            if not on["check"] and age >= 0.5:      # 엔진의 부딪힘판도 따라왔는가 — 위에서 광선을 쏴서 봅니다
+                on["check"] = True
+                try:
+                    from omni.physx import get_physx_scene_query_interface as _gq
+                    hit = _gq().raycast_closest((float(px_), float(py_), float(zc + SBX_PH)), (0.0, 0.0, -1.0), 3.0)
+                    hp = str(hit.get("collision", "")) if hit and hit.get("hit") else ""
+                    ok = hp.startswith(p["path"])
+                    if not X["checked"]:
+                        print(f" [사람] 엔진 확인 {'✔' if ok else '✖'} — 위에서 쏜 광선이 맞은 것: {hp or '없음'}")
+                    X["checked"] = X["checked"] or ok
+                except Exception as _e:
+                    print(f" [사람] 엔진 확인 못 함 ({type(_e).__name__}: {_e})")
+
+
+if SB is not None and args.sb_seed is not None:
+    if not SB.get("multi"):
+        print(" ✖ --sb-seed (사람 · 문) 는 여러 층 무대(--sb-floors 2 이상 또는 --sb-chamfer)에서만 씁니다 — 끕니다")
+    else:
+        SBX = sbx_make()
+        print(f" [사람 · 문] 씨앗 {args.sb_seed} · 사람 {len(SBX['ev_p'])} · 문 열림 {len(SBX['ev_d'])} · 닫힌 층 {args.sb_closed or '없음'}"
+              f" · 문 폭 {args.sb_door_w:.2f} m · 문 가운데 y {(SBX['doors'][2]['hy'] + args.sb_door_w / 2.0):.2f}")
+        for _e in SBX["ev_p"]:
+            print(f"        사람 · {_e['kind']} · {_e['k']}칸에서")
+        for _e in SBX["ev_d"]:
+            print(f"        문 · {_e['f']}층 · {_e['k']}칸에서 · {_e['hold']:.1f}초" + (" · 사람이 나옴" if _e["out"] else ""))
+
+
 # ── 물리 엔진 ───────────────────────────────────────────────
 #
 #   ★ 왜 이걸 만질 수 있게 하는가 ★
@@ -1511,6 +1824,8 @@ def see_ground(x, y):
     """무대의 (x, y) 에서 바닥 높이 — 만든 상자들의 치수 그대로."""
     if SB is not None:
         # 참 계단: 위에서 아래로 쏜 광선이 처음 맞는 높이 — 벽 · 칸막이도 그 윗면으로 보입니다 (README 68-1)
+        if SBX is not None and sbx_blocks(x, y, _sb_scan_z):     # 사람 · 문짝은 벽처럼 (README 74)
+            return _sb_scan_z + SB_SEE_UP
         return sb_ground(x, y, walls=True, zref=_sb_scan_z)
     if args.steps > 0 and abs(y) <= 1.5:
         return stair_ground(x)
@@ -2402,6 +2717,11 @@ while simulation_app.is_running():
                 sb_w_act = None
                 sb_g_hist = []                   # 지키기 창은 다시 채운 뒤에
 
+        # ── 사람과 문 (--sb-seed · README 74) ──
+        if SBX is not None and since >= args.warm:
+            _sr = SBX["cum"][sb_seg] + max(0.0, min(_L, _t))
+            sbx_step(now, now - began, _px, _py, _pz, _yw, _sr, _e)
+
     # ── 문턱을 언제 넘었는가 ────────────────────────────────
     #
     #   ★ '넘었다' 를 **뒷발이 아니라 몸통 기준**으로 셉니다 ★
@@ -3038,6 +3358,12 @@ else:
                   + (f"{sb_cut_min * 100:.0f} cm" if sb_cut_min is not None else "—")
                   + " · 층 계단참 뒤 끝까지 가장 가까이 "
                   + (f"{sb_back_min * 100:.0f} cm" if sb_back_min is not None else "—"))
+            if SBX is not None:
+                print("       사람 · 문 (씨앗 " + str(args.sb_seed) + ") : " + (" · ".join(SBX["log"]) or "일 없음")
+                      + " · 개와 가장 가까이 — 사람 " + (f"{SBX['clr_p'] * 100:.0f} cm" if SBX["clr_p"] is not None else "—")
+                      + " · 문짝 " + (f"{SBX['clr_d'] * 100:.0f} cm" if SBX["clr_d"] is not None else "—")
+                      + " (0 이하 = 닿음) · 엔진 확인 " + ("✔" if SBX["checked"] else "—")
+                      + ((" · 못 일어난 일 사람 " + str(len(SBX["ev_p"])) + " · 문 " + str(len(SBX["ev_d"]))) if (SBX["ev_p"] or SBX["ev_d"]) else ""))
             if args.sb_wait:
                 print("       기다리기 : " + (" · ".join(f"{w[0]} {w[3] * 100:.1f}/{w[4] * 100:.1f} cm {w[5] * 100:+.1f} cm {w[6]:+.1f}도" + (" ✖주저앉음" if w[7] else "")
                                                 for w in sb_w_done) or "—")
@@ -3154,6 +3480,10 @@ else:
                              + ("" if not sb_w_todo else " 못함:" + ",".join(sb_w_todo)) if (_sbk and args.sb_wait) else "")),
                 ("sb_wait2", ((f"r{args.sb_wait_ramp:g} " + " ".join(f"{w[0]}:{w[8] * 100:.1f}/{w[9] * 100:.1f}/{w[10] * 100:+.1f}/{w[11]:+.1f}" + ("!" if w[7] else "")
                                                                    for w in sb_w_done)) if (_sbk and args.sb_wait) else "")),
+                ("sb_events", ((f"s{args.sb_seed} " + " ".join(SBX["log"])
+                                + f" | p{(SBX['clr_p'] * 100 if SBX['clr_p'] is not None else float('nan')):.0f}"
+                                + f" d{(SBX['clr_d'] * 100 if SBX['clr_d'] is not None else float('nan')):.0f}"
+                                + (" eng" if SBX["checked"] else "")) if (_sbk and SBX is not None) else "")),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
