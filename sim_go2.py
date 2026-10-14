@@ -337,6 +337,8 @@ ap.add_argument("--sb-door-y", type=float, default=None, dest="sb_door_y",
 ap.add_argument("--sb-door-wall", choices=["side", "back"], default="side", dest="sb_door_wall",
                 help="문이 있는 벽 — side (기본 · 시설 사진 10/14): 내려가는 단 쪽 옆벽(y 큰 쪽)의 뒤 벽 모서리에 · 경첩은 뒤 벽 쪽 · "
                      "열리면 문짝이 뒤 벽을 따라 누움 / back: 뒤 벽 가운데")
+ap.add_argument("--sb-react", action="store_true", dest="sb_react",
+                help="--sb-seed 와 함께: 길잡이가 앞의 사람 · 문짝을 보고 참으로 가서 (못 가면 그 자리에서) 멈춰 기다렸다 다시 감 (README 76). 기본 끔")
 ap.add_argument("--sb-peek", action=argparse.BooleanOptionalAction, default=True, dest="sb_peek",
                 help="--gui 일 때 카메라 쪽 바깥 벽과 칸막이를 **그림에서만** 감춤 (부딪힘은 그대로 · 기본 켬 · README 69-3)")
 ap.add_argument("--hold-max", type=float, default=1.0,
@@ -1301,6 +1303,21 @@ def sbx_make():
 
     def ground(s):
         return prof[max(0, min(len(prof) - 1, int(round(s / 0.02))))]
+    # 길 위의 참 (가운데 참 · 층 계단참 · 1층 바닥) — 길잡이가 기다릴 자리 (README 76)
+    isl_arr = []
+    for i in range(n):
+        x, y, _h = pos(i * 0.02)
+        isl_arr.append(x >= SB["xt"] - 0.02 or x <= SB["at"] + 0.02)
+    lands, a0 = [], None
+    for i, v in enumerate(isl_arr + [False]):
+        if v and a0 is None:
+            a0 = i
+        if (not v) and a0 is not None:
+            lands.append((a0 * 0.02, (i - 1) * 0.02))
+            a0 = None
+
+    def isl(s):
+        return isl_arr[max(0, min(len(isl_arr) - 1, int(round(s / 0.02))))]
 
     def body(name, sx, sy, sz, color):
         pr = define_prim(f"/World/SBX/{name}", "Cube")
@@ -1355,7 +1372,9 @@ def sbx_make():
         ev_d.sort(key=lambda e: e["k"])
     person = body("Person", SBX_PD, SBX_PW, SBX_PH, (0.20, 0.45, 0.80))
     person.update({"on": None})
-    return {"rng": rng, "pos": pos, "ground": ground, "cum": cum, "tot_s": tot_s, "doors": doors, "person": person,
+    return {"rng": rng, "pos": pos, "ground": ground, "isl": isl, "lands": lands,
+            "r": {"mode": None, "target": 0.0, "t0": 0.0, "clear": None, "where": "", "n": 0, "n_flight": 0, "n_go": 0, "total": 0.0},
+            "blocked": False, "cum": cum, "tot_s": tot_s, "doors": doors, "person": person,
             "ev_p": ev_p, "ev_d": ev_d, "log": [], "clr_p": None, "clr_d": None, "checked": False}
 
 
@@ -1455,6 +1474,7 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
         if on["s"] >= X["tot_s"] - 0.3 or on["s"] <= 0.3:
             print(f" [사람] {t_run:.1f}초 · {on['kind']} — 길 끝 너머라 건너뜁니다")
         else:
+            on["s0"] = on["s"]
             p["on"] = on
             X["log"].append(f"p:{on['kind']}@{t_run:.1f}")
             _x, _y, _h = X["pos"](on["s"])
@@ -1472,12 +1492,12 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
         if abs(X["ground"](on["s"]) - (rz - 0.30)) > 1.0:   # 다른 층 높이 (위 · 아래 단) 면 안 닿음
             clr = 9.0
         # 비키기 (사이안 님 10/14: 사람이 옆으로 비켜 가게) — 마주 오거나 앞서 가는 사람이 개와 2.5 m (앞서 가면 1.2 m) 안이면 단의 바깥쪽으로
-        side_max = SB["W"] / 2.0 - SBX_PW / 2.0 - 0.02
+        side_max = (0.80 if X["isl"](on["s"]) else SB["W"] / 2.0 - SBX_PW / 2.0 - 0.02)   # 참에서는 더 멀리 비킴
         if on["kind"] in ("oncoming", "door") and 0.0 < gap < 2.5 and on["state"] == "go":
             on["state"] = "yield"
             on["side"] = -1.0 if e_r > 0 else 1.0
             print(f" [사람] {t_run:.1f}초 · 비켜 섭니다 ({'왼' if on['side'] > 0 else '오른'}쪽 · 개와 {clr * 100:.0f} cm)")
-        if on["kind"] == "ahead" and 0.0 < gap < 1.2 and on["state"] == "go":
+        if on["kind"] == "ahead" and 0.0 < gap < 1.2 and on["state"] == "go" and not args.sb_react:   # 길잡이가 서 주면 앞사람은 그냥 감
             on["state"] = "yield"
             on["side"] = -1.0 if e_r > 0 else 1.0
             print(f" [사람] {t_run:.1f}초 · 앞서 가다 비켜 줍니다 ({'왼' if on['side'] > 0 else '오른'}쪽 · 개와 {clr * 100:.0f} cm)")
@@ -1499,6 +1519,7 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
             on["s"] += moving * dt
         # 사라지기: 수명 · 개를 지나 3 m · 길 끝
         gone = (age >= on["life"] or (on["ds"] < 0 and gap < -3.0) or (on["kind"] == "ahead" and gap < -3.0)
+                or (on["kind"] == "ahead" and on["s"] - on["s0"] >= 6.0)     # 앞서 가던 사람은 6 m 가서 (다음 참 · 문으로) 빠짐
                 or on["s"] <= 0.05 or on["s"] >= X["tot_s"] - 0.05)
         cx, cy, yaw = X["pos"](on["s"])
         nx, ny = -math.sin(yaw), math.cos(yaw)
@@ -1506,8 +1527,10 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
         zc = X["ground"](on["s"]) + SBX_PH / 2.0 + 0.005
         on["xyz"] = (px_, py_, yaw, zc)
         X["clr_p"] = clr if X["clr_p"] is None else min(X["clr_p"], clr)
+        X["clr_now"] = clr
         if gone:
             p["t"].Set(Gf.Vec3d(0.0, 0.0, -30.0))
+            X["clr_now"] = None
             print(f" [사람] {t_run:.1f}초 · " + ("15초를 기다려도 못 지나가 돌아갑니다" if on.get("gaveup") else "사라집니다")
                   + f" (개와 가장 가까웠던 거리 {X['clr_p'] * 100:.0f} cm · 지금까지)")
             p["on"] = None
@@ -1526,6 +1549,93 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
                     X["checked"] = X["checked"] or ok
                 except Exception as _e:
                     print(f" [사람] 엔진 확인 못 함 ({type(_e).__name__}: {_e})")
+
+
+SBX_LOOK, SBX_STOP = 3.0, 1.0      # 길잡이가 앞을 보는 거리 · 이보다 가까우면 그 자리에 섬 (길 따라 · 몸 중심끼리 · m) — README 76-1
+SBX_CLEAR_S = 1.5                  # 앞이 이만큼(초) 비어 있으면 다시 감
+
+
+def _sbx_ahead(s_r, e_r, rz):
+    """길 앞 SBX_LOOK 안에 길을 막는 것 — (길 따라 자리 s, 무엇) · 없으면 (None, None)."""
+    X = SBX
+    best = (None, None)
+    on = X["person"]["on"]
+    if on is not None and on.get("xyz") is not None and abs(X["ground"](on["s"]) - (rz - 0.30)) <= 1.0:
+        px_, py_, pyaw, _zc = on["xyz"]
+        if X.get("clr_now") is not None and X["clr_now"] < 0.25:      # 이미 바짝 붙었으면 그 자리에서
+            best = (s_r, "사람")
+        else:
+            s = s_r                                  # 개가 갈 길 (지금 옆으로 벗어난 만큼 옮겨서) 위에 사람이 걸리는가
+            while s <= s_r + SBX_LOOK:
+                x, y, h = X["pos"](s)
+                x, y = x - math.sin(h) * e_r, y + math.cos(h) * e_r
+                if _sbx_rect_dist(x, y, px_, py_, pyaw, SBX_PD, SBX_PW) < SBX_RW / 2.0 + 0.10:
+                    best = (s, "사람")
+                    break
+                s += 0.10
+    for d in X["doors"].values():
+        if d["ang"] <= 0.5 or abs(d["z0"] - (rz - 0.30)) > 1.0:
+            continue
+        cx, cy, yaw = _sbx_door_xy(d)
+        s = s_r
+        while s <= s_r + SBX_LOOK:
+            x, y, _h = X["pos"](s)
+            if _sbx_rect_dist(x, y, cx, cy, yaw, args.sb_door_w, SBX_DT) < SBX_RW / 2.0 + 0.15:
+                if best[0] is None or s < best[0]:
+                    best = (s, f"{d['f']}층 문짝")
+                break
+            s += 0.10
+    return best
+
+
+def sbx_react(now, t_run, s_r, e_r, rz):
+    """길잡이의 멈추고 · 기다리고 · 다시 가기 (README 76). True 면 이번 바퀴는 [0, 0, 0]."""
+    X = SBX
+    R = X["r"]
+    s_o, why = _sbx_ahead(s_r, e_r, rz)
+    X["blocked"] = s_o is not None
+    here = "참" if X["isl"](s_r) else "단 위"
+    if R["mode"] == "wait":
+        if s_o is None:
+            if R["clear"] is None:
+                R["clear"] = now
+            elif now - R["clear"] >= SBX_CLEAR_S:
+                w = now - R["t0"]
+                R["total"] += w
+                print(f" [길잡이] {t_run:.1f}초 · 앞이 비었습니다 — 다시 갑니다 ({w:.1f}초 기다림 · {R['where']})")
+                R["mode"], R["clear"] = None, None
+                return False
+        else:
+            R["clear"] = None
+        return True
+    if s_o is None:
+        if R["mode"] == "go":
+            R["mode"] = None
+        return False
+    gap = s_o - s_r
+
+    def wait(where):
+        R["mode"], R["t0"], R["clear"], R["where"] = "wait", now, None, where
+        R["n"] += 1
+        if where == "단 위":
+            R["n_flight"] += 1
+        print(f" [길잡이] {t_run:.1f}초 · 잠시만요 — 앞 {gap:.1f} m 에 {why} · {where}에서 기다립니다 (개는 {sb_where_now[0]})")
+        return True
+    if X["isl"](s_r) and (R["mode"] != "go" or s_r >= R["target"]):
+        return wait("참")
+    if gap < SBX_STOP:
+        return wait(here)
+    if R["mode"] == "go":
+        if s_r >= R["target"]:
+            return wait("참")
+        return False
+    nxt = [a for (a, b) in X["lands"] if a > s_r]
+    if nxt and nxt[0] + 0.6 <= s_o - SBX_STOP:
+        R["mode"], R["target"] = "go", nxt[0] + 0.6
+        R["n_go"] += 1
+        print(f" [길잡이] {t_run:.1f}초 · 앞 {gap:.1f} m 에 {why} — 참까지 {nxt[0] + 0.6 - s_r:.1f} m 더 가서 기다립니다")
+        return False
+    return wait(here)
 
 
 if SB is not None and args.sb_seed is not None:
@@ -2590,7 +2700,13 @@ while simulation_app.is_running():
         _vy = max(-args.vy_max, min(args.vy_max, _vy))
         _vx = args.speed if abs(_off) < SB_SLOW_ANG else min(args.speed, SB_SLOW)
         base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
+        if SBX is not None and args.sb_react and since >= args.warm and sb_goal_at is None:   # 사람 · 문짝 앞에서 (README 76)
+            if sbx_react(now, now - began, SBX["cum"][sb_seg] + max(0.0, min(_L, _t)), _e, _pz):
+                _vx, _vy, _wz = 0.0, 0.0, 0.0
+                base_command = torch.tensor([0.0, 0.0, 0.0], device=args.device)
         if sb_w_act is not None:                 # 시켜서 서 있는 동안은 멈춤으로 안 봅니다 (README 72)
+            sb_g_hist = []
+        elif SBX is not None and args.sb_react and SBX.get("blocked"):   # 앞에 사람 · 문짝이 있으면 지키기가 밀지 않음 (README 76)
             sb_g_hist = []
         elif args.sb_guard != "off" and since >= args.warm and sb_goal_at is None:   # 멈춤 지키기 (README 71)
             if sb_g_act is not None:
@@ -3373,6 +3489,10 @@ else:
                       + " · 문짝 " + (f"{SBX['clr_d'] * 100:.0f} cm" if SBX["clr_d"] is not None else "—")
                       + " (0 이하 = 닿음) · 엔진 확인 " + ("✔" if SBX["checked"] else "—")
                       + ((" · 못 일어난 일 사람 " + str(len(SBX["ev_p"])) + " · 문 " + str(len(SBX["ev_d"]))) if (SBX["ev_p"] or SBX["ev_d"]) else ""))
+                if args.sb_react:
+                    _R = SBX["r"]
+                    print(f"       길잡이 (멈추고 기다리기) : 기다림 {_R['n']}번 (단 위 {_R['n_flight']} · 참 {_R['n'] - _R['n_flight']}) · 참까지 더 감 {_R['n_go']}번 · 기다린 시간 {_R['total']:.1f}초"
+                          + (" · 끝날 때도 기다리는 중" if _R["mode"] == "wait" else ""))
             if args.sb_wait:
                 print("       기다리기 : " + (" · ".join(f"{w[0]} {w[3] * 100:.1f}/{w[4] * 100:.1f} cm {w[5] * 100:+.1f} cm {w[6]:+.1f}도" + (" ✖주저앉음" if w[7] else "")
                                                 for w in sb_w_done) or "—")
@@ -3492,7 +3612,9 @@ else:
                 ("sb_events", ((f"s{args.sb_seed} " + " ".join(SBX["log"])
                                 + f" | p{(SBX['clr_p'] * 100 if SBX['clr_p'] is not None else float('nan')):.0f}"
                                 + f" d{(SBX['clr_d'] * 100 if SBX['clr_d'] is not None else float('nan')):.0f}"
-                                + (" eng" if SBX["checked"] else "")) if (_sbk and SBX is not None) else "")),
+                                + (" eng" if SBX["checked"] else "")
+                                + ((f" | w{SBX['r']['n']} f{SBX['r']['n_flight']} g{SBX['r']['n_go']} t{SBX['r']['total']:.0f}"
+                                    + ("!" if SBX["r"]["mode"] == "wait" else "")) if args.sb_react else "")) if (_sbk and SBX is not None) else "")),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
