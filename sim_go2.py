@@ -318,6 +318,9 @@ ap.add_argument("--sb-chamfer", type=float, default=0.0, dest="sb_chamfer",
                 help="가운데 참의 먼 모서리 둘을 직각삼각형으로 깎는 변 길이 m (기본 0 = 안 깎음 · README 69)")
 ap.add_argument("--sb-stop", type=float, default=None, dest="sb_stop",
                 help="참 계단: 목표(꼭대기 · 바닥)에 닿고 이만큼(초) 지나면 판을 일찍 끝냄 (기본 끔 · 일곱 층 판의 시간을 아낌 · README 70)")
+ap.add_argument("--sb-guard", choices=["off", "side", "turn", "push", "push-steer"], default="push-steer", dest="sb_guard",
+                help="참 계단: 멈춤 지키기 (README 71). 4초 동안 15 cm 도 못 가면 → side 옆으로 비키기 · turn 한 바퀴 돌기 · push 세게 밀기"
+                     " · push-steer 세게 밀되 길잡이의 옆 · 방향 바로잡기는 그대로 (71-3). **기본 push-steer** (71-4) · 옛 판을 그대로 다시 하려면 off")
 ap.add_argument("--sb-peek", action=argparse.BooleanOptionalAction, default=True, dest="sb_peek",
                 help="--gui 일 때 카메라 쪽 바깥 벽과 칸막이를 **그림에서만** 감춤 (부딪힘은 그대로 · 기본 켬 · README 69-3)")
 ap.add_argument("--hold-max", type=float, default=1.0,
@@ -2054,6 +2057,17 @@ st_off_max = None         # 계단 위에서 가운데 줄(출발한 줄)에서 
 st_cliff = None           # 눈 있는 정책에게 참 끝의 낭떠러지가 처음 보인 (때, x) — 흠 23
 # 참 계단 (--switchback · README 68)
 SB_SWITCH = 0.30          # 꺾는 곳에서 이만큼 앞에서 다음 줄로 넘어갑니다 (m)
+# ── 멈춤 지키기 (--sb-guard · README 71-1) ──
+#   잣대: 4초 동안 수평으로 15 cm 도 못 가면 "멈춤". 70 의 정상 19판에서 4초 동안 가장 적게 간 것이 46 cm (자취로 셈) — 세 배 넘는 여유.
+#   푸는 동작은 모두 학습한 명령 범위 안 (앞 0.2~0.5 · 옆 ±0.2 · 회전 ±1.0). 뒤로 걷기는 배운 적이 없어 안 씁니다.
+SB_G_T, SB_G_D, SB_G_MAX = 4.0, 0.15, 3
+SB_G_DO = {"side": (2.0, None), "turn": (2.0 * math.pi, (0.2, 0.0, 1.0)), "push": (3.0, (0.5, 0.0, 0.0)),
+           "push-steer": (3.0, (0.5, None, None))}   # None = 그 순간 길잡이가 셈한 값을 그대로 (71-3)
+sb_g_hist = []            # (때, x, y) — 지난 SB_G_T 초
+sb_g_act = None           # 푸는 중이면 (시작, 끝, (vx, vy, wz))
+sb_g_n = 0                # 몇 번 풀었나
+sb_g_log = []             # 멈춤을 본 때들 (초 · 판 시작부터)
+sb_g_gave = False         # SB_G_MAX 번 넘게 멈춰서 그만둠
 SB_SLOW, SB_SLOW_ANG = 0.20, 0.35   # 방향이 이만큼(rad) 넘게 틀어져 있으면 앞 빠르기를 0.2 로 (학습 범위의 아래 끝)
 sb_seg = 0                # 지금 따라가는 줄의 번호 (0 첫 줄 · 1 참 가로지르기 · 2 마지막 줄)
 sb_seg_at = {}            # {줄 번호: 그 줄로 넘어간 때}
@@ -2240,6 +2254,41 @@ while simulation_app.is_running():
         _vy = max(-args.vy_max, min(args.vy_max, _vy))
         _vx = args.speed if abs(_off) < SB_SLOW_ANG else min(args.speed, SB_SLOW)
         base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
+        if args.sb_guard != "off" and since >= args.warm and sb_goal_at is None:   # 멈춤 지키기 (README 71)
+            if sb_g_act is not None:
+                if now < sb_g_act[1]:
+                    _gc = sb_g_act[2]
+                    _vx = _gc[0]
+                    _vy = _vy if _gc[1] is None else _gc[1]
+                    _wz = _wz if _gc[2] is None else _gc[2]
+                    base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
+                else:
+                    sb_g_act = None
+                    sb_g_hist = []                       # 창을 다시 채운 뒤에야 다시 봅니다
+            else:
+                sb_g_hist.append((now, _px, _py))
+                while len(sb_g_hist) > 1 and now - sb_g_hist[1][0] >= SB_G_T:
+                    sb_g_hist.pop(0)
+                if now - sb_g_hist[0][0] >= SB_G_T:
+                    _gd = math.hypot(_px - sb_g_hist[0][1], _py - sb_g_hist[0][2])
+                    if _gd < SB_G_D:
+                        if sb_g_n < SB_G_MAX:
+                            sb_g_n += 1
+                            _gdur, _gcmd = SB_G_DO[args.sb_guard]
+                            if _gcmd is None:                # 옆으로: 처음엔 왼쪽, 다음엔 오른쪽 …
+                                _gcmd = (0.2, 0.2 if sb_g_n % 2 == 1 else -0.2, 0.0)
+                            sb_g_act = (now, now + _gdur, _gcmd)
+                            sb_g_log.append(now - began)
+                            _vx = _gcmd[0]
+                            _vy = _vy if _gcmd[1] is None else _gcmd[1]
+                            _wz = _wz if _gcmd[2] is None else _gcmd[2]
+                            base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
+                            print(f" [지키기] {now - began:.1f}초 · {SB_G_T:.0f}초 동안 {_gd * 100:.1f} cm — 멈춤 → {args.sb_guard} {sb_g_n}번째"
+                                  f" ({_gdur:.1f}초 · 앞 {_vx:+.1f} · 옆 {_vy:+.1f} · 회전 {_wz:+.1f}) · {sb_where_now[0]}")
+                        elif not sb_g_gave:
+                            sb_g_gave = True
+                            sb_g_log.append(now - began)
+                            print(f" [지키기] {now - began:.1f}초 · 또 멈춤 — {SB_G_MAX}번을 다 써서 그만둡니다 · {sb_where_now[0]}")
         if since >= args.warm:
             if args.hold and turn_asked and vy_asked:   # 위 --hold 칸이 이번 바퀴에 적은 것을 이 길잡이의 값으로 바꿉니다
                 vy_asked[-1], turn_asked[-1] = _vy, _wz
@@ -2925,6 +2974,10 @@ else:
                   + (f"{sb_cut_min * 100:.0f} cm" if sb_cut_min is not None else "—")
                   + " · 층 계단참 뒤 끝까지 가장 가까이 "
                   + (f"{sb_back_min * 100:.0f} cm" if sb_back_min is not None else "—"))
+            if args.sb_guard != "off":
+                print(f"       멈춤 지키기 ({args.sb_guard}) : 푼 번 {sb_g_n}"
+                      + (" · 본 때 " + ", ".join(f"{v:.1f}초" for v in sb_g_log) if sb_g_log else " · 한 번도 안 멈춤")
+                      + (f" · {SB_G_MAX}번 넘게 멈춰 그만둠" if sb_g_gave else ""))
     if args.feet_log:
         try:
             import os as _os2
@@ -3026,6 +3079,9 @@ else:
                 ("sb_cut_cm", (f"{sb_cut_min * 100:.0f}" if (_sbk and sb_cut_min is not None) else "")),
                 ("sb_back_cm", (f"{sb_back_min * 100:.0f}" if (_sbk and sb_back_min is not None) else "")),
                 ("sb_land_all", ((" ".join(f"{k[0]}{t1 - t0:.1f}" for (k, t0, t1) in sb_visits if t1 is not None)) if (_sbk and SB.get("multi")) else "")),
+                ("sb_guard", (args.sb_guard if _sbk else "")),
+                ("sb_guard_n", (str(sb_g_n) + ("+" if sb_g_gave else "") if _sbk else "")),
+                ("sb_guard_at", (" ".join(f"{v:.1f}" for v in sb_g_log) if _sbk else "")),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
