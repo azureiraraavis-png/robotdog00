@@ -321,6 +321,11 @@ ap.add_argument("--sb-stop", type=float, default=None, dest="sb_stop",
 ap.add_argument("--sb-guard", choices=["off", "side", "turn", "push", "push-steer"], default="push-steer", dest="sb_guard",
                 help="참 계단: 멈춤 지키기 (README 71). 4초 동안 15 cm 도 못 가면 → side 옆으로 비키기 · turn 한 바퀴 돌기 · push 세게 밀기"
                      " · push-steer 세게 밀되 길잡이의 옆 · 방향 바로잡기는 그대로 (71-3). **기본 push-steer** (71-4) · 옛 판을 그대로 다시 하려면 off")
+ap.add_argument("--sb-wait", type=str, default="", dest="sb_wait",
+                help="참 계단 · 여러 층: 가는 길에 멈춰 서서 기다리게 함 (README 72). 쉼표로 — s5 (첫 단 5칸) · mid (가운데 참) · s15 (둘째 단 5칸) · floor (층 계단참). 기본 없음")
+ap.add_argument("--sb-wait-s", type=float, default=10.0, dest="sb_wait_s", help="한 번 기다리는 초 (기본 10)")
+ap.add_argument("--sb-wait-ramp", type=float, default=0.0, dest="sb_wait_ramp",
+                help="멈출 때 앞 빠르기를 이 초 동안 0.2 (학습한 가장 느린 걸음) 까지 줄인 뒤 0 으로 (기본 0 = 한 번에 · README 72-3)")
 ap.add_argument("--sb-peek", action=argparse.BooleanOptionalAction, default=True, dest="sb_peek",
                 help="--gui 일 때 카메라 쪽 바깥 벽과 칸막이를 **그림에서만** 감춤 (부딪힘은 그대로 · 기본 켬 · README 69-3)")
 ap.add_argument("--hold-max", type=float, default=1.0,
@@ -2068,6 +2073,13 @@ sb_g_act = None           # 푸는 중이면 (시작, 끝, (vx, vy, wz))
 sb_g_n = 0                # 몇 번 풀었나
 sb_g_log = []             # 멈춤을 본 때들 (초 · 판 시작부터)
 sb_g_gave = False         # SB_G_MAX 번 넘게 멈춰서 그만둠
+# ── 기다리기 (--sb-wait · README 72-1) ── 명령 [0, 0, 0] 을 넣고 서 있는 동안 밀림 · 높이 · 돈 각을 잽니다
+sb_w_todo = [w.strip() for w in args.sb_wait.split(",") if w.strip()]
+for _w in sb_w_todo:
+    if _w not in ("s5", "mid", "s15", "floor"):
+        raise SystemExit(f" ✖ --sb-wait 에 모르는 자리 '{_w}' — s5 · mid · s15 · floor 중에서")
+sb_w_act = None           # 기다리는 중이면 dict
+sb_w_done = []            # (자리, 몇 칸, 이름, 밀림 끝 m, 가장 멀리 m, 높이 바뀜 m, 돈 각 도, 넘어짐?)
 SB_SLOW, SB_SLOW_ANG = 0.20, 0.35   # 방향이 이만큼(rad) 넘게 틀어져 있으면 앞 빠르기를 0.2 로 (학습 범위의 아래 끝)
 sb_seg = 0                # 지금 따라가는 줄의 번호 (0 첫 줄 · 1 참 가로지르기 · 2 마지막 줄)
 sb_seg_at = {}            # {줄 번호: 그 줄로 넘어간 때}
@@ -2254,7 +2266,9 @@ while simulation_app.is_running():
         _vy = max(-args.vy_max, min(args.vy_max, _vy))
         _vx = args.speed if abs(_off) < SB_SLOW_ANG else min(args.speed, SB_SLOW)
         base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
-        if args.sb_guard != "off" and since >= args.warm and sb_goal_at is None:   # 멈춤 지키기 (README 71)
+        if sb_w_act is not None:                 # 시켜서 서 있는 동안은 멈춤으로 안 봅니다 (README 72)
+            sb_g_hist = []
+        elif args.sb_guard != "off" and since >= args.warm and sb_goal_at is None:   # 멈춤 지키기 (README 71)
             if sb_g_act is not None:
                 if now < sb_g_act[1]:
                     _gc = sb_g_act[2]
@@ -2337,6 +2351,56 @@ while simulation_app.is_running():
                 sb_goal_at = now
             if args.down and _aS and _px <= SB["at"] - 0.4 and _pz < 0.6:
                 sb_goal_at = now
+
+        # ── 기다리기 (--sb-wait · README 72) ── 정해 둔 자리에 오면 [0, 0, 0] 을 --sb-wait-s 초
+        if sb_w_act is None and sb_w_todo and since >= args.warm and sb_goal_at is None and SB.get("multi"):
+            _wn = sb_w_todo[0]
+            _N1 = SB["N"]
+            _last = sb_visits[-1] if sb_visits else None
+            _go = ((_wn == "s5" and sb_k >= _N1 // 2) or (_wn == "s15" and sb_k >= _N1 + _N1 // 2)
+                   or (_wn == "mid" and sb_k >= _N1 - 1 and _last is not None and _last[0] == "mid"
+                       and _last[2] is None and now - _last[1] >= 1.0)
+                   or (_wn == "floor" and sb_k >= 2 * _N1 - 1 and _last is not None and _last[0] == "floor"
+                       and _last[2] is None and now - _last[1] >= 1.0))
+            if _go:
+                sb_w_todo.pop(0)
+                sb_w_act = {"name": _wn, "t0": now, "x0": _px, "y0": _py, "z0": _pz, "yw0": _yw, "far": 0.0,
+                            "zlo": _pz, "k": sb_k, "where": sb_where_now[0], "vx0": max(_vx, 0.2), "p1": None}
+                print(f" [기다리기] {now - began:.1f}초 · {_wn} · {sb_where_now[0]} ({sb_k}칸) — "
+                      + (f"{args.sb_wait_ramp:.1f}초에 걸쳐 0.2 까지 줄이고 " if args.sb_wait_ramp > 0 else "")
+                      + f"{args.sb_wait_s:.0f}초 서 있으라고 합니다")
+        if sb_w_act is not None:
+            _tz = sb_w_act["t0"] + args.sb_wait_ramp          # 이때부터 [0, 0, 0]
+            if now < _tz:                                      # 줄이는 동안: 앞만 0.2 까지 · 옆 · 회전은 길잡이 그대로 (README 72-3)
+                _vx = sb_w_act["vx0"] + (0.2 - sb_w_act["vx0"]) * (now - sb_w_act["t0"]) / args.sb_wait_ramp
+                base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
+            else:
+                base_command = torch.tensor([0.0, 0.0, 0.0], device=args.device)
+                if since >= args.warm and vy_asked and turn_asked:
+                    vy_asked[-1], turn_asked[-1] = 0.0, 0.0
+            if sb_w_act["p1"] is None and now >= _tz + 1.0:  # 멈추기로 한 뒤 다 설 때까지 (= 다가감) / 그 뒤 (= 서 있기)
+                sb_w_act["p1"] = (_px, _py, _pz, _yw)
+            _wd = math.hypot(_px - sb_w_act["x0"], _py - sb_w_act["y0"])
+            sb_w_act["far"] = max(sb_w_act["far"], _wd)
+            sb_w_act["zlo"] = min(sb_w_act["zlo"], _pz)
+            if now - _tz >= args.sb_wait_s:
+                _dz = _pz - sb_w_act["z0"]
+                _dyw = math.degrees(wrapped(_yw - sb_w_act["yw0"]))
+                _fell = (sb_w_act["z0"] - sb_w_act["zlo"]) > 0.12
+                _p1 = sb_w_act["p1"] or (_px, _py, _pz, _yw)
+                _app = math.hypot(_p1[0] - sb_w_act["x0"], _p1[1] - sb_w_act["y0"])
+                _stand = math.hypot(_px - _p1[0], _py - _p1[1])
+                _sdz = _pz - _p1[2]
+                _syw = math.degrees(wrapped(_yw - _p1[3]))
+                sb_w_done.append((sb_w_act["name"], sb_w_act["k"], sb_w_act["where"], _wd, sb_w_act["far"], _dz, _dyw, _fell,
+                                  _app, _stand, _sdz, _syw))
+                print(f" [기다리기] 끝 · {sb_w_act['name']} · 밀림 {_wd * 100:.1f} cm (가장 멀리 {sb_w_act['far'] * 100:.1f}) · "
+                      f"높이 {_dz * 100:+.1f} cm (가장 낮게 {(sb_w_act['zlo'] - sb_w_act['z0']) * 100:+.1f}) · 돈 각 {_dyw:+.1f}도"
+                      + (" · ✖ 주저앉음" if _fell else ""))
+                print(f" [기다리기]     나눠 보면 · 다가감 (멈추기로 한 뒤 다 서기까지) {_app * 100:.1f} cm · 서 있는 동안 밀림 {_stand * 100:.1f} cm · "
+                      f"높이 {_sdz * 100:+.1f} cm · 돈 각 {_syw:+.1f}도")
+                sb_w_act = None
+                sb_g_hist = []                   # 지키기 창은 다시 채운 뒤에
 
     # ── 문턱을 언제 넘었는가 ────────────────────────────────
     #
@@ -2974,6 +3038,10 @@ else:
                   + (f"{sb_cut_min * 100:.0f} cm" if sb_cut_min is not None else "—")
                   + " · 층 계단참 뒤 끝까지 가장 가까이 "
                   + (f"{sb_back_min * 100:.0f} cm" if sb_back_min is not None else "—"))
+            if args.sb_wait:
+                print("       기다리기 : " + (" · ".join(f"{w[0]} {w[3] * 100:.1f}/{w[4] * 100:.1f} cm {w[5] * 100:+.1f} cm {w[6]:+.1f}도" + (" ✖주저앉음" if w[7] else "")
+                                                for w in sb_w_done) or "—")
+                      + (f" · 못 한 것 {', '.join(sb_w_todo)}" if sb_w_todo else ""))
             if args.sb_guard != "off":
                 print(f"       멈춤 지키기 ({args.sb_guard}) : 푼 번 {sb_g_n}"
                       + (" · 본 때 " + ", ".join(f"{v:.1f}초" for v in sb_g_log) if sb_g_log else " · 한 번도 안 멈춤")
@@ -3082,6 +3150,10 @@ else:
                 ("sb_guard", (args.sb_guard if _sbk else "")),
                 ("sb_guard_n", (str(sb_g_n) + ("+" if sb_g_gave else "") if _sbk else "")),
                 ("sb_guard_at", (" ".join(f"{v:.1f}" for v in sb_g_log) if _sbk else "")),
+                ("sb_wait", (" ".join(f"{w[0]}:{w[3] * 100:.1f}/{w[4] * 100:.1f}/{w[5] * 100:+.1f}/{w[6]:+.1f}" + ("!" if w[7] else "") for w in sb_w_done)
+                             + ("" if not sb_w_todo else " 못함:" + ",".join(sb_w_todo)) if (_sbk and args.sb_wait) else "")),
+                ("sb_wait2", ((f"r{args.sb_wait_ramp:g} " + " ".join(f"{w[0]}:{w[8] * 100:.1f}/{w[9] * 100:.1f}/{w[10] * 100:+.1f}/{w[11]:+.1f}" + ("!" if w[7] else "")
+                                                                   for w in sb_w_done)) if (_sbk and args.sb_wait) else "")),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)

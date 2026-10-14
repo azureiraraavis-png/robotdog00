@@ -617,6 +617,14 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                 weight=CALF_CONTACT_W,
                 params={"sensor_cfg": _SceneEntityCfg2("contact_forces", body_names=".*_calf"), "threshold": 1.0},
             )
+        #   STAND_MORE        서 있으라는 개의 몫 (rel_standing_envs) — 0.0 = 건드리지 않음(기본 · 위의 0.15 그대로) (README 73)
+        #     왜: 1498 은 내려가다 멈추면 선 뒤 1~4초에 한 번 고쳐 딛고 (72-4 · 22/24), 1400 은 단 위에서 흘러내렸습니다 (72-2).
+        #     명령은 10초마다 다시 뽑히므로 "걷다가 계단 위에서 서라" 는 연습은 두 번째 10초에 서 있으라고 뽑힌 개에게만 생깁니다.
+        #     그 몫을 0.15 → 0.30 으로 두 배. **한 번에 하나만** — 지형 비율 · 명령 주기는 그대로 (명령 주기를 바꿨다가 나빠진 적이 있음 · 40).
+        #   10/14 서 있기 판 (73)       True       True       False   + FEET_SLIDE_W = -0.25 + LIN_VEL_Y = 0.2 + STAND_MORE = 0.30
+        STAND_MORE = 0.0
+        if STAND_MORE:
+            self.commands.base_velocity.rel_standing_envs = STAND_MORE
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
