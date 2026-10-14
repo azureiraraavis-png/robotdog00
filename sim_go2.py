@@ -331,9 +331,12 @@ ap.add_argument("--sb-seed", type=int, default=None, dest="sb_seed",
 ap.add_argument("--sb-people-max", type=int, default=3, dest="sb_people_max", help="한 판에 사람 일 최대 (기본 3 · 사이안 님 10/14)")
 ap.add_argument("--sb-doors-max", type=int, default=3, dest="sb_doors_max", help="한 판에 문 열림 최대 (기본 3)")
 ap.add_argument("--sb-closed", type=str, default="2,7", dest="sb_closed", help="늘 닫힌 층 (기본 2,7 · 시설)")
-ap.add_argument("--sb-door-w", type=float, default=0.90, dest="sb_door_w", help="문 폭 m (기본 0.90 · 짐작 — 재면 바꿈)")
+ap.add_argument("--sb-door-w", type=float, default=0.80, dest="sb_door_w", help="문짝 폭 m (기본 0.80 · 시설: 가로 약 80 cm · 지나갈 수 있는 폭 약 75 cm · 사이안 님 10/14)")
 ap.add_argument("--sb-door-y", type=float, default=None, dest="sb_door_y",
-                help="문 가운데의 y (층 계단참 뒤 벽 위 · 기본 = 참 폭의 가운데 · 짐작)")
+                help="--sb-door-wall back 일 때 문 가운데의 y (기본 = 참 폭의 가운데)")
+ap.add_argument("--sb-door-wall", choices=["side", "back"], default="side", dest="sb_door_wall",
+                help="문이 있는 벽 — side (기본 · 시설 사진 10/14): 내려가는 단 쪽 옆벽(y 큰 쪽)의 뒤 벽 모서리에 · 경첩은 뒤 벽 쪽 · "
+                     "열리면 문짝이 뒤 벽을 따라 누움 / back: 뒤 벽 가운데")
 ap.add_argument("--sb-peek", action=argparse.BooleanOptionalAction, default=True, dest="sb_peek",
                 help="--gui 일 때 카메라 쪽 바깥 벽과 칸막이를 **그림에서만** 감춤 (부딪힘은 그대로 · 기본 켬 · README 69-3)")
 ap.add_argument("--hold-max", type=float, default=1.0,
@@ -1237,7 +1240,7 @@ def sb_where(x, y, z=None, yaw=None):
 # ─────────────────────────────────────────────────────────────
 SBX = None
 SBX_PW, SBX_PD, SBX_PH = 0.45, 0.30, 1.70     # 사람: 어깨 폭 · 두께 · 키 (m)
-SBX_DT, SBX_DH = 0.05, 2.00                   # 문짝: 두께 · 높이 (m)
+SBX_DT, SBX_DH = 0.05, 2.30                   # 문짝: 두께 · 높이 (m · 시설 높이 230 cm 넘음 · 사이안 님 10/14)
 SBX_RL, SBX_RW = 0.70, 0.31                   # 개의 몸 (재기용 네모): 길이 · 폭 (m)
 
 
@@ -1320,10 +1323,16 @@ def sbx_make():
     closed = {int(v) for v in args.sb_closed.split(",") if v.strip()}
     doors = {}
     _yc = (-SB["W"] / 2.0 + SB["yB"] + SB["W"] / 2.0) / 2.0 if args.sb_door_y is None else args.sb_door_y
-    for f in range(2, K + 2):                     # 층 계단참 = 2층 ~ (K+1)층 · 뒤 벽 x = xF
-        hy = _yc - args.sb_door_w / 2.0           # 경첩 (y 가 작은 쪽)
+    _ymax = SB["yB"] + SB["W"] / 2.0
+    for f in range(2, K + 2):                     # 층 계단참 = 2층 ~ (K+1)층
+        if args.sb_door_wall == "back":           # 뒤 벽 (x = xF) 가운데 · 경첩은 y 작은 쪽 · 닫힘 = +y 로 누움 · 열림 = +x (참 안쪽)
+            hx, hy, c0 = SB["xF"] + SBX_DT / 2.0 + 0.005, _yc - args.sb_door_w / 2.0, math.pi / 2.0
+            fx, fy = SB["xF"] + 0.6, _yc
+        else:                                     # 옆벽 (y = ymax · 내려가는 단 쪽) 의 뒤 벽 모서리 · 경첩은 뒤 벽 쪽 · 닫힘 = +x · 열림 = −y (뒤 벽을 따라 누움)
+            hx, hy, c0 = SB["xF"] + 0.03, _ymax - SBX_DT / 2.0 - 0.005, 0.0
+            fx, fy = SB["xF"] + 0.03 + args.sb_door_w / 2.0, _ymax - 0.6
         d = body(f"Door_F{f}", args.sb_door_w, SBX_DT, SBX_DH, (0.55, 0.36, 0.20))
-        d.update({"f": f, "hx": SB["xF"] + SBX_DT / 2.0 + 0.005, "hy": hy, "z0": (f - 1) * H + 0.01,
+        d.update({"f": f, "hx": hx, "hy": hy, "c0": c0, "fx": fx, "fy": fy, "z0": (f - 1) * H + 0.01,
                   "ang": 0.0, "closed": f in closed, "q": [], "now": None, "near": None})
         doors[f] = d
     # 일 정하기 — 진행(칸)으로 깨웁니다 (사람: 1 ~ 최대 · 문: 1 ~ 최대 · 열 수 있는 층에서만)
@@ -1351,10 +1360,10 @@ def sbx_make():
 
 
 def _sbx_door_xy(d):
-    a = math.radians(d["ang"])                    # 0 = 닫힘 (+y 로 누움) · 90 = 다 열림 (+x · 참 안쪽)
-    ux, uy = math.sin(a), math.cos(a)
+    a = d["c0"] - math.radians(d["ang"])          # 0도 = 닫힘 (벽을 따라 누움) · 90도 = 다 열림 (참 안쪽으로 · 시계 방향으로 돎)
+    ux, uy = math.cos(a), math.sin(a)
     w = args.sb_door_w
-    return d["hx"] + ux * w / 2.0, d["hy"] + uy * w / 2.0, math.atan2(uy, ux)
+    return d["hx"] + ux * w / 2.0, d["hy"] + uy * w / 2.0, a
 
 
 def sbx_blocks(x, y, zref):
@@ -1439,7 +1448,7 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
             for i in range(0, int(X["tot_s"] / 0.05) + 1):
                 x, y, _h = X["pos"](i * 0.05)
                 if abs(X["ground"](i * 0.05) - (d["z0"] - 0.01)) < 0.05:
-                    dd = math.hypot(x - (d["hx"] + 0.6), y - (d["hy"] + args.sb_door_w / 2.0))
+                    dd = math.hypot(x - d["fx"], y - d["fy"])
                     if dd < best:
                         best, bs = dd, i * 0.05
             on.update(s=bs, ds=(-0.5 if bs > s_r else 0.5), life=30.0)
@@ -1525,7 +1534,7 @@ if SB is not None and args.sb_seed is not None:
     else:
         SBX = sbx_make()
         print(f" [사람 · 문] 씨앗 {args.sb_seed} · 사람 {len(SBX['ev_p'])} · 문 열림 {len(SBX['ev_d'])} · 닫힌 층 {args.sb_closed or '없음'}"
-              f" · 문 폭 {args.sb_door_w:.2f} m · 문 가운데 y {(SBX['doors'][2]['hy'] + args.sb_door_w / 2.0):.2f}")
+              f" · 문 폭 {args.sb_door_w:.2f} m · 문 벽 {args.sb_door_wall} · 경첩 ({SBX['doors'][2]['hx']:.2f}, {SBX['doors'][2]['hy']:.2f})")
         for _e in SBX["ev_p"]:
             print(f"        사람 · {_e['kind']} · {_e['k']}칸에서")
         for _e in SBX["ev_d"]:
