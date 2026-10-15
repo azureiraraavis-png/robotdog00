@@ -625,6 +625,18 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         STAND_MORE = 0.0
         if STAND_MORE:
             self.commands.base_velocity.rel_standing_envs = STAND_MORE
+        #   TREAD_MIX         계단 디딤을 여럿으로 섞음 (README 75-7) — () = 끔(기본 · 디딤 0.30 하나 그대로)
+        #     왜: 시설 계단(디딤 약 24~25 cm · 높이 19~20 cm)을 1498 은 0/10 (75-2). 하나씩 가르니 높이 20 만으로는 10/10,
+        #     디딤 24 만으로는 내려가기가 15판 중 10 (75-4 · 75-6) — 디딤을 넓혀 가르치기로 함 (사이안 님 10/15).
+        #     Isaac Lab 의 계단 지형은 디딤(step_width)이 범위가 아니라 **한 값**입니다 (terrains/trimesh/mesh_terrains_cfg.py:41).
+        #     그래서 계단 지형 둘(pyramid_stairs · pyramid_stairs_inv)을 디딤마다 하나씩으로 쪼개고, 각자의 비율을 디딤 수로 똑같이 나눕니다.
+        #     높이 범위 · 그 밖의 지형 · 비율의 합은 그대로입니다 (한 번에 하나).
+        #     ⚠ 종류는 **열**에 비율대로 담깁니다 (terrains/terrain_generator.py:244 — 무작위가 아님). 20 열이면 내려가는 계단(0.10)이
+        #       2열뿐이라 셋으로 못 나눕니다 (22 · 25 가 한 열씩, 30 은 0열). 그래서 켜면 열을 **20 → 60** 으로 늘립니다 —
+        #       종류마다의 몫은 그대로 (내려가는 계단 6열 = 2·2·2 · 오르는 계단 24열 = 8·8·8 · 상자 12 · 울퉁불퉁 12 · 경사 3+3).
+        #       아래에서 그 셈을 terrain_generator.py 와 같은 식으로 다시 해 찍습니다 ("[디딤 섞기]" 줄 · train75.ps1 이 확인).
+        #   10/15 디딤 섞기 판 (75-7)    True       True       False   + FEET_SLIDE_W = -0.25 + LIN_VEL_Y = 0.2 + TREAD_MIX = (0.22, 0.25, 0.30)
+        TREAD_MIX = ()
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
@@ -637,6 +649,29 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             if FINE_TUNE_STAIRS:
                 _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
                 _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
+            if TREAD_MIX:
+                import numpy as _np
+                _split = ("pyramid_stairs", "pyramid_stairs_inv")
+                _sub = {}
+                for _nm in _split:                      # 순서를 지킵니다 — 열은 이 순서대로 채워집니다
+                    _base = _tg.sub_terrains[_nm]
+                    for _w in TREAD_MIX:
+                        _c = copy.deepcopy(_base)
+                        _c.step_width = float(_w)
+                        _c.proportion = _base.proportion / len(TREAD_MIX)
+                        _sub[f"{_nm}_w{int(round(_w * 100))}"] = _c
+                for _nm, _c in _tg.sub_terrains.items():
+                    if _nm not in _split:
+                        _sub[_nm] = _c
+                _tg.sub_terrains = _sub
+                _tg.num_cols = 60
+                _pr = _np.array([_c.proportion for _c in _sub.values()], dtype=float)
+                _pr /= _pr.sum()
+                _ix = [int(_np.min(_np.where(_i / _tg.num_cols + 0.001 < _np.cumsum(_pr))[0])) for _i in range(_tg.num_cols)]
+                _names = list(_sub.keys())
+                print("[디딤 섞기] 열 " + str(_tg.num_cols) + " · " + " · ".join(
+                    f"{_n} {_ix.count(_k)}열 (디딤 {getattr(_sub[_n], 'step_width', '-')} · 높이 {getattr(_sub[_n], 'step_height_range', '-')})"
+                    if _n.startswith("pyramid") else f"{_n} {_ix.count(_k)}열" for _k, _n in enumerate(_names)), flush=True)
             self.scene.terrain.terrain_generator = _tg
 
 
