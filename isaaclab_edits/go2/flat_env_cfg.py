@@ -637,6 +637,13 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #       아래에서 그 셈을 terrain_generator.py 와 같은 식으로 다시 해 찍습니다 ("[디딤 섞기]" 줄 · train75.ps1 이 확인).
         #   10/15 디딤 섞기 판 (75-7)    True       True       False   + FEET_SLIDE_W = -0.25 + LIN_VEL_Y = 0.2 + TREAD_MIX = (0.22, 0.25, 0.30)
         TREAD_MIX = ()
+        #   DOWN_SHARE        내려가는 계단(pyramid_stairs · 꼭대기 출발)의 몫 — 0.0 = 건드리지 않음(기본 · STAIRS_40 의 0.10 그대로) (README 75-12)
+        #     왜: 디딤 섞기 판 2296 은 시설 치수 오르기 15/15 (지키기 없이 13) 인데 내려가기는 14/15 · **지키기 없이 0/15** · 넘어짐 1 (75-10 · 75-11).
+        #     내려가는 계단은 지형의 10 % (60열 중 6열) 뿐이고 오르는 계단이 40 % (41-19 에서 오르기를 겨냥해 늘린 것).
+        #     계단의 몫 합 0.50 은 그대로 두고 그 안에서만 나눕니다: 내려가기 = DOWN_SHARE · 오르기 = 0.50 − DOWN_SHARE. 그 밖의 지형은 그대로.
+        #     0.25 면 내려가는 15열 (디딤 섞기와 함께 5·5·5) · 오르는 15열 (5·5·5) · 상자 12 · 울퉁불퉁 12 · 경사 3+3.
+        #   10/16 내려가기 몫 판 (75-12)  True       True       False   + FEET_SLIDE_W = -0.25 + LIN_VEL_Y = 0.2 + TREAD_MIX = (0.22, 0.25, 0.30) + DOWN_SHARE = 0.25
+        DOWN_SHARE = 0.0
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
@@ -646,6 +653,10 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             _tg.sub_terrains["random_rough"].proportion = 0.20
             _tg.sub_terrains["hf_pyramid_slope"].proportion = 0.05
             _tg.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.05
+            if DOWN_SHARE:
+                _tg.sub_terrains["pyramid_stairs"].proportion = float(DOWN_SHARE)
+                _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.50 - float(DOWN_SHARE)
+                print(f"[내려가기 몫] 내려가는 계단 {DOWN_SHARE:.2f} · 오르는 계단 {0.50 - DOWN_SHARE:.2f}", flush=True)
             if FINE_TUNE_STAIRS:
                 _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
                 _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
