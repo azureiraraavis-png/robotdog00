@@ -333,6 +333,55 @@ def walked_distance(env, env_ids):
 
 
 # ─────────────────────────────────────────────────────────────
+#  robotdog00 — 명령 섞기: 뒷걸음질 · 제자리 (2026-10-26, README 77-1)
+#
+#  왜: 길잡이가 단 위에서 사람과 엇갈릴 때 물러나거나 (뒷걸음질) 옆으로 비켜 서야 하는데 (76-10 · 76-12),
+#      지금까지의 명령은 앞 0.2~0.5 m/s 뿐이었습니다 (서 있으라는 개 15 % 는 셋 다 0).
+#      "앞 0 · 옆만" 을 주니 2600 은 2~10 cm 만 움직이고, 내려가는 단에서는 미끄러졌습니다 (76-10).
+#  무엇을: 기본 명령 (UniformVelocityCommand) 을 그대로 뽑은 뒤, 개마다 한 번 더 제비를 뽑아
+#      MIX_P_BACK (15 %) 은 앞 명령을 뒤로 (−0.30 ~ −0.10 m/s),
+#      MIX_P_SLOW (15 %) 은 앞 명령을 거의 0 (−0.05 ~ +0.05 m/s) 으로 바꿉니다 — 옆 (±0.2) · 돌기 (heading) 는 그대로라
+#      "제자리에서 옆으로 · 제자리에서 돌기" 가 됩니다. 나머지 70 % 는 지금과 같습니다 (앞 0.2~0.5).
+#      서 있으라는 개 (rel_standing_envs) 는 그 위에서 그대로 0 이 됩니다 (_update_command).
+#  ⚠ 눈 (see_scanner) 은 몸 뒤로 0.3 m 까지만 봅니다 — 뒤로 걸을 때 뒷발 뒤 약 10 cm 만 보입니다 (77-1).
+#  ⚠ 느린 명령의 개는 거의 안 움직이므로 Curriculum/stuck_frac 이 오릅니다 — 경보로 읽지 않습니다 (77-1).
+# ─────────────────────────────────────────────────────────────
+from isaaclab.envs.mdp.commands.velocity_command import UniformVelocityCommand as _UniformVelocityCommand
+
+MIX_P_BACK, MIX_BACK = 0.15, (-0.30, -0.10)
+MIX_P_SLOW, MIX_SLOW = 0.15, (-0.05, 0.05)
+
+
+class GuideMixVelocityCommand(_UniformVelocityCommand):
+    """UniformVelocityCommand 와 같되, 앞 명령의 일부를 뒤로 · 거의 0 으로 바꿈 (README 77-1)."""
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        print(f"[명령 섞기] GuideMixVelocityCommand · 뒤로 {MIX_P_BACK:.2f} ({MIX_BACK[0]:+.2f}~{MIX_BACK[1]:+.2f})"
+              f" · 거의 0 {MIX_P_SLOW:.2f} ({MIX_SLOW[0]:+.2f}~{MIX_SLOW[1]:+.2f}) · 나머지 앞 {cfg.ranges.lin_vel_x}"
+              f" · 옆 {cfg.ranges.lin_vel_y} · 서 있기 {cfg.rel_standing_envs}", flush=True)
+
+    def _resample_command(self, env_ids):
+        import torch
+
+        super()._resample_command(env_ids)
+        if isinstance(env_ids, slice):
+            ids = torch.arange(self.num_envs, device=self.device)[env_ids]
+        else:
+            ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).flatten()
+        n = ids.numel()
+        if n == 0:
+            return
+        u = torch.rand(n, device=self.device)
+        back = u < MIX_P_BACK
+        slow = (u >= MIX_P_BACK) & (u < MIX_P_BACK + MIX_P_SLOW)
+        vx = self.vel_command_b[ids, 0].clone()
+        vx = torch.where(back, torch.empty(n, device=self.device).uniform_(*MIX_BACK), vx)
+        vx = torch.where(slow, torch.empty(n, device=self.device).uniform_(*MIX_SLOW), vx)
+        self.vel_command_b[ids, 0] = vx
+
+
+# ─────────────────────────────────────────────────────────────
 #  robotdog00 — 계단도 닿을 수 있는 승급선 (2026-10-02, README 44)
 #
 #  원래 규칙 (velocity/mdp/curriculums.py: terrain_levels_vel)
@@ -644,6 +693,12 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     0.25 면 내려가는 15열 (디딤 섞기와 함께 5·5·5) · 오르는 15열 (5·5·5) · 상자 12 · 울퉁불퉁 12 · 경사 3+3.
         #   10/16 내려가기 몫 판 (75-12)  True       True       False   + FEET_SLIDE_W = -0.25 + LIN_VEL_Y = 0.2 + TREAD_MIX = (0.22, 0.25, 0.30) + DOWN_SHARE = 0.25
         DOWN_SHARE = 0.0
+        #   MOVE_MIX          명령 섞기 — 뒷걸음질 15 % · 제자리 (앞 거의 0 · 옆 · 돌기) 15 % (README 77-1) · False = 끔(기본)
+        #     위 GuideMixVelocityCommand 를 씁니다. 켜면 학습 첫머리에 "[명령 섞기] …" 줄을 찍습니다 (train77.ps1 이 확인).
+        #   10/26 명령 섞기 판 (77)      True       True       False   + FEET_SLIDE_W + LIN_VEL_Y 0.2 + TREAD_MIX + DOWN_SHARE 0.25 + MOVE_MIX
+        MOVE_MIX = False
+        if MOVE_MIX:
+            self.commands.base_velocity.class_type = GuideMixVelocityCommand
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)

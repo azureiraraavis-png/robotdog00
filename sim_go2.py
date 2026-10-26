@@ -344,6 +344,9 @@ ap.add_argument("--sb-pass", action="store_true", dest="sb_pass",
                      "옆 0.20 m 비켜 선 채 기다림 (README 76-9). 기본 끔")
 ap.add_argument("--sb-pass-shift", type=float, default=0.20, dest="sb_pass_shift",
                 help="--sb-pass 에서 단 위의 개가 옆으로 비키는 거리 m (기본 0.20 · 0 = 비키지 않고 그 자리에서 기다림 · README 76-11)")
+ap.add_argument("--fall-hold", type=float, default=0.5, dest="fall_hold",
+                help="참 계단의 넘어짐 판정: 몸통-바닥이 0.15 m 아래로 이만큼(초) **이어서** 머물면 넘어짐 (README 76-13 · 기본 0.5) · "
+                     "0 = 76-12 까지처럼 한 순간이라도 0.15 m 아래면 넘어짐")
 ap.add_argument("--sb-park", choices=["safe", "old"], default="safe", dest="sb_park",
                 help="사람 상자를 치우고 놓는 법 (README 76-6) — safe: 부딪힘을 끈 다음 바퀴에 옮기고, 놓은 다음 바퀴에 켬 (기본) · "
                      "old: 76-5 까지처럼 부딪힘을 켠 채 한 번에 옮김 (그 순간 붙어 있던 개를 칠 수 있음)")
@@ -2593,6 +2596,8 @@ sb_k = 0                  # 가장 멀리 간 칸 (0..2N · 참 = N)
 sb_k_at = None            # 그 칸에 처음 닿은 때
 sb_where_now = ("", 0)
 sb_clr_min = None         # 몸통과 바로 아래 바닥 사이 — 가장 좁았던 값 (재는 구간)
+sb_low_t0 = None          # 몸통-바닥이 0.15 m 아래로 내려간 때 (이어지는 동안) — README 76-13
+sb_low_max = 0.0          # 0.15 m 아래로 이어서 머문 가장 긴 시간 (초)
 sb_offA = sb_offB = None  # 첫 단 · 둘째 단 위에서 그 단의 가운데 줄에서 가장 멀리 벗어난 값 (부호 · m)
 sb_land_in = sb_land_out = None   # 참에 들어선 때 · 다음 단의 첫 칸을 지난 때
 sb_xmax_land = None       # 참에서 가장 멀리 간 x (참 끝 벽까지 남은 거리를 냅니다)
@@ -2831,6 +2836,12 @@ while simulation_app.is_running():
         if since >= args.warm:
             _clr = _pz - sb_ground(_px, _py, zref=_pz)
             sb_clr_min = _clr if sb_clr_min is None else min(sb_clr_min, _clr)
+            if _clr < 0.15:                      # 넘어짐 판정 (76-13): 이어서 머문 시간
+                if sb_low_t0 is None:
+                    sb_low_t0 = now
+                sb_low_max = max(sb_low_max, now - sb_low_t0)
+            else:
+                sb_low_t0 = None
         _aS = _py < SB["ymid"]
         if SB["at"] <= _px <= SB["xt"]:
             if _aS and (sb_offA is None or abs(_py) > abs(sb_offA)):
@@ -3517,7 +3528,7 @@ else:
             if SB.get("multi"):
                 return w
             return "참" if w == "참" else f"{w} {k if k <= SB['N'] else k - SB['N']}칸"
-        sb_fell = ((sb_clr_min is not None and sb_clr_min < 0.15)
+        sb_fell = (((sb_clr_min is not None and sb_clr_min < 0.15) if args.fall_hold <= 0.0 else (sb_low_max > args.fall_hold))
                    or (_ez - sb_ground(_ex, _ey, zref=_ez)) < 0.15)
         if sb_goal_at is not None and not sb_fell:
             verdict = "바닥까지 내려옴" if args.down else "꼭대기까지 오름"
@@ -3547,6 +3558,7 @@ else:
         print("       참  " + (f"머문 시간 {_land:.1f}초" if _land is not None else "머문 시간 —")
               + (f" · 참 끝 벽까지 남은 거리(몸 중심) {_wall * 100:.0f} cm" if _wall is not None else "")
               + (f" · 몸통-바닥 최저 {sb_clr_min:.3f} m" if sb_clr_min is not None else "")
+              + (f" (0.15 m 아래 이어서 가장 길게 {sb_low_max:.2f}초 · 넘어짐 판정 {args.fall_hold:g}초)" if sb_clr_min is not None and sb_clr_min < 0.15 else "")
               + "   · 줄을 넘긴 때 " + (", ".join(f"{k}번 {t - began:.1f}초" for k, t in sorted(sb_seg_at.items())) or "—"))
         if SB.get("multi"):
             if sb_visits and sb_visits[-1][2] is None:
@@ -3692,6 +3704,7 @@ else:
                                 + ((f" | w{SBX['r']['n']} f{SBX['r']['n_flight']} g{SBX['r']['n_go']} t{SBX['r']['total']:.0f}"
                                     + ("!" if SBX["r"]["mode"] == "wait" else "")
                                     + (f" v{SBX['r'].get('n_pass', 0)}" if args.sb_pass else "")) if args.sb_react else "")) if (_sbk and SBX is not None) else "")),
+                ("sb_low_s", (f"{sb_low_max:.2f}/{args.fall_hold:g}" if _sbk else "")),   # 0.15 m 아래 이어서 가장 길게 / 판정 초 (76-13)
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
