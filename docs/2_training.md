@@ -251,6 +251,7 @@
   - [76-13. 넘어짐 규칙 고침 — 0.15 m 아래로 "0.5초 넘게" 머물면 넘어짐 (돌리기 전에 적는다 · 10/26)](#c76-13)
 - [77. 뒤로 · 옆으로 · 제자리 돌기를 섞어 이어 학습 (2026-10-26)](#c77)
   - [77-1. 판과 읽는 법 (돌리기 전에 적는다)](#c77-1)
+  - [77-2. 첫 판은 시뮬레이터가 뜨지도 못했다 — 제 cfg 가 pxr 를 먼저 불러옴 · 고침 (10/26)](#c77-2)
 
 <a id="c33"></a>
 
@@ -8771,3 +8772,27 @@ rig 에 더한 것 (기본값은 옛 그대로): `--vy` (옆 명령을 그대로
 - **커리큘럼이 흔들릴 수 있다.** 명령이 작은 개는 승급도 강등도 잘 안 된다. 지형 단계 평균이 2600 때와 달라도 그것만으로 읽지 않는다 — 판정은 위 네 물음으로만 한다.
 - **서 있지 않은 개 가운데 앞으로 가는 몫이 100% → 70% 로 준다.** 그래서 계단 실력이 줄 수 있다 — 물음 1~3 이 그것을 잡는다.
 - 길잡이에 "물러나기" 규칙을 넣는 것은 77 이 지난 뒤의 일이다.
+
+<a id="c77-2"></a>
+
+### 77-2. 첫 판은 시뮬레이터가 뜨지도 못했다 — 제 cfg 가 pxr 를 먼저 불러옴 · 고침 (10/26)
+
+[↑ 목차](#toc)
+
+**일어난 일 (12:35):**
+- 스위치는 다 들어갔고 "[디딤 섞기]" 도 5·5·5 · 5·5·5 로 찍혔다.
+- 그러나 훈련은 한 번도 돌지 않았다 — `SimulationApp` 이 뜨다가 `RuntimeError: Caught an unknown exception!`.
+- `train77.ps1` 이 설정을 되돌리고 멈췄다. 새 로그 폴더 · 체크포인트는 없다.
+
+**까닭 (제 실수):**
+- 77-1 에서 `flat_env_cfg.py` 맨 위에 `from isaaclab.envs.mdp.commands.velocity_command import UniformVelocityCommand` 를 넣었다.
+- Isaac Lab 3.0 의 `train.py` 는 cfg 를 **시뮬레이터를 띄우기 전에** 읽는다 ("Parsing configuration from …" 이 먼저).
+- 그 import 가 `isaaclab.assets` 를 거쳐 pxr (USD) 를 먼저 올렸다 → "Modules ['pxr', …] were loaded before SimulationApp was started" 경고 → kit 확장들이 pxr 를 못 올림 (`train77_train.log.err` 에 pxr 오류 수십 줄) → 시작 실패.
+- 견줌: 2600 을 만든 판 (`train75c_train.log.err`) 에는 pxr 오류가 한 줄도 없다.
+
+**고침 (판 · 기준은 77-1 그대로):**
+- 명령 섞기 클래스를 새 파일 `isaaclab_edits/go2/guide_mix_command.py` 로 옮겼다 (내용은 같음).
+- cfg 에는 `"…config.go2.guide_mix_command:GuideMixVelocityCommand"` 글자만 적는다 (Isaac Lab 의 `ResolvableString` — 명령을 만들 때, 곧 시뮬레이터가 뜬 뒤에 불러옴). Isaac Lab 자신의 기본값도 이렇게 적혀 있다 (`commands_cfg.py`: `"{DIR}.velocity_command:UniformVelocityCommand"`).
+- `train77.ps1` 은 훈련 전에 `guide_mix_command.py` 를 Isaac Lab 의 go2 폴더로 복사하고 같은지 확인한다. cfg 맨 위에 명령 import 가 다시 들어 있으면 멈춘다.
+
+**지금 Isaac Lab 쪽 cfg:** 되돌리기가 옛 `flat_env_cfg.py` (맨 위 import 가 있는 판) 를 복사해 두었다 → 이 상태로는 이 과제의 Isaac Lab 실행 (훈련 · 정책 꺼내기) 이 모두 같은 식으로 실패할 것이다. 새 `train77.ps1` 을 돌리면 맨 처음에 새 cfg 로 바뀐다.
