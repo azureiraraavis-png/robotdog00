@@ -339,6 +339,11 @@ ap.add_argument("--sb-door-wall", choices=["side", "back"], default="side", dest
                      "열리면 문짝이 뒤 벽을 따라 누움 / back: 뒤 벽 가운데")
 ap.add_argument("--sb-react", action="store_true", dest="sb_react",
                 help="--sb-seed 와 함께: 길잡이가 앞의 사람 · 문짝을 보고 참으로 가서 (못 가면 그 자리에서) 멈춰 기다렸다 다시 감 (README 76). 기본 끔")
+ap.add_argument("--sb-pass", action="store_true", dest="sb_pass",
+                help="--sb-react 와 함께: 마주 오다 비켜 선 사람이 지나가는 동안 개는 앞으로 안 가고, 단 위에서는 사람의 반대쪽으로 "
+                     "옆 0.20 m 비켜 선 채 기다림 (README 76-9). 기본 끔")
+ap.add_argument("--sb-pass-shift", type=float, default=0.20, dest="sb_pass_shift",
+                help="--sb-pass 에서 단 위의 개가 옆으로 비키는 거리 m (기본 0.20 · 0 = 비키지 않고 그 자리에서 기다림 · README 76-11)")
 ap.add_argument("--sb-park", choices=["safe", "old"], default="safe", dest="sb_park",
                 help="사람 상자를 치우고 놓는 법 (README 76-6) — safe: 부딪힘을 끈 다음 바퀴에 옮기고, 놓은 다음 바퀴에 켬 (기본) · "
                      "old: 76-5 까지처럼 부딪힘을 켠 채 한 번에 옮김 (그 순간 붙어 있던 개를 칠 수 있음)")
@@ -1573,6 +1578,29 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
 
 SBX_LOOK, SBX_STOP = 3.0, 1.0      # 길잡이가 앞을 보는 거리 · 이보다 가까우면 그 자리에 섬 (길 따라 · 몸 중심끼리 · m) — README 76-1
 SBX_CLEAR_S = 1.5                  # 앞이 이만큼(초) 비어 있으면 다시 감
+SBX_PASS = 0.20                    # 엇갈릴 때 개가 옆으로 비켜 서는 거리 (m · 줄에서) — 사람은 단 위에서 0.38 m 비킴 · 개 반폭 0.155 + 사람 반폭 0.225 = 0.38 → 틈 0 (76-5) → 이만큼 틈 (76-9)
+SBX_PASS_BACK = -0.60              # 사람이 개보다 이만큼 (길 따라 · 몸 중심끼리) 뒤로 가면 다 지나간 것 (개 반길이 0.35 + 사람 반두께 0.15 + 여유)
+
+
+def _sbx_passing(s_r, rz):
+    """비켜 선 (yield) 사람이 개와 엇갈리는 중이면 (길 따라 앞 거리, 사람이 개 줄의 어느 쪽인가 +1 왼 / −1 오른) · 아니면 None."""
+    X = SBX
+    on = X["person"]["on"]
+    if on is None or on.get("xyz") is None or on.get("state") != "yield":
+        return None
+    if abs(X["ground"](on["s"]) - (rz - 0.30)) > 1.0:
+        return None
+    gap = on["s"] - s_r
+    if not (SBX_PASS_BACK < gap < SBX_LOOK):
+        return None
+    x, y, h = X["pos"](s_r)
+    # 사람이 비켜 갈 자리 (지금 자리가 아니라 — 엇갈림이 시작될 때 사람은 아직 줄 위에 있어 쪽을 잘못 고름 · 76-10 의 버그)
+    cx, cy, ph = X["pos"](on["s"])
+    smax = 0.80 if X["isl"](on["s"]) else SB["W"] / 2.0 - SBX_PW / 2.0 - 0.02
+    tx = cx - math.sin(ph) * on.get("side", 0.0) * smax
+    ty = cy + math.cos(ph) * on.get("side", 0.0) * smax
+    side = -math.sin(h) * (tx - x) + math.cos(h) * (ty - y)
+    return gap, (1.0 if side >= 0.0 else -1.0)
 
 
 def _sbx_ahead(s_r, e_r, rz):
@@ -1615,6 +1643,30 @@ def sbx_react(now, t_run, s_r, e_r, rz):
     s_o, why = _sbx_ahead(s_r, e_r, rz)
     X["blocked"] = s_o is not None
     here = "참" if X["isl"](s_r) else "단 위"
+    X["shift"] = 0.0
+    if args.sb_pass:                             # 엇갈리기 (README 76-9): 비켜 선 사람이 다 지나갈 때까지 앞으로 안 감 · 단 위에서는 개도 비킴
+        pw = _sbx_passing(s_r, rz)
+        if pw is not None:
+            X["blocked"] = True
+            if here == "단 위" and args.sb_pass_shift > 0.0:
+                X["shift"] = -pw[1] * args.sb_pass_shift
+            if not R.get("passing"):
+                R["passing"] = True
+                R["n_pass"] = R.get("n_pass", 0) + 1
+                print(f" [길잡이] {t_run:.1f}초 · 비켜 선 사람과 엇갈립니다 — 앞으로 안 가고 "
+                      + (f"{'왼' if X['shift'] > 0 else '오른'}쪽으로 {abs(X['shift']):.2f} m 비켜 섭니다" if X["shift"] else "그 자리에서 기다립니다")
+                      + f" (사람은 앞 {pw[0]:.1f} m · 개는 {sb_where_now[0]})")
+            if R["mode"] != "wait":
+                R["mode"], R["t0"], R["clear"], R["where"] = "wait", now, None, here
+                R["n"] += 1
+                if here == "단 위":
+                    R["n_flight"] += 1
+            else:
+                R["clear"] = None
+            return True
+        if R.get("passing"):
+            R["passing"] = False
+            print(f" [길잡이] {t_run:.1f}초 · 사람이 지나갔습니다")
     if R["mode"] == "wait":
         if s_o is None:
             if R["clear"] is None:
@@ -2723,7 +2775,11 @@ while simulation_app.is_running():
         if SBX is not None and args.sb_react and since >= args.warm and sb_goal_at is None:   # 사람 · 문짝 앞에서 (README 76)
             if sbx_react(now, now - began, SBX["cum"][sb_seg] + max(0.0, min(_L, _t)), _e, _pz):
                 _vx, _vy, _wz = 0.0, 0.0, 0.0
-                base_command = torch.tensor([0.0, 0.0, 0.0], device=args.device)
+                _sh = SBX.get("shift", 0.0)
+                if _sh:                              # 엇갈리기 (76-9): 앞으로는 안 가고, 줄을 _sh 만큼 옮긴 듯 옆으로만
+                    _vy = -args.lane_vy * (_e - _sh) * (_uy * math.sin(_yw) + _ux * math.cos(_yw))
+                    _vy = max(-args.vy_max, min(args.vy_max, _vy))
+                base_command = torch.tensor([0.0, _vy, 0.0], device=args.device)
         if sb_w_act is not None:                 # 시켜서 서 있는 동안은 멈춤으로 안 봅니다 (README 72)
             sb_g_hist = []
         elif SBX is not None and args.sb_react and SBX.get("blocked"):   # 앞에 사람 · 문짝이 있으면 지키기가 밀지 않음 (README 76)
@@ -3634,7 +3690,8 @@ else:
                                 + f" d{(SBX['clr_d'] * 100 if SBX['clr_d'] is not None else float('nan')):.0f}"
                                 + (" eng" if SBX["checked"] else "")
                                 + ((f" | w{SBX['r']['n']} f{SBX['r']['n_flight']} g{SBX['r']['n_go']} t{SBX['r']['total']:.0f}"
-                                    + ("!" if SBX["r"]["mode"] == "wait" else "")) if args.sb_react else "")) if (_sbk and SBX is not None) else "")),
+                                    + ("!" if SBX["r"]["mode"] == "wait" else "")
+                                    + (f" v{SBX['r'].get('n_pass', 0)}" if args.sb_pass else "")) if args.sb_react else "")) if (_sbk and SBX is not None) else "")),
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
