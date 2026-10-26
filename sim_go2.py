@@ -339,6 +339,9 @@ ap.add_argument("--sb-door-wall", choices=["side", "back"], default="side", dest
                      "열리면 문짝이 뒤 벽을 따라 누움 / back: 뒤 벽 가운데")
 ap.add_argument("--sb-react", action="store_true", dest="sb_react",
                 help="--sb-seed 와 함께: 길잡이가 앞의 사람 · 문짝을 보고 참으로 가서 (못 가면 그 자리에서) 멈춰 기다렸다 다시 감 (README 76). 기본 끔")
+ap.add_argument("--sb-park", choices=["safe", "old"], default="safe", dest="sb_park",
+                help="사람 상자를 치우고 놓는 법 (README 76-6) — safe: 부딪힘을 끈 다음 바퀴에 옮기고, 놓은 다음 바퀴에 켬 (기본) · "
+                     "old: 76-5 까지처럼 부딪힘을 켠 채 한 번에 옮김 (그 순간 붙어 있던 개를 칠 수 있음)")
 ap.add_argument("--sb-peek", action=argparse.BooleanOptionalAction, default=True, dest="sb_peek",
                 help="--gui 일 때 카메라 쪽 바깥 벽과 칸막이를 **그림에서만** 감춤 (부딪힘은 그대로 · 기본 켬 · README 69-3)")
 ap.add_argument("--hold-max", type=float, default=1.0,
@@ -1331,9 +1334,9 @@ def sbx_make():
         t.Set(_XGf.Vec3d(0.0, 0.0, -30.0))
         r.Set(0.0)
         sc.Set(_XGf.Vec3f(sx, sy, sz))
-        _XPhys.CollisionAPI.Apply(pr)
+        _col = _XPhys.CollisionAPI.Apply(pr).CreateCollisionEnabledAttr(True)
         _XPhys.RigidBodyAPI.Apply(pr).CreateKinematicEnabledAttr(True)
-        return {"prim": pr, "path": f"/World/SBX/{name}", "t": t, "r": r, "Gf": _XGf}
+        return {"prim": pr, "path": f"/World/SBX/{name}", "t": t, "r": r, "Gf": _XGf, "col": _col}
 
     K, N, H = SB["K"], SB["N"], SB["H"]
     tot = 2 * N * K
@@ -1371,7 +1374,9 @@ def sbx_make():
                          "out": rng.random() < 0.5, "w": rng.random()})
         ev_d.sort(key=lambda e: e["k"])
     person = body("Person", SBX_PD, SBX_PW, SBX_PH, (0.20, 0.45, 0.80))
-    person.update({"on": None})
+    person.update({"on": None, "park": False, "arm": False})
+    if args.sb_park == "safe":                 # 땅 밑에 있는 동안은 부딪힘 없음 (76-6)
+        person["col"].Set(False)
     return {"rng": rng, "pos": pos, "ground": ground, "isl": isl, "lands": lands,
             "r": {"mode": None, "target": 0.0, "t0": 0.0, "clear": None, "where": "", "n": 0, "n_flight": 0, "n_go": 0, "total": 0.0},
             "blocked": False, "cum": cum, "tot_s": tot_s, "doors": doors, "person": person,
@@ -1409,6 +1414,14 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
     dt = 0.0 if X.get("t_last") is None else max(0.0, min(0.1, now - X["t_last"]))
     X["t_last"] = now
     Gf = p["Gf"]
+    # ── 사람 상자 치우기 · 놓기 (76-6) ── 엔진은 키네마틱 물체를 한 번에 옮기면 그 사이를 쓸고 가는 것으로 다룰 수 있어
+    #    (76-5: 사라지는 순간 붙어 있던 개가 0.2초에 1 m 날아감), 부딪힘을 끈 바퀴와 옮기는 바퀴를 나눕니다.
+    if p.get("park"):                          # 앞 바퀴에 부딪힘을 껐음 → 이제 땅 밑으로
+        p["t"].Set(Gf.Vec3d(0.0, 0.0, -30.0))
+        p["park"] = False
+    if p.get("arm") and p["on"] is not None:   # 앞 바퀴에 제자리에 놓았음 → 이제 부딪힘을 켬
+        p["col"].Set(True)
+        p["arm"] = False
     # ── 문 ──
     while X["ev_d"] and sb_k >= X["ev_d"][0]["k"]:
         e = X["ev_d"].pop(0)
@@ -1476,6 +1489,8 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
         else:
             on["s0"] = on["s"]
             p["on"] = on
+            if args.sb_park == "safe":
+                p["arm"] = True                # 이 바퀴에 놓고 (부딪힘 꺼진 채) 다음 바퀴에 켬
             X["log"].append(f"p:{on['kind']}@{t_run:.1f}")
             _x, _y, _h = X["pos"](on["s"])
             print(f" [사람] {t_run:.1f}초 · " + {"stand": "서 있는 사람", "oncoming": "마주 오는 사람", "ahead": "앞서 가는 사람",
@@ -1529,7 +1544,12 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
         X["clr_p"] = clr if X["clr_p"] is None else min(X["clr_p"], clr)
         X["clr_now"] = clr
         if gone:
-            p["t"].Set(Gf.Vec3d(0.0, 0.0, -30.0))
+            if args.sb_park == "safe":         # 이 바퀴에는 부딪힘만 끄고 그 자리에 둠 → 다음 바퀴에 치움
+                p["col"].Set(False)
+                p["arm"] = False
+                p["park"] = True
+            else:
+                p["t"].Set(Gf.Vec3d(0.0, 0.0, -30.0))
             X["clr_now"] = None
             print(f" [사람] {t_run:.1f}초 · " + ("15초를 기다려도 못 지나가 돌아갑니다" if on.get("gaveup") else "사라집니다")
                   + f" (개와 가장 가까웠던 거리 {X['clr_p'] * 100:.0f} cm · 지금까지)")
