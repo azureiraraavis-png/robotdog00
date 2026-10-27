@@ -30,7 +30,7 @@ Unitree Go2 PRO가 **한국어로 말하면서 방문객을 안내하도록** �
 |---|---|
 | 지금 안내를 하려면 | [지금 안내를 하려면](docs/1_control.md#a10) |
 | 실기체의 현재 상태 | [현재 상태](#a01) |
-| 가상 로봇개가 지금 서 있는 곳 | [60-2. 결과 — 0.15 도 지키고, 단은 15/15, 내려갈 때도 잡힌다 (10/12 · 40판)](docs/2_training.md#c60-2) |
+| 가상 로봇개가 지금 서 있는 곳 | 기본 정책 **2600** — [75-13](docs/2_training.md#c75-13) · 가장 새 측정 [78-2](docs/2_training.md#c78-2) |
 | 파일이 무엇을 하는가 | [파일 구성](#a51) |
 
 ### 1부. 로봇개 조종 (실기체 Go2 PRO)
@@ -111,21 +111,9 @@ Unitree Go2 PRO가 **한국어로 말하면서 방문객을 안내하도록** �
 - [74. 사람과 문 (2) — 무대에 넣기 (2026-10-14)](docs/2_training.md#c74)
 - [75. 시설 치수의 계단 — 디딤 24 cm · 높이 20 cm (2026-10-14)](docs/2_training.md#c75)
 - [76. 사람과 문 (3) — 길잡이가 참으로 가서 기다린다 (2026-10-14)](docs/2_training.md#c76)
-
-# robotdog00 — Go2 PRO 한국어 안내 로봇
-
-Unitree Go2 PRO가 **한국어로 말하면서 방문객을 안내하도록** 만드는 프로젝트입니다.
-
-앱에 딸린 음성 비서(벤벤)는 한국어를 알아듣지 못하고 손댈 수도 없습니다.
-그래서 앱을 거치지 않고 **PC에서 로봇에 직접 붙어**, 한국어 음성을 만들어
-로봇 스피커로 내보내고, 한국어 명령으로 움직이게 합니다.
-
-> A Korean-language voice guide built on the Unitree Go2 PRO.
-> The stock BenBen assistant is a closed loop to Unitree's servers with no way to add
-> Korean, so this controls the robot directly over the same WebRTC path the app uses —
-> local Whisper for Korean speech recognition, edge-tts for synthesis, played through
-> the robot's own speaker. Documentation is in Korean; the findings section below may
-> be useful to anyone working with a Go2, especially on a non-English Windows locale.
+- [77. 뒤로 · 옆으로 · 제자리 돌기를 섞어 이어 학습 (2026-10-26)](docs/2_training.md#c77)
+- [78. 뒷걸음질 다시 (2026-10-27)](docs/2_training.md#c78)
+- [79. 실측을 무대에 — 시설 무대 v2 (2026-10-27)](docs/2_training.md#c79)
 
 <a id="a01"></a>
 
@@ -193,7 +181,7 @@ Unitree Go2 PRO가 **한국어로 말하면서 방문객을 안내하도록** �
 robotdog00/
 ├── README.md              첫 화면 — 소개 · 현재 상태 · 두 문서로 가는 목차
 ├── docs/1_control.md      ★ 1부. 로봇개 조종 (실기체) — 삽질 기록 1~29 · 30~32장
-├── docs/2_training.md     ★ 2부. 가상 로봇개 훈련 (시뮬레이터) — 33~56장
+├── docs/2_training.md     ★ 2부. 가상 로봇개 훈련 (시뮬레이터) — 33장~ (지금 79장)
 ├── DECISION.md            ★ 왜 로봇이 스스로 걷지 않기로 했는가
 ├── MEASURE.md             복도를 줄자로 재는 법
 ├── ISAACLAB.md            ★ Isaac Lab 에 고친 곳 (남의 저장소라 git 이 안 봅니다)
@@ -209,7 +197,7 @@ robotdog00/
 ├── feet_read.py           발 자취(sim\feet\*.csv)에서 헛발질을 셉니다 (시뮬레이터 불필요)
 ├── scan_check.py          학습 환경의 높이 스캔과 시험대의 식이 같은지 잽니다
 ├── curve.py               학습 곡선 보기 (tensorboard 없이 tfevents 직독)
-├── isaaclab_edits/go2/    ★ Isaac Lab 에 덮어쓰는 과제 설정 원본
+├── isaaclab_edits/go2/    ★ Isaac Lab 에 덮어쓰는 과제 설정 원본 (flat_env_cfg.py · guide_mix_command.py — 77-2)
 │
 │  ── 안내 (지금 쓰는 것) ──
 ├── guide.py               ★ 안내 실행기 — .\run guide.py --manual
