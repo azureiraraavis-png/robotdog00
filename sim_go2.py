@@ -363,8 +363,9 @@ ap.add_argument("--sb-entry-x", type=float, default=1.20, dest="sb_entry_x",
 ap.add_argument("--sb-entry-y", type=float, default=1.60, dest="sb_entry_y",
                 help="작은 참의 y 길이 = 맞은편 벽 → 돌단 끝 m (기본 1.60 · 사진 짐작 · README 79-1)")
 ap.add_argument("--sb-door-clear", type=float, default=0.0, dest="sb_door_clear",
-                help="참 계단 · 여러 층: 층 계단참에서 길잡이 줄과 서는 자리를 문짝이 쓸고 가는 부채꼴 (경첩 중심 · 반지름 = 문짝 폭 + 이 여유 m) 밖으로 "
-                     "(기본 0 = 끔 · 문 벽 side 만 · README 79-6)")
+                help="참 계단 · 여러 층: 층 계단참에서 길잡이 줄 (개 몸 가운데) 과 서는 자리를 문짝이 쓸고 가는 부채꼴 (경첩 중심 · 반지름 = 문짝 폭 + 이 여유 m) 밖으로 "
+                     "(기본 0 = 끔 · 문 벽 side 만 · README 79-6 · 여유는 몸 반대각선 0.385 보다 커야 몸 전체가 밖 — 79-8 은 0.50). "
+                     "--sb-react 와 함께면 문이 열려 있거나 움직이는 동안 그 부채꼴 (+ 여유) 안으로 들어가지 않고 기다림 (79-8)")
 ap.add_argument("--sb-v2", action="store_true", dest="sb_v2",
                 help="시설 무대 v2 (README 79-1 · 보수적): --switchback --rise 0.20 --run 0.24 --sb-width 1.25 --sb-landing 1.30 "
                      "--sb-chamfer 0.55 --sb-gap 0.40 --sb-floor-depth 1.30 --sb-door-w 0.90 --sb-entry 를 한꺼번에 (따로 준 같은 인자는 덮어씀)")
@@ -1197,14 +1198,19 @@ if args.switchback:
             _yt = min(_yB, _hy - math.sqrt(max(0.0, _Rc ** 2 - (_xFc - _hx) ** 2))) if _Rc > abs(_xFc - _hx) else _yB
             _xe = (min(_at - 0.05, max(_xFc, _hx + math.sqrt(max(0.0, _Rc ** 2 - (_hy - _yB) ** 2))))) if _yt < _yB else None
             _dc = (_xe, _yt)                   # _xe 가 None 이면 줄 (y = yB) 이 이미 부채꼴 밖 — 꺾는 점 · 서는 자리만 (xFc, yB)
-            SB["door_clear"] = dict(hx=_hx, hy=_hy, R=_Rc, xe=_xe, yt=_yt)
+            _dm = None                         # 비스듬한 줄의 가운데를 원 위로 (79-7: 곧은 줄은 원 안으로 처짐)
+            if _xe is not None:
+                _a1, _a2 = math.atan2(_yB - _hy, _xe - _hx), math.atan2(_yt - _hy, _xFc - _hx)
+                _rm = max(math.hypot(_xe - _hx, _yB - _hy), math.hypot(_xFc - _hx, _yt - _hy))
+                _dm = (_hx + _rm * math.cos((_a1 + _a2) / 2.0), _hy + _rm * math.sin((_a1 + _a2) / 2.0))
+            SB["door_clear"] = dict(hx=_hx, hy=_hy, R=_Rc, xe=_xe, yt=_yt, mid=_dm)
         elif args.sb_door_clear > 0:
             print(" ✖ --sb-door-clear 는 문 벽 side 에서만 됩니다 — 끕니다.")
         if args.down:   # 맨 위층 계단참에서 내려가며 참마다 오른쪽으로 90 + 90
-            _P = (([(_xFc, _dc[1]), (_dc[0], _yB)] if _dc[0] is not None else [(_xFc, _yB)]) if _dc else [(_at - 0.8, _yB)])
+            _P = (([(_xFc, _dc[1]), _dm, (_dc[0], _yB)] if _dc[0] is not None else [(_xFc, _yB)]) if _dc else [(_at - 0.8, _yB)])
             for _f in range(_K - 1, -1, -1):
                 _P += [(SB["xc"], _yB), (SB["xc"], 0.0)]
-                _P += ([(_xFc, 0.0), (_xFc, _dc[1]), (_dc[0], _yB)] if (_dc and _dc[0] is not None) else [(_xFc, 0.0), (_xFc, _yB)]) if _f > 0 else (
+                _P += ([(_xFc, 0.0), (_xFc, _dc[1]), _dm, (_dc[0], _yB)] if (_dc and _dc[0] is not None) else [(_xFc, 0.0), (_xFc, _yB)]) if _f > 0 else (
                     [(SB["exc"], 0.0), (SB["exc"], SB["ey1"] + 0.8)] if _NE else [(_at - 1.5, 0.0)])   # 들머리: 작은 참에서 오른쪽 90° · 돌단을 +y 로
             SB["start"] = _P[0]
         else:           # 1층 바닥에서 올라가며 참마다 왼쪽으로 90 + 90
@@ -1212,7 +1218,7 @@ if args.switchback:
             for _f in range(_K):
                 _P += [(SB["xc"], 0.0), (SB["xc"], _yB)]
                 if _dc and _dc[0] is not None:  # 문짝 피하기 (79-6): 부채꼴 앞에서 비스듬히 내려가 꺾음 · 맨 위층은 그 자리에 섬
-                    _P += [(_dc[0], _yB), (_xFc, _dc[1]), (_xFc, 0.0)] if _f < _K - 1 else [(_dc[0], _yB), (_xFc, _dc[1])]
+                    _P += [(_dc[0], _yB), _dm, (_xFc, _dc[1]), (_xFc, 0.0)] if _f < _K - 1 else [(_dc[0], _yB), _dm, (_xFc, _dc[1])]
                 elif _dc:                      # 줄은 이미 부채꼴 밖 — 맨 위층에서 서는 자리만 (xF + 0.4 → 층 계단참 가운데)
                     _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else [(_xFc, _yB)]
                 else:
@@ -1703,12 +1709,17 @@ def _sbx_ahead(s_r, e_r, rz):
         if d["ang"] <= 0.5 or abs(d["z0"] - (rz - 0.30)) > 1.0:
             continue
         cx, cy, yaw = _sbx_door_xy(d)
+        _zr = (args.sb_door_w + args.sb_door_clear) if (args.sb_door_clear > 0 and args.sb_door_wall == "side") else None
         s = s_r
         while s <= s_r + SBX_LOOK:
             x, y, _h = X["pos"](s)
             if _sbx_rect_dist(x, y, cx, cy, yaw, args.sb_door_w, SBX_DT) < SBX_RW / 2.0 + 0.15:
                 if best[0] is None or s < best[0]:
                     best = (s, f"{d['f']}층 문짝")
+                break
+            if _zr is not None and math.hypot(x - d["hx"], y - d["hy"]) < _zr:   # 79-8: 열려 있거나 움직이는 문의 부채꼴 (+ 여유) 에는 안 들어감
+                if best[0] is None or s < best[0]:
+                    best = (s, f"{d['f']}층 문 자리")
                 break
             s += 0.10
     return best
