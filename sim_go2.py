@@ -352,6 +352,19 @@ ap.add_argument("--sb-park", choices=["safe", "old"], default="safe", dest="sb_p
                      "old: 76-5 까지처럼 부딪힘을 켠 채 한 번에 옮김 (그 순간 붙어 있던 개를 칠 수 있음)")
 ap.add_argument("--sb-peek", action=argparse.BooleanOptionalAction, default=True, dest="sb_peek",
                 help="--gui 일 때 카메라 쪽 바깥 벽과 칸막이를 **그림에서만** 감춤 (부딪힘은 그대로 · 기본 켬 · README 69-3)")
+ap.add_argument("--sb-entry", action="store_true", dest="sb_entry",
+                help="참 계단 · 여러 층: 1층 들머리 — 1층 바닥(+y 쪽)에서 돌단을 −y 로 올라 작은 참에서 왼쪽 90° 돌아 첫 단(+x)으로 (README 79). "
+                     "돌단 높이는 --rise 와 같음 · 무대 전체가 돌단 높이만큼 올라감")
+ap.add_argument("--sb-entry-steps", type=int, default=4, dest="sb_entry_steps",
+                help="들머리 돌단의 오름 수 (기본 4 = 디딤 3 + 작은 참 · 사이안 님 10/27)")
+ap.add_argument("--sb-entry-run", type=float, default=0.28, dest="sb_entry_run", help="들머리 돌단 디딤 m (기본 0.28 · 실측 29 − 1)")
+ap.add_argument("--sb-entry-x", type=float, default=1.20, dest="sb_entry_x",
+                help="작은 참의 x 길이 = 뒤 벽 → 첫 단 앞 m (기본 1.20 · 사진 짐작 · 돌단 폭도 이 값 · README 79-1)")
+ap.add_argument("--sb-entry-y", type=float, default=1.60, dest="sb_entry_y",
+                help="작은 참의 y 길이 = 맞은편 벽 → 돌단 끝 m (기본 1.60 · 사진 짐작 · README 79-1)")
+ap.add_argument("--sb-v2", action="store_true", dest="sb_v2",
+                help="시설 무대 v2 (README 79-1 · 보수적): --switchback --rise 0.20 --run 0.24 --sb-width 1.25 --sb-landing 1.30 "
+                     "--sb-chamfer 0.55 --sb-gap 0.40 --sb-floor-depth 1.30 --sb-door-w 0.90 --sb-entry 를 한꺼번에 (따로 준 같은 인자는 덮어씀)")
 ap.add_argument("--hold-max", type=float, default=1.0,
                 dest="hold_max",
                 help="회전 명령 한계 rad/s (ang_vel_z 범위 기본값 1.0)")
@@ -381,6 +394,11 @@ ap.add_argument("--policy", default=None,
 ap.add_argument("--gains", default=None,
                 help="강성,감쇠,힘제한 (예: 25,0.5,23.5). 깨운 직후에 넣습니다")
 args, unknown = ap.parse_known_args()
+if args.sb_v2:            # 시설 무대 v2 (README 79-1) — 실측을 보수적으로
+    args.switchback = True
+    args.rise, args.run, args.sb_width = 0.20, 0.24, 1.25
+    args.sb_landing, args.sb_chamfer, args.sb_gap = 1.30, 0.55, 0.40
+    args.sb_floor_depth, args.sb_door_w, args.sb_entry = 1.30, 0.90, True
 if args.legs:
     args.hips = True          # 관절 이름·읽는 법을 --hips 가 찾습니다
 
@@ -1061,6 +1079,11 @@ if args.switchback:
     _K, _F, _Lc = max(1, args.sb_floors), args.sb_floor_depth, max(0.0, args.sb_chamfer)
     _multi = _K >= 2 or _Lc > 0
     SB["K"], SB["multi"], SB["F"], SB["Lc"], SB["H"] = _K, _multi, _F, _Lc, 2 * _N * _r
+    if args.sb_entry and not _multi:
+        print(" ✖ --sb-entry 는 여러 층 무대 (--sb-floors 2 이상 또는 --sb-chamfer) 에서만 됩니다 — 끕니다.")
+    _NE = max(2, args.sb_entry_steps) if (args.sb_entry and _multi) else 0   # 1층 들머리 돌단 오름 수 (README 79)
+    _Z0 = _NE * _r                                                         # 무대 전체가 이만큼 올라감 (작은 참 높이)
+    SB["NE"], SB["Z0"], SB["TOT"] = _NE, _Z0, 2 * _N * _K + _NE            # TOT = 끝까지 간 칸 수 (들머리 돌단 포함)
     if not _multi:      # ── 68 의 무대 (한 층 · 안 깎음) — 글자 그대로 ──
         _bx = []   # (이름, x0, x1, y0, y1, 윗면 z, 바닥인가)
         for _i in range(_N):                                    # 첫 단: i 번째 상자가 참 끝까지 뻗음 (겹쳐 쌓기)
@@ -1100,7 +1123,7 @@ if args.switchback:
                                                #   0.20 짜리 판이면 발이 판 가운데보다 아래로 박혀 옆으로 튕겨 나갑니다. 아래 머리 위 여유 2.6 m)
         _fl, _wl, _cut = [], [], []            # 바닥 (이름, x0, x1, y0, y1, z0, z1) · 벽 (같은 꼴) · 깎은 모서리 (이름, cx, cy, 다리, z0, z1)
         for _f in range(_K):
-            _b = _f * _H
+            _b = _f * _H + _Z0
             for _i in range(_N):               # 첫 단 (+x 로 오름)
                 _tp = _b + (_i + 1) * _r
                 _fl.append((f"F{_f + 1}_A_{_i:02d}", _at + _i * _u, _at + (_i + 1) * _u, -_W / 2, _W / 2, _tp - _r - _TS, _tp))
@@ -1111,15 +1134,31 @@ if args.switchback:
                 _fl.append((f"F{_f + 1}_B_{_j:02d}", _xt - _j * _u, _xt - (_j - 1) * _u, _yB - _W / 2, _yB + _W / 2, _tp - _r - _TS, _tp))
             _tp = _b + _H                      # 위층의 계단참
             _fl.append((f"F{_f + 2}_Floor", _xF, _at, -_W / 2, _yB + _W / 2, _tp - (_TT if _f == _K - 1 else _TL), _tp))
+        if _NE:                                # 1층 들머리 (README 79): 작은 참 + 돌단 (−y 로 오름) — 바닥부터 꽉 찬 덩어리
+            _ex0, _ex1 = _at - args.sb_entry_x, _at
+            _ey0 = -_W / 2 + args.sb_entry_y   # 작은 참의 돌단 쪽 끝
+            _ue = args.sb_entry_run
+            _ey1 = _ey0 + (_NE - 1) * _ue      # 돌단 맨 아래 끝 (여기부터 1층 바닥)
+            _fl.append(("F1_Entry_Land", _ex0, _ex1, -_W / 2, _ey0, 0.0, _Z0))
+            for _i in range(_NE - 1):          # i = 0 이 맨 아래 칸 (+y 끝)
+                _fl.append((f"F1_Entry_{_i:02d}", _ex0, _ex1, _ey0 + (_NE - 2 - _i) * _ue, _ey0 + (_NE - 1 - _i) * _ue, 0.0, (_i + 1) * _r))
+            SB.update(ex0=_ex0, ex1=_ex1, ey0=_ey0, ey1=_ey1, exc=(_ex0 + _ex1) / 2.0)
         if args.sb_walls:
-            _zt = _K * _H + 1.0
+            _zt = _K * _H + _Z0 + 1.0
             _xb = min(-1.0, _xF) - _wt
             _wl += [("Wall_A", _xb, _xl + _wt, -_W / 2 - _wt, -_W / 2, 0.0, _zt),
                     ("Wall_B", _xb, _xl + _wt, _yB + _W / 2, _yB + _W / 2 + _wt, 0.0, _zt),
                     ("Wall_far", _xl, _xl + _wt, -_W / 2 - _wt, _yB + _W / 2 + _wt, 0.0, _zt),
                     ("Divider", _at, _xt, _W / 2, _W / 2 + _gp, 0.0, _zt),
-                    ("Wall_back0", _xb, _xb + _wt, -_W / 2, _yB + _W / 2, 0.0, _H - _TL),
-                    ("Wall_backF", _xF - _wt, _xF, -_W / 2, _yB + _W / 2, _H - _TL, _zt)]
+                    ("Wall_back0", _xb, _xb + _wt, -_W / 2, _yB + _W / 2, 0.0, _Z0 + _H - _TL),
+                    ("Wall_backF", _xF - _wt, _xF, -_W / 2, _yB + _W / 2, _Z0 + _H - _TL, _zt)]
+            if _NE:                            # 1층 들머리: 바깥 벽 B 에 1층 바닥으로 나가는 틈 · 작은 참 뒤 벽 (README 79)
+                _yb0, _yb1, _zo = _yB + _W / 2, _yB + _W / 2 + _wt, _Z0 + _H - _TL
+                _wl = [_w for _w in _wl if _w[0] != "Wall_B"]
+                _wl += [("Wall_B", _xb, _ex0 - _wt, _yb0, _yb1, 0.0, _zt),
+                        ("Wall_B2", _ex1, _xl + _wt, _yb0, _yb1, 0.0, _zt),
+                        ("Wall_Bopen", _ex0 - _wt, _ex1, _yb0, _yb1, _zo, _zt),
+                        ("Wall_EntryBack", _ex0 - _wt, _ex0, -_W / 2, _yb0, 0.0, _zo)]
             if _Lc > 0:
                 _cut += [("Cut_A", _xl, -_W / 2, _Lc, 0.0, _zt), ("Cut_B", _xl, _yB + _W / 2, _Lc, 0.0, _zt)]
         SB["floors"], SB["walls"], SB["cuts"], SB["boxes"] = _fl, _wl, _cut, []
@@ -1151,20 +1190,27 @@ if args.switchback:
             _P = [(_at - 0.8, _yB)]
             for _f in range(_K - 1, -1, -1):
                 _P += [(SB["xc"], _yB), (SB["xc"], 0.0)]
-                _P += [(_xFc, 0.0), (_xFc, _yB)] if _f > 0 else [(_at - 1.5, 0.0)]
+                _P += [(_xFc, 0.0), (_xFc, _yB)] if _f > 0 else (
+                    [(SB["exc"], 0.0), (SB["exc"], SB["ey1"] + 0.8)] if _NE else [(_at - 1.5, 0.0)])   # 들머리: 작은 참에서 오른쪽 90° · 돌단을 +y 로
             SB["start"] = (_at - 0.8, _yB)
         else:           # 1층 바닥에서 올라가며 참마다 왼쪽으로 90 + 90
-            _P = [(0.0, 0.0)]
+            _P = [(SB["exc"], SB["ey1"] + 0.6), (SB["exc"], 0.0)] if _NE else [(0.0, 0.0)]   # 들머리: 1층 바닥 → 돌단 −y → 작은 참에서 왼쪽 90°
             for _f in range(_K):
                 _P += [(SB["xc"], 0.0), (SB["xc"], _yB)]
                 _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else [(_xF + 0.4, _yB)]
-            SB["start"] = (0.0, 0.0)
+            SB["start"] = _P[0]
+            if _NE:
+                SB["yaw0"] = -math.pi / 2.0    # 돌단 쪽 (−y) 을 보고 섬
         SB["path"] = _P
     print(f" [참 계단] {'내려가기' if args.down else '오르기'} · {_N}칸 + 참 + {_N}칸 · 높이 {_r:.3f} · 디딤 {_u:.2f}"
           f" · 폭 {_W:.2f} · 참 깊이 {_D:.2f} · 칸막이 {_gp:.2f} · 벽 {'있음' if args.sb_walls else '없음'}")
     print(f"        첫 단 x {_at:.2f}~{_xt:.2f} (y 0) · 참 x {_xt:.2f}~{_xl:.2f} · 둘째 단 x {_xt:.2f}~{_at + _u:.2f} (y {_yB:.2f})"
-          f" · 꼭대기 z {_K * 2 * _N * _r:.3f} · 상자 {len(_bx)}개"
+          f" · 꼭대기 z {_K * 2 * _N * _r + SB['Z0']:.3f} · 상자 {len(_bx)}개"
           + (f" · {_K}층 · 층 계단참 깊이 {_F:.2f} · 깎은 모서리 {_Lc:.2f}" if _multi else ""))
+    if SB.get("NE"):
+        print(f"        1층 들머리: 돌단 {SB['NE']}오름 (디딤 {args.sb_entry_run:.2f} × {SB['NE'] - 1} · 높이 {_r:.3f} · 폭 {args.sb_entry_x:.2f})"
+              f" · 작은 참 x {SB['ex0']:.2f}~{SB['ex1']:.2f} · y {-_W / 2:.2f}~{SB['ey0']:.2f} · z {SB['Z0']:.2f} · 1층 바닥은 y {SB['ey1']:.2f} 부터"
+              + (" · v2 (README 79-1)" if args.sb_v2 else ""))
     print("        길잡이 줄: " + " → ".join(f"({_a:.2f}, {_b:.2f})" for _a, _b in SB["path"]))
     if args.yaw:
         print("        ✖ --yaw 는 이 무대에서 쓰지 않습니다 — 0 으로 둡니다.")
@@ -1213,20 +1259,25 @@ def sb_where(x, y, z=None, yaw=None):
         g = sb_ground(xr, yr, zref=_zr)
         if z is not None and z - g > 1.0:        # 발 아래에 무대 바닥이 없음 (날아감 · 판 밖) — 칸으로 안 셉니다 (69-2:
             return "발 아래 바닥 없는 곳", 0       #   내려가기에선 바닥 0 이 '다 내려옴 40칸'으로 읽혔습니다)
-        tot = 2 * N * SB["K"]
+        tot = SB["TOT"]                          # 들머리 돌단 포함 (README 79 · 돌단 높이 = rise)
         k_up = max(0, min(tot, int(round(g / SB["rise"]))))
         k = (tot - k_up) if args.down else k_up
-        H = SB["H"]
+        H, NE = SB["H"], SB["NE"]
+        gz = g - SB["Z0"]                        # 들머리가 있으면 무대가 Z0 만큼 올라가 있음
+        if NE and x <= at + 0.05 and g < SB["Z0"] - 0.05:   # 첫 단 앞쪽에서 작은 참보다 낮은 곳 = 돌단 · 1층 바닥 (뒷발 자리 높이로 셈)
+            return ("1층 바닥 (들머리 앞)" if g < 0.05 else f"1층 들머리 돌단 {max(0, min(NE - 1, k_up))}칸"), k
+        if NE and x <= at and abs(gz) <= 0.05:
+            return "1층 작은 참", k
         if x >= xt:
-            f = int((g + 0.01) // H)
+            f = int((gz + 0.01) // H)
             return f"{f + 1}~{f + 2}층 사이 참", k
-        if x <= at and g >= H - 0.05:
-            return f"{int(round(g / H)) + 1}층 계단참", k
+        if x <= at and gz >= H - 0.05:
+            return f"{int(round(gz / H)) + 1}층 계단참", k
         if y < SB["ymid"]:                       # 첫 단: 그 층 바닥 fH ~ fH + N·rise
-            f = int((g + 0.01) // H)
-            return f"{f + 1}층 첫 단 {max(0, min(N, k_up - f * 2 * N))}칸", k
-        f = int((g - 0.01) // H) if g > 0.01 else 0   # 둘째 단: fH + N·rise ~ (f+1)H
-        return f"{f + 1}층 둘째 단 {max(0, min(N, k_up - f * 2 * N - N))}칸", k
+            f = int((gz + 0.01) // H)
+            return f"{f + 1}층 첫 단 {max(0, min(N, k_up - NE - f * 2 * N))}칸", k
+        f = int((gz - 0.01) // H) if gz > 0.01 else 0   # 둘째 단: fH + N·rise ~ (f+1)H
+        return f"{f + 1}층 둘째 단 {max(0, min(N, k_up - NE - f * 2 * N - N))}칸", k
     a_side = y < SB["ymid"]
     if x >= xt:
         return "참", N
@@ -1305,7 +1356,7 @@ def sbx_make():
                 f = (s - cum[i]) / L
                 return ax + (bx - ax) * f, ay + (by - ay) * f, math.atan2(by - ay, bx - ax)
     # 길을 따라 바닥 높이 (몸 아래 처음 맞는 바닥 · 2 cm 마다)
-    prof, zg = [], (SB["K"] * SB["H"] if args.down else 0.0)
+    prof, zg = [], (SB["K"] * SB["H"] + SB["Z0"] if args.down else 0.0)
     n = int(tot_s / 0.02) + 2
     for i in range(n):
         x, y, _h = pos(i * 0.02)
@@ -1318,7 +1369,7 @@ def sbx_make():
     isl_arr = []
     for i in range(n):
         x, y, _h = pos(i * 0.02)
-        isl_arr.append(x >= SB["xt"] - 0.02 or x <= SB["at"] + 0.02)
+        isl_arr.append(x >= SB["xt"] - 0.02 or (x <= SB["at"] + 0.02 and (not SB["NE"] or y <= SB["ey0"] + 0.02 or y >= SB["ey1"] - 0.02)))   # 들머리 돌단은 참이 아님 (79)
     lands, a0 = [], None
     for i, v in enumerate(isl_arr + [False]):
         if v and a0 is None:
@@ -1347,7 +1398,7 @@ def sbx_make():
         return {"prim": pr, "path": f"/World/SBX/{name}", "t": t, "r": r, "Gf": _XGf, "col": _col}
 
     K, N, H = SB["K"], SB["N"], SB["H"]
-    tot = 2 * N * K
+    tot, NE, Z0 = SB["TOT"], SB["NE"], SB["Z0"]
     closed = {int(v) for v in args.sb_closed.split(",") if v.strip()}
     doors = {}
     _yc = (-SB["W"] / 2.0 + SB["yB"] + SB["W"] / 2.0) / 2.0 if args.sb_door_y is None else args.sb_door_y
@@ -1360,7 +1411,7 @@ def sbx_make():
             hx, hy, c0 = SB["xF"] + 0.03, _ymax - SBX_DT / 2.0 - 0.005, 0.0
             fx, fy = SB["xF"] + 0.03 + args.sb_door_w / 2.0, _ymax - 0.6
         d = body(f"Door_F{f}", args.sb_door_w, SBX_DT, SBX_DH, (0.55, 0.36, 0.20))
-        d.update({"f": f, "hx": hx, "hy": hy, "c0": c0, "fx": fx, "fy": fy, "z0": (f - 1) * H + 0.01,
+        d.update({"f": f, "hx": hx, "hy": hy, "c0": c0, "fx": fx, "fy": fy, "z0": (f - 1) * H + Z0 + 0.01,
                   "ang": 0.0, "closed": f in closed, "q": [], "now": None, "near": None})
         doors[f] = d
     # 일 정하기 — 진행(칸)으로 깨웁니다 (사람: 1 ~ 최대 · 문: 1 ~ 최대 · 열 수 있는 층에서만)
@@ -1372,7 +1423,7 @@ def sbx_make():
         ev_p.sort(key=lambda e: e["k"])
     ok_f = []
     for f in doors:
-        kf = (f - 1) * 2 * N if not args.down else tot - (f - 1) * 2 * N
+        kf = (f - 1) * 2 * N + NE if not args.down else tot - (f - 1) * 2 * N - NE
         if not doors[f]["closed"] and kf > 3:
             ok_f.append((f, kf))
     if args.sb_doors_max > 0 and ok_f:
@@ -1875,8 +1926,17 @@ Kind = SpotFlatTerrainPolicy if args.robot == "spot" else Go2FlatTerrainPolicy
 made = {"prim_path": "/World/" + args.robot, "position": [0, 0, high]}
 if SB is not None:
     if args.down:
-        high += SB["K"] * 2 * SB["N"] * SB["rise"]       # (맨 위층의) 위 참 위에 놓습니다
+        high += SB["K"] * 2 * SB["N"] * SB["rise"] + SB["Z0"]   # (맨 위층의) 위 참 위에 놓습니다 (들머리면 Z0 만큼 더 · 79)
     made["position"] = [SB["start"][0], SB["start"][1], high]
+    if SB.get("yaw0") and not args.down:     # 들머리: 돌단 쪽을 보고 섬 (README 79)
+        import inspect as _inspect0
+        _tk0 = _inspect0.signature(Kind.__init__).parameters
+        _on0 = "orientation" if "orientation" in _tk0 else ("orientations" if "orientations" in _tk0 else None)
+        if _on0:
+            made[_on0] = [math.cos(SB["yaw0"] / 2.0), 0.0, 0.0, math.sin(SB["yaw0"] / 2.0)]
+            print(f" [방향] 들머리: {math.degrees(SB['yaw0']):+.0f} 도 돌려세웁니다 ({_on0})")
+        else:
+            print(" [방향] ✖ 이 클래스는 방향을 안 받습니다 — 들머리에서 +x 를 보고 섭니다")
 if args.yaw:
     # z 축으로 도는 사원수 (w, x, y, z). 반각을 쓰는 것에 주의.
     half = math.radians(args.yaw) / 2.0
@@ -1958,6 +2018,8 @@ if args.gui:
                     if args.sb_peek and _nm in ("Wall_A", "Divider"):
                         _UG.Imageable(_p).MakeInvisible()   # 그림에서만 — 부딪힘판(CollisionAPI)은 그대로 둡니다
                         _hid.append(_nm)
+                elif _nm.startswith("F1_Entry"):     # 1층 들머리 (짙은 돌 · README 79)
+                    _c = (0.30, 0.30, 0.32) if _nm.endswith("Land") else ((0.26, 0.26, 0.28) if int(_nm[-2:]) % 2 else (0.36, 0.36, 0.38))
                 elif _nm.endswith("Floor"):
                     _c = (0.36, 0.43, 0.52)
                 elif _nm.endswith("Mid") or _nm.startswith("Landing"):
@@ -2857,7 +2919,7 @@ while simulation_app.is_running():
             sb_land_out = now
         if SB.get("multi"):
             _g = sb_ground(_px, _py, zref=_pz)
-            _rg = "mid" if _px >= SB["xt"] else ("floor" if (_px <= SB["at"] and _g >= SB["H"] - 0.05) else "stair")
+            _rg = "mid" if _px >= SB["xt"] else ("floor" if (_px <= SB["at"] and _g - SB["Z0"] >= SB["H"] - 0.05) else "stair")
             if _rg != sb_region:
                 if sb_visits and sb_visits[-1][2] is None:
                     sb_visits[-1] = (sb_visits[-1][0], sb_visits[-1][1], now)
@@ -2871,12 +2933,14 @@ while simulation_app.is_running():
             if _rg == "floor":
                 _db = _px - SB["xF"]
                 sb_back_min = _db if sb_back_min is None else min(sb_back_min, _db)
-        _tot = 2 * SB["N"] * SB.get("K", 1)
+        _tot = SB["TOT"]
         if sb_goal_at is None and sb_k >= _tot:
             if (not args.down and (not _aS) and _px <= SB["at"]
-                    and _pz - SB.get("K", 1) * 2 * SB["N"] * SB["rise"] > 0.15):
+                    and _pz - SB.get("K", 1) * 2 * SB["N"] * SB["rise"] - SB["Z0"] > 0.15):
                 sb_goal_at = now
-            if args.down and _aS and _px <= SB["at"] - 0.4 and _pz < 0.6:
+            if args.down and not SB["NE"] and _aS and _px <= SB["at"] - 0.4 and _pz < 0.6:
+                sb_goal_at = now
+            if args.down and SB["NE"] and _py >= SB["ey1"] + 0.2 and _pz < 0.6:   # 들머리: 돌단을 다 내려와 1층 바닥 (79)
                 sb_goal_at = now
 
         # ── 기다리기 (--sb-wait · README 72) ── 정해 둔 자리에 오면 [0, 0, 0] 을 --sb-wait-s 초
@@ -3520,7 +3584,7 @@ else:
               + (" · ⚠낭떠러지 보임" if st_cliff is not None else "") + ")")
     # ── 참 계단의 판정 (--switchback · README 68) ──────────────
     if SB is not None:
-        _N2 = 2 * SB["N"] * SB.get("K", 1)
+        _N2 = SB["TOT"]
         _ex, _ey, _ez = float(p1[0]), float(p1[1]), float(p1[2])
         _ew, _ek = sb_where(_ex, _ey, _ez, yaw_of(q1))
 
@@ -3651,7 +3715,7 @@ else:
                 ("policy", _pol),
                 ("mode", _mode),
                 ("rise", f"{args.rise if (args.steps > 0 or _sbk) else args.sill:.2f}"),
-                ("steps", str(2 * SB["N"] * SB.get("K", 1) if _sbk else args.steps)),
+                ("steps", str(SB["TOT"] if _sbk else args.steps)),
                 ("at", f"{args.sill_at:.2f}"),
                 ("landing", f"{args.landing:.1f}"),
                 ("seconds", f"{args.seconds:.0f}"),
