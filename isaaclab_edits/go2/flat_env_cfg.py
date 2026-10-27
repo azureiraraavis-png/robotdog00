@@ -351,6 +351,7 @@ def walked_distance(env, env_ids):
 #     (10/26 첫 판: "Modules ['pxr', …] were loaded before SimulationApp was started" → RuntimeError).
 #     그래서 cfg 에는 "모듈:클래스" 글자만 적고, Isaac Lab 이 명령을 만들 때 (시뮬레이터가 뜬 뒤) 불러오게 합니다.
 GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideMixVelocityCommand"
+GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
 
 
 # ─────────────────────────────────────────────────────────────
@@ -672,6 +673,18 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         if MOVE_MIX:
             from isaaclab.utils.string import ResolvableString   # 가벼움 (configclass 가 이미 불러온 것) — 불러오기는 쓸 때 (77-2)
             self.commands.base_velocity.class_type = ResolvableString(GUIDE_MIX_CLASS)
+        #   MIX_SHARP         뒤로 · 거의 0 명령의 개 (서 있기 아님) 만 속도 상의 σ² 를 이 값으로 — 0.0 = 끔(기본 · 모두 0.25) (README 78-3)
+        #     왜: 77 의 2999 는 뒤로 −0.2 · −0.3 · −0.4 모두 0 m (78-2). σ² 0.25 면 −0.3 명령에 서 있어도 상 0.70 배 (78-1).
+        #     0.0625 면 0.24 배. 앞으로 가는 70 % 와 서 있는 개는 그대로 0.25. MOVE_MIX 와 함께만 씁니다.
+        #     guide_mix_command.py 의 track_lin_vel_xy_exp_mix (글자로만 적음). 첫 상을 셀 때 "[상 날카롭게] …" 줄을 찍습니다.
+        #   10/27 상 날카롭게 판 (78)    77 과 같음 + MIX_SHARP = 0.0625
+        MIX_SHARP = 0.0
+        if MIX_SHARP:
+            if not MOVE_MIX:
+                raise ValueError("MIX_SHARP 는 MOVE_MIX = True 와 함께만 씁니다 (README 78-3)")
+            _trk = self.rewards.track_lin_vel_xy_exp
+            _trk.func = GUIDE_MIX_REWARD
+            _trk.params = dict(_trk.params, std_mix=MIX_SHARP ** 0.5)
         if STAIRS_40 or FINE_TUNE_STAIRS:
             import copy
             _tg = copy.deepcopy(self.scene.terrain.terrain_generator)
