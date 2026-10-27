@@ -362,6 +362,9 @@ ap.add_argument("--sb-entry-x", type=float, default=1.20, dest="sb_entry_x",
                 help="작은 참의 x 길이 = 뒤 벽 → 첫 단 앞 m (기본 1.20 · 사진 짐작 · 돌단 폭도 이 값 · README 79-1)")
 ap.add_argument("--sb-entry-y", type=float, default=1.60, dest="sb_entry_y",
                 help="작은 참의 y 길이 = 맞은편 벽 → 돌단 끝 m (기본 1.60 · 사진 짐작 · README 79-1)")
+ap.add_argument("--sb-door-clear", type=float, default=0.0, dest="sb_door_clear",
+                help="참 계단 · 여러 층: 층 계단참에서 길잡이 줄과 서는 자리를 문짝이 쓸고 가는 부채꼴 (경첩 중심 · 반지름 = 문짝 폭 + 이 여유 m) 밖으로 "
+                     "(기본 0 = 끔 · 문 벽 side 만 · README 79-6)")
 ap.add_argument("--sb-v2", action="store_true", dest="sb_v2",
                 help="시설 무대 v2 (README 79-1 · 보수적): --switchback --rise 0.20 --run 0.24 --sb-width 1.25 --sb-landing 1.30 "
                      "--sb-chamfer 0.55 --sb-gap 0.40 --sb-floor-depth 1.30 --sb-door-w 0.90 --sb-entry 를 한꺼번에 (따로 준 같은 인자는 덮어씀)")
@@ -1186,18 +1189,34 @@ if args.switchback:
             _sx.AddScaleOp().Set(_SGf.Vec3f(_Lg * math.sqrt(2.0), _Lg * math.sqrt(2.0), _z1 - _z0))
             _SUsdPhysics.CollisionAPI.Apply(_sp)
         _xFc = _xF + _F / 2.0
+        # 문짝 피하기 (--sb-door-clear · README 79-6): 문짝 (옆벽 · 경첩은 뒤 벽 모서리) 이 쓸고 가는 부채꼴 밖으로 —
+        #   층 계단참에서 둘째 단 줄 (y = yB) 을 부채꼴에 닿기 전 (x = _xe) 에 떠나 비스듬히 (xFc, _yt) 로 내려가 꺾습니다.
+        _dc = None
+        if args.sb_door_clear > 0 and args.sb_door_wall == "side":
+            _hx, _hy, _Rc = _xF + 0.03, _yB + _W / 2.0 - 0.03, args.sb_door_w + args.sb_door_clear
+            _yt = min(_yB, _hy - math.sqrt(max(0.0, _Rc ** 2 - (_xFc - _hx) ** 2))) if _Rc > abs(_xFc - _hx) else _yB
+            _xe = (min(_at - 0.05, max(_xFc, _hx + math.sqrt(max(0.0, _Rc ** 2 - (_hy - _yB) ** 2))))) if _yt < _yB else None
+            _dc = (_xe, _yt)                   # _xe 가 None 이면 줄 (y = yB) 이 이미 부채꼴 밖 — 꺾는 점 · 서는 자리만 (xFc, yB)
+            SB["door_clear"] = dict(hx=_hx, hy=_hy, R=_Rc, xe=_xe, yt=_yt)
+        elif args.sb_door_clear > 0:
+            print(" ✖ --sb-door-clear 는 문 벽 side 에서만 됩니다 — 끕니다.")
         if args.down:   # 맨 위층 계단참에서 내려가며 참마다 오른쪽으로 90 + 90
-            _P = [(_at - 0.8, _yB)]
+            _P = (([(_xFc, _dc[1]), (_dc[0], _yB)] if _dc[0] is not None else [(_xFc, _yB)]) if _dc else [(_at - 0.8, _yB)])
             for _f in range(_K - 1, -1, -1):
                 _P += [(SB["xc"], _yB), (SB["xc"], 0.0)]
-                _P += [(_xFc, 0.0), (_xFc, _yB)] if _f > 0 else (
+                _P += ([(_xFc, 0.0), (_xFc, _dc[1]), (_dc[0], _yB)] if (_dc and _dc[0] is not None) else [(_xFc, 0.0), (_xFc, _yB)]) if _f > 0 else (
                     [(SB["exc"], 0.0), (SB["exc"], SB["ey1"] + 0.8)] if _NE else [(_at - 1.5, 0.0)])   # 들머리: 작은 참에서 오른쪽 90° · 돌단을 +y 로
-            SB["start"] = (_at - 0.8, _yB)
+            SB["start"] = _P[0]
         else:           # 1층 바닥에서 올라가며 참마다 왼쪽으로 90 + 90
             _P = [(SB["exc"], SB["ey1"] + 0.6), (SB["exc"], 0.0)] if _NE else [(0.0, 0.0)]   # 들머리: 1층 바닥 → 돌단 −y → 작은 참에서 왼쪽 90°
             for _f in range(_K):
                 _P += [(SB["xc"], 0.0), (SB["xc"], _yB)]
-                _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else [(_xF + 0.4, _yB)]
+                if _dc and _dc[0] is not None:  # 문짝 피하기 (79-6): 부채꼴 앞에서 비스듬히 내려가 꺾음 · 맨 위층은 그 자리에 섬
+                    _P += [(_dc[0], _yB), (_xFc, _dc[1]), (_xFc, 0.0)] if _f < _K - 1 else [(_dc[0], _yB), (_xFc, _dc[1])]
+                elif _dc:                      # 줄은 이미 부채꼴 밖 — 맨 위층에서 서는 자리만 (xF + 0.4 → 층 계단참 가운데)
+                    _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else [(_xFc, _yB)]
+                else:
+                    _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else [(_xF + 0.4, _yB)]
             SB["start"] = _P[0]
             if _NE:
                 SB["yaw0"] = -math.pi / 2.0    # 돌단 쪽 (−y) 을 보고 섬
@@ -1207,6 +1226,11 @@ if args.switchback:
     print(f"        첫 단 x {_at:.2f}~{_xt:.2f} (y 0) · 참 x {_xt:.2f}~{_xl:.2f} · 둘째 단 x {_xt:.2f}~{_at + _u:.2f} (y {_yB:.2f})"
           f" · 꼭대기 z {_K * 2 * _N * _r + SB['Z0']:.3f} · 상자 {len(_bx)}개"
           + (f" · {_K}층 · 층 계단참 깊이 {_F:.2f} · 깎은 모서리 {_Lc:.2f}" if _multi else ""))
+    if SB.get("door_clear"):
+        _dcp = SB["door_clear"]
+        print(f"        문짝 피하기: 경첩 ({_dcp['hx']:.2f}, {_dcp['hy']:.2f}) · 반지름 {_dcp['R']:.2f} (문짝 {args.sb_door_w:.2f} + 여유 {args.sb_door_clear:.2f})"
+              + (f" · 둘째 단 줄을 x {_dcp['xe']:.2f} 에서 떠나 ({SB['xF'] + SB['F'] / 2.0:.2f}, {_dcp['yt']:.2f}) 로" if _dcp["xe"] is not None
+                 else f" · 줄이 이미 부채꼴 밖 — 서는 자리만 층 계단참 가운데 ({SB['xF'] + SB['F'] / 2.0:.2f}, {_yB:.2f}) 로"))
     if SB.get("NE"):
         print(f"        1층 들머리: 돌단 {SB['NE']}오름 (디딤 {args.sb_entry_run:.2f} × {SB['NE'] - 1} · 높이 {_r:.3f} · 폭 {args.sb_entry_x:.2f})"
               f" · 작은 참 x {SB['ex0']:.2f}~{SB['ex1']:.2f} · y {-_W / 2:.2f}~{SB['ey0']:.2f} · z {SB['Z0']:.2f} · 1층 바닥은 y {SB['ey1']:.2f} 부터"
