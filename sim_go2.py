@@ -366,6 +366,10 @@ ap.add_argument("--sb-door-clear", type=float, default=0.0, dest="sb_door_clear"
                 help="참 계단 · 여러 층: 층 계단참에서 길잡이 줄 (개 몸 가운데) 과 서는 자리를 문짝이 쓸고 가는 부채꼴 (경첩 중심 · 반지름 = 문짝 폭 + 이 여유 m) 밖으로 "
                      "(기본 0 = 끔 · 문 벽 side 만 · README 79-6 · 여유는 몸 반대각선 0.385 보다 커야 몸 전체가 밖 — 79-8 은 0.50). "
                      "--sb-react 와 함께면 문이 열려 있거나 움직이는 동안 그 부채꼴 (+ 여유) 안으로 들어가지 않고 기다림 (79-8)")
+ap.add_argument("--sb-door-wait", type=float, default=None, dest="sb_door_wait",
+                help="--sb-door-clear 와 함께: 열려 있거나 움직이는 문 앞에서 기다리는 범위의 여유 m (반지름 = 문짝 폭 + 이 값 · 기본 = --sb-door-clear 와 같음). "
+                     "주면 (79-10) 줄 (--sb-door-clear) 과 기다리는 범위를 따로 잡고, 이미 그 범위 안에 있는 개는 서지 않고 줄 따라 빠져나가며, "
+                     "맨 위층에서 서는 자리도 그 범위 밖으로")
 ap.add_argument("--sb-v2", action="store_true", dest="sb_v2",
                 help="시설 무대 v2 (README 79-1 · 보수적): --switchback --rise 0.20 --run 0.24 --sb-width 1.25 --sb-landing 1.30 "
                      "--sb-chamfer 0.55 --sb-gap 0.40 --sb-floor-depth 1.30 --sb-door-w 0.90 --sb-entry 를 한꺼번에 (따로 준 같은 인자는 덮어씀)")
@@ -1203,7 +1207,9 @@ if args.switchback:
                 _a1, _a2 = math.atan2(_yB - _hy, _xe - _hx), math.atan2(_yt - _hy, _xFc - _hx)
                 _rm = max(math.hypot(_xe - _hx, _yB - _hy), math.hypot(_xFc - _hx, _yt - _hy))
                 _dm = (_hx + _rm * math.cos((_a1 + _a2) / 2.0), _hy + _rm * math.sin((_a1 + _a2) / 2.0))
-            SB["door_clear"] = dict(hx=_hx, hy=_hy, R=_Rc, xe=_xe, yt=_yt, mid=_dm)
+            _Rw = args.sb_door_w + (args.sb_door_wait if args.sb_door_wait is not None else args.sb_door_clear)
+            _ytw = min(_yt, _hy - math.sqrt(max(0.0, _Rw ** 2 - (_xFc - _hx) ** 2))) if _Rw > abs(_xFc - _hx) else _yt
+            SB["door_clear"] = dict(hx=_hx, hy=_hy, R=_Rc, xe=_xe, yt=_yt, mid=_dm, Rw=_Rw, ytw=_ytw)
         elif args.sb_door_clear > 0:
             print(" ✖ --sb-door-clear 는 문 벽 side 에서만 됩니다 — 끕니다.")
         if args.down:   # 맨 위층 계단참에서 내려가며 참마다 오른쪽으로 90 + 90
@@ -1218,9 +1224,10 @@ if args.switchback:
             for _f in range(_K):
                 _P += [(SB["xc"], 0.0), (SB["xc"], _yB)]
                 if _dc and _dc[0] is not None:  # 문짝 피하기 (79-6): 부채꼴 앞에서 비스듬히 내려가 꺾음 · 맨 위층은 그 자리에 섬
-                    _P += [(_dc[0], _yB), _dm, (_xFc, _dc[1]), (_xFc, 0.0)] if _f < _K - 1 else [(_dc[0], _yB), _dm, (_xFc, _dc[1])]
+                    _P += [(_dc[0], _yB), _dm, (_xFc, _dc[1]), (_xFc, 0.0)] if _f < _K - 1 else (
+                        [(_dc[0], _yB), _dm, (_xFc, _dc[1])] + ([(_xFc, _ytw)] if _ytw < _dc[1] - 0.01 else []))   # 79-10: 서는 자리는 기다리는 범위 밖
                 elif _dc:                      # 줄은 이미 부채꼴 밖 — 맨 위층에서 서는 자리만 (xF + 0.4 → 층 계단참 가운데)
-                    _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else [(_xFc, _yB)]
+                    _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else ([(_xFc, _yB)] + ([(_xFc, _ytw)] if _ytw < _yB - 0.01 else []))
                 else:
                     _P += [(_xFc, _yB), (_xFc, 0.0)] if _f < _K - 1 else [(_xF + 0.4, _yB)]
             SB["start"] = _P[0]
@@ -1235,6 +1242,8 @@ if args.switchback:
     if SB.get("door_clear"):
         _dcp = SB["door_clear"]
         print(f"        문짝 피하기: 경첩 ({_dcp['hx']:.2f}, {_dcp['hy']:.2f}) · 반지름 {_dcp['R']:.2f} (문짝 {args.sb_door_w:.2f} + 여유 {args.sb_door_clear:.2f})"
+              + (f" · 기다리는 범위 반지름 {_dcp['Rw']:.2f}" + (f" · 맨 위층 서는 자리 y {_dcp['ytw']:.2f}" if _dcp['ytw'] < _dcp['yt'] - 0.01 else "")
+                 if args.sb_door_wait is not None else "")
               + (f" · 둘째 단 줄을 x {_dcp['xe']:.2f} 에서 떠나 ({SB['xF'] + SB['F'] / 2.0:.2f}, {_dcp['yt']:.2f}) 로" if _dcp["xe"] is not None
                  else f" · 줄이 이미 부채꼴 밖 — 서는 자리만 층 계단참 가운데 ({SB['xF'] + SB['F'] / 2.0:.2f}, {_yB:.2f}) 로"))
     if SB.get("NE"):
@@ -1709,7 +1718,12 @@ def _sbx_ahead(s_r, e_r, rz):
         if d["ang"] <= 0.5 or abs(d["z0"] - (rz - 0.30)) > 1.0:
             continue
         cx, cy, yaw = _sbx_door_xy(d)
-        _zr = (args.sb_door_w + args.sb_door_clear) if (args.sb_door_clear > 0 and args.sb_door_wall == "side") else None
+        _zr = (args.sb_door_w + (args.sb_door_wait if args.sb_door_wait is not None else args.sb_door_clear)
+               if (args.sb_door_clear > 0 and args.sb_door_wall == "side") else None)
+        if _zr is not None and args.sb_door_wait is not None:          # 79-10: 이미 범위 안이면 이 문으로는 서지 않고 줄 따라 빠져나감
+            _x0, _y0, _h0 = X["pos"](s_r)                                 #   (줄은 경첩에서 멀어지는 쪽 — 그 자리에 서면 움직이는 문짝에 맞음 · 79-7)
+            if math.hypot(_x0 - d["hx"], _y0 - d["hy"]) < _zr:
+                continue
         s = s_r
         while s <= s_r + SBX_LOOK:
             x, y, _h = X["pos"](s)
