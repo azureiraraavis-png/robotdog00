@@ -244,6 +244,7 @@ robotdog00/
 │  ── 손도구 ──
 ├── drive.py               키보드 조종
 ├── look.py                로봇의 눈 — 카메라 사진 + 라이다 지도
+├── rear_look.py           라이다로 본 바닥 — 뒤 사각 재기 (읽기만 · 2부 79-12)
 ├── speak.py               대화형 말하기 콘솔
 ├── audio_check.py         안내 음성 재생 점검
 ├── hush.py                로봇이 계속 떠들 때 멈추기
