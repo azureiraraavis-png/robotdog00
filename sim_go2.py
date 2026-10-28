@@ -266,7 +266,7 @@ ap.add_argument("--tag", default="",
 ap.add_argument("--see", action=argparse.BooleanOptionalAction, default=None,
                 help="정책에 높이 스캔 65점을 붙여 줍니다 (기본: 정책 입력 칸 수로 스스로 정함)")
 ap.add_argument("--see-show", action="store_true",
-                help="자취 줄마다 스캔의 가운데 줄(앞뒤 13점)을 같이 찍습니다")
+                help="자취 줄마다 스캔의 가운데 줄(앞뒤 13점 · 뒤 눈이면 19점)을 같이 찍습니다")
 ap.add_argument("--hips", action="store_true",
                 help="엉덩이 관절 네 개의 각을 찍습니다 — 뒷다리가 정말"
                      " 꼬이는지 **눈이 아니라 숫자로** 가릅니다 (README 40-12)")
@@ -326,6 +326,12 @@ ap.add_argument("--sb-wait", type=str, default="", dest="sb_wait",
 ap.add_argument("--sb-wait-s", type=float, default=10.0, dest="sb_wait_s", help="한 번 기다리는 초 (기본 10)")
 ap.add_argument("--sb-wait-ramp", type=float, default=0.0, dest="sb_wait_ramp",
                 help="멈출 때 앞 빠르기를 이 초 동안 0.2 (학습한 가장 느린 걸음) 까지 줄인 뒤 0 으로 (기본 0 = 한 번에 · README 72-3)")
+ap.add_argument("--sb-back", type=int, default=0, dest="sb_back",
+                help="참 계단 · 여러 층: 가는 쪽으로 계단 몇 칸째 (5 = 첫 단 5칸 · 15 = 둘째 단 5칸 · 오르기는 들머리 돌단을 빼고 셈) 에서 "
+                     "'뒤로' 를 시작 → 줄을 따라 뒤로 걸어 뒤쪽 참에 몸 전체 (앞발 · 뒷발 어림자리) 가 닿으면 [0, 0, 0] (README 80-3). 기본 0 = 끔")
+ap.add_argument("--sb-back-v", type=float, default=0.2, dest="sb_back_v", help="뒤로 빠르기 m/s (기본 0.2 · 학습한 뒤로 범위 0.1~0.3 의 가운데)")
+ap.add_argument("--sb-back-hold", type=float, default=5.0, dest="sb_back_hold", help="참에 닿은 뒤 서 있게 둘 초 — 그 뒤 판을 끝냄 (기본 5)")
+ap.add_argument("--sb-back-limit", type=float, default=40.0, dest="sb_back_limit", help="'뒤로' 를 시작하고 이 초 안에 참에 못 닿으면 못 물러남 (기본 40)")
 ap.add_argument("--sb-seed", type=int, default=None, dest="sb_seed",
                 help="참 계단 · 여러 층: 사람과 문을 이 씨앗으로 무작위로 넣음 (README 74). 기본 없음")
 ap.add_argument("--sb-people-max", type=int, default=3, dest="sb_people_max", help="한 판에 사람 일 최대 (기본 3 · 사이안 님 10/14)")
@@ -2123,13 +2129,21 @@ _cam_at = None
 SEE_NX, SEE_NY = 13, 5
 SEE_X0, SEE_Y0, SEE_STEP, SEE_FWD = -0.6, -0.2, 0.1, 0.3
 SEE_N = SEE_NX * SEE_NY
+#   ★ 뒤 눈 (2026-10-28, README 80-1) ★ — 정책 입력이 48 + 95 = 143 이면 켭니다.
+#     학습 쪽: REAR_EYE = True → 격자 x −0.9~+0.9 (19) · 앞으로 0 → 몸통 기준 앞뒤 −0.9 ~ +0.9 m.
+#     여기서는 앞 13열은 **위와 같은 식 그대로** (i = 0..12) 셈하고, 뒤로 6열을 i = −6..−1 로 더합니다
+#     (앞 65점이 65점 정책과 비트까지 같게 — 80-2 의 같음 시험).
+#     뒤 30점은 **지형만** 봅니다 — 사람 · 문짝을 안 넣습니다 (79-12: 실물은 바로 뒤를 지금 못 봄 · 쌓인 지도의 기억뿐).
+SEE_REAR = 0              # 뒤로 더한 열 수 (0 = 뒤 눈 없음 · 6 = 뒤 눈)
+SEE_REAR_COLS = 6
+SEE_N_REAR = (SEE_NX + SEE_REAR_COLS) * SEE_NY     # 95
 
 
-def see_ground(x, y):
-    """무대의 (x, y) 에서 바닥 높이 — 만든 상자들의 치수 그대로."""
+def see_ground(x, y, people=True):
+    """무대의 (x, y) 에서 바닥 높이 — 만든 상자들의 치수 그대로. people=False 면 사람 · 문짝을 안 넣음 (뒤 눈 · 80-1)."""
     if SB is not None:
         # 참 계단: 위에서 아래로 쏜 광선이 처음 맞는 높이 — 벽 · 칸막이도 그 윗면으로 보입니다 (README 68-1)
-        if SBX is not None and sbx_blocks(x, y, _sb_scan_z):     # 사람 · 문짝은 벽처럼 (README 74)
+        if people and SBX is not None and sbx_blocks(x, y, _sb_scan_z):     # 사람 · 문짝은 벽처럼 (README 74)
             return _sb_scan_z + SB_SEE_UP
         return sb_ground(x, y, walls=True, zref=_sb_scan_z)
     if args.steps > 0 and abs(y) <= 1.5:
@@ -2149,7 +2163,7 @@ def _see_np(v):
 
 
 def see_scan():
-    """지금 자세에서의 스캔 65점 (학습 쪽과 같은 순서 · 같은 값)."""
+    """지금 자세에서의 스캔 65점 (뒤 눈이면 95점) — 학습 쪽과 같은 순서 · 같은 값."""
     _p, _q = robot.robot.get_world_poses()
     _p = _see_np(_p).reshape(-1, 3)[0]
     _q = _see_np(_q).reshape(-1, 4)[0]
@@ -2162,9 +2176,9 @@ def see_scan():
     out = []
     for iy in range(SEE_NY):
         ly = SEE_Y0 + SEE_STEP * iy
-        for ix in range(SEE_NX):
+        for ix in range(-SEE_REAR, SEE_NX):
             lx = SEE_X0 + SEE_STEP * ix + SEE_FWD
-            gz = see_ground(px + c * lx - s * ly, py + s * lx + c * ly)
+            gz = see_ground(px + c * lx - s * ly, py + s * lx + c * ly, people=(ix >= 0))
             out.append(max(-1.0, min(1.0, pz - gz - 0.5)))
     return out
 
@@ -2178,17 +2192,21 @@ try:
             break
 except Exception as _e:
     print(f" [눈] 정책에게 입력 칸 수를 못 물어봤습니다 ({type(_e).__name__})")
+if _n_in == 48 + SEE_N_REAR and see_on is not False:      # 뒤 눈 (80-1)
+    SEE_REAR = SEE_REAR_COLS
+    see_on = True
 if see_on is None:
     if _n_in == 48 + SEE_N:
         see_on = True
     elif _n_in == 48 or _n_in is None:
         see_on = False
     else:
-        print(f" [눈] ✖ 정책 입력이 {_n_in}칸입니다 — 48(장님)도 {48 + SEE_N}(눈)도 아닙니다.")
+        print(f" [눈] ✖ 정책 입력이 {_n_in}칸입니다 — 48(장님)도 {48 + SEE_N}(눈)도 {48 + SEE_N_REAR}(뒤 눈)도 아닙니다.")
         print("      이 시험대가 모르는 관측입니다. 그대로 돌리면 죽거나 엉뚱하게 걷습니다.")
         see_on = False
 print(f" [눈] 정책 입력 {_n_in}칸 → "
-      + (f"스캔 {SEE_N}점을 붙입니다 (앞뒤 −0.3~+0.9 · 좌우 ±0.2)" if see_on
+      + ((f"스캔 {SEE_N_REAR}점을 붙입니다 (앞뒤 −0.9~+0.9 · 좌우 ±0.2 · 뒤 30점은 지형만 — 80-1)" if SEE_REAR
+          else f"스캔 {SEE_N}점을 붙입니다 (앞뒤 −0.3~+0.9 · 좌우 ±0.2)") if see_on
          else "스캔 없이 돌립니다 (장님)"))
 if see_on:
     _blind_obs = robot._compute_observation
@@ -2699,6 +2717,7 @@ for _w in sb_w_todo:
     if _w not in ("s5", "mid", "s15", "floor"):
         raise SystemExit(f" ✖ --sb-wait 에 모르는 자리 '{_w}' — s5 · mid · s15 · floor 중에서")
 sb_w_act = None           # 기다리는 중이면 dict
+sb_b = None               # 뒤로 물러나기 (--sb-back · README 80-3) — 시작하면 dict
 sb_w_done = []            # (자리, 몇 칸, 이름, 밀림 끝 m, 가장 멀리 m, 높이 바뀜 m, 돈 각 도, 넘어짐?)
 SB_SLOW, SB_SLOW_ANG = 0.20, 0.35   # 방향이 이만큼(rad) 넘게 틀어져 있으면 앞 빠르기를 0.2 로 (학습 범위의 아래 끝)
 sb_seg = 0                # 지금 따라가는 줄의 번호 (0 첫 줄 · 1 참 가로지르기 · 2 마지막 줄)
@@ -2896,7 +2915,7 @@ while simulation_app.is_running():
                     _vy = -args.lane_vy * (_e - _sh) * (_uy * math.sin(_yw) + _ux * math.cos(_yw))
                     _vy = max(-args.vy_max, min(args.vy_max, _vy))
                 base_command = torch.tensor([0.0, _vy, 0.0], device=args.device)
-        if sb_w_act is not None:                 # 시켜서 서 있는 동안은 멈춤으로 안 봅니다 (README 72)
+        if sb_w_act is not None or sb_b is not None:   # 시켜서 서 있는 · 뒤로 가는 동안은 멈춤으로 안 봅니다 (README 72 · 80-3)
             sb_g_hist = []
         elif SBX is not None and args.sb_react and SBX.get("blocked"):   # 앞에 사람 · 문짝이 있으면 지키기가 밀지 않음 (README 76)
             sb_g_hist = []
@@ -2935,6 +2954,33 @@ while simulation_app.is_running():
                             sb_g_gave = True
                             sb_g_log.append(now - began)
                             print(f" [지키기] {now - began:.1f}초 · 또 멈춤 — {SB_G_MAX}번을 다 써서 그만둡니다 · {sb_where_now[0]}")
+        # ── 뒤로 물러나기 (--sb-back · README 80-3) ── 정한 칸에서 '뒤로' → 뒤쪽 참에 몸 전체가 닿으면 [0, 0, 0]
+        #   방향 · 옆 바로잡기는 앞으로 갈 때와 같은 줄 · 같은 식 (몸은 가던 쪽을 본 채) · 앞 빠르기만 −sb_back_v.
+        if args.sb_back and since >= args.warm and sb_goal_at is None and SB.get("multi"):
+            if sb_b is None and sb_k >= (0 if args.down else SB["NE"]) + args.sb_back:
+                sb_b = {"t0": now, "x0": _px, "y0": _py, "z0": _pz, "k": sb_k, "where": sb_where_now[0],
+                        "done": None, "gave": None, "land": "", "dz": 0.0, "dist": 0.0}
+                print(f" [뒤로] {now - began:.1f}초 · {sb_where_now[0]} ({sb_k}칸) — 뒤로 {args.sb_back_v:.2f} m/s 로 뒤쪽 참까지")
+            if sb_b is not None:
+                if sb_b["done"] is None and sb_b["gave"] is None:
+                    _bc, _bs = math.cos(_yw), math.sin(_yw)
+                    _wr = sb_where(_px, _py, _pz, _yw)[0]                                           # 뒷발 어림자리
+                    _wf = sb_where(_px + 2.0 * REAR_PAW * _bc, _py + 2.0 * REAR_PAW * _bs, _pz, _yw)[0]   # 앞발 어림자리
+                    if "참" in _wr and "참" in _wf:
+                        sb_b.update(done=now, land=_wf, dz=_pz - sb_b["z0"],
+                                    dist=math.hypot(_px - sb_b["x0"], _py - sb_b["y0"]))
+                        print(f" [뒤로] {now - began:.1f}초 · {_wf} 에 닿음 ({now - sb_b['t0']:.1f}초 · {sb_b['dist']:.2f} m · "
+                              f"높이 {sb_b['dz'] * 100:+.0f} cm) — {args.sb_back_hold:.0f}초 서 있게 합니다")
+                    elif now - sb_b["t0"] > args.sb_back_limit:
+                        sb_b.update(gave=now, land=_wr, dz=_pz - sb_b["z0"],
+                                    dist=math.hypot(_px - sb_b["x0"], _py - sb_b["y0"]))
+                        print(f" [뒤로] {now - began:.1f}초 · {args.sb_back_limit:.0f}초 안에 참에 못 닿음 · 뒷발 {_wr} · 앞발 {_wf}")
+                if sb_b["done"] is None and sb_b["gave"] is None:
+                    _vx = -args.sb_back_v
+                    base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
+                else:
+                    _vx, _vy, _wz = 0.0, 0.0, 0.0
+                    base_command = torch.tensor([0.0, 0.0, 0.0], device=args.device)
         if since >= args.warm:
             if args.hold and turn_asked and vy_asked:   # 위 --hold 칸이 이번 바퀴에 적은 것을 이 길잡이의 값으로 바꿉니다
                 vy_asked[-1], turn_asked[-1] = _vy, _wz
@@ -3137,7 +3183,9 @@ while simulation_app.is_running():
             start = pose()
         if since >= args.warm + args.seconds or (
                 args.sb_stop is not None and SB is not None
-                and sb_goal_at is not None and now - sb_goal_at >= args.sb_stop):
+                and sb_goal_at is not None and now - sb_goal_at >= args.sb_stop) or (
+                sb_b is not None and (sb_b["done"] if sb_b["done"] is not None else sb_b["gave"]) is not None
+                and now - (sb_b["done"] if sb_b["done"] is not None else sb_b["gave"]) >= args.sb_back_hold):
             end = pose()
             break
 
@@ -3172,7 +3220,8 @@ while simulation_app.is_running():
                     f" · 여유 {float(p[2]) - stair_ground(float(p[0])):.3f}")
         if args.see_show:
             _sc = see_scan()
-            _mid = _sc[(SEE_NY // 2) * SEE_NX:(SEE_NY // 2 + 1) * SEE_NX]
+            _row = SEE_NX + SEE_REAR
+            _mid = _sc[(SEE_NY // 2) * _row:(SEE_NY // 2 + 1) * _row]
             tail += "  눈 " + " ".join(f"{v:+.2f}" for v in _mid)
         if args.feet:
             _f = feet_of()
@@ -3653,6 +3702,19 @@ else:
             verdict = f"★ {_sb_place(*sb_where_now) if sb_where_now[1] == sb_k else _sb_place(_ew, _ek)}에서 멈춤"
         else:
             verdict = f"{_sb_place(_ew, _ek)}까지 — 시간이 모자랐습니다 (--seconds 를 늘리십시오)"
+        if args.sb_back:                          # 뒤로 물러나기 판 (80-3) — 판정을 이것으로 바꿉니다
+            _right = sb_b is not None and ((sb_b["dz"] > 0.05) if args.down else (sb_b["dz"] < -0.05))
+            if sb_b is None:
+                verdict = (f"★ {_sb_place(_ew, _ek)}에서 넘어짐 (뒤로 전)" if sb_fell
+                           else f"★ 뒤로 시작 자리에 못 감 · {_sb_place(_ew, _ek)}")
+            elif sb_fell:
+                verdict = f"★ 뒤로 가다 넘어짐 · {_sb_place(_ew, _ek)}"
+            elif sb_b["done"] is not None and _right:
+                verdict = f"참까지 물러남 · {sb_b['land']}"
+            elif sb_b["done"] is not None:
+                verdict = f"★ 엉뚱한 참 · {sb_b['land']} (높이 {sb_b['dz'] * 100:+.0f} cm)"
+            else:
+                verdict = f"★ 못 물러남 · {_sb_place(_ew, _ek)}"
         st_kmax = sb_k
         _land = (sb_land_out - sb_land_in) if (sb_land_in is not None and sb_land_out is not None) else None
         _wall = (SB["xl"] - sb_xmax_land) if sb_xmax_land is not None else None
@@ -3818,6 +3880,10 @@ else:
                                     + ("!" if SBX["r"]["mode"] == "wait" else "")
                                     + (f" v{SBX['r'].get('n_pass', 0)}" if args.sb_pass else "")) if args.sb_react else "")) if (_sbk and SBX is not None) else "")),
                 ("sb_low_s", (f"{sb_low_max:.2f}/{args.fall_hold:g}" if _sbk else "")),   # 0.15 m 아래 이어서 가장 길게 / 판정 초 (76-13)
+                ("sb_back", ((f"{args.sb_back}:" + ("-" if sb_b is None else
+                              f"{sb_b['k']}:{'ok' if sb_b['done'] is not None else 'no'}:{sb_b['land']}:"
+                              f"{((sb_b['done'] or sb_b['gave']) - sb_b['t0']) if (sb_b['done'] or sb_b['gave']) else 0:.1f}:"
+                              f"{sb_b['dist']:.2f}:{sb_b['dz'] * 100:+.0f}")) if (_sbk and args.sb_back) else "")),   # 80-3
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)

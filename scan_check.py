@@ -14,6 +14,7 @@
 
  돌리는 법 (Isaac Lab 폴더에서):
    .\\isaaclab.bat -p D:\\workspace_raraavis\\robotdog00\\scan_check.py
+   뒤 눈 (README 80-1 · 설정에 REAR_EYE = True 를 넣은 뒤):  ... scan_check.py --rear
 
  ※ 로봇(실기체)과는 아무 상관 없습니다. 시뮬레이터 안에서만 돕니다.
 """
@@ -42,6 +43,8 @@ parser.add_argument("--task", type=str,
 parser.add_argument("--num_envs", type=int, default=8)
 parser.add_argument("--settle", type=int, default=40,
                     help="재기 전에 걷게 둘 걸음 수 (0.02초씩)")
+parser.add_argument("--rear", action="store_true",
+                    help="뒤 눈 (95점 · 앞뒤 −0.9~+0.9) 으로 잽니다 — README 80-1")
 add_launcher_args(parser)
 args_cli, hydra_args = setup_preset_cli(parser)
 sys.argv = [sys.argv[0]] + hydra_args
@@ -50,6 +53,10 @@ sys.argv = [sys.argv[0]] + hydra_args
 SEE_NX, SEE_NY = 13, 5
 SEE_X0, SEE_Y0, SEE_STEP, SEE_FWD = -0.6, -0.2, 0.1, 0.3
 SEE_N = SEE_NX * SEE_NY
+#   뒤 눈 (80-1): sim_go2.py 처럼 뒤로 6열을 i = −6..−1 로 더합니다 → 19 × 5 = 95점
+SEE_REAR = 6 if args_cli.rear else 0
+SEE_ROW = SEE_NX + SEE_REAR
+SEE_N = SEE_ROW * SEE_NY
 
 
 def tt(x):
@@ -102,10 +109,10 @@ def main():
 
         if n_rays == SEE_N:
             # ② 닿은 (x, y) = 몸통 + yaw 로 돌린 격자   (y 바깥 · x 안쪽)
-            lx = torch.tensor([SEE_X0 + SEE_STEP * i + SEE_FWD for i in range(SEE_NX)],
+            lx = torch.tensor([SEE_X0 + SEE_STEP * i + SEE_FWD for i in range(-SEE_REAR, SEE_NX)],
                               device=pos.device).repeat(SEE_NY)
             ly = torch.tensor([SEE_Y0 + SEE_STEP * j for j in range(SEE_NY)],
-                              device=pos.device).repeat_interleave(SEE_NX)
+                              device=pos.device).repeat_interleave(SEE_ROW)
             c, s = torch.cos(yaw).unsqueeze(1), torch.sin(yaw).unsqueeze(1)
             ex = pos[:, 0:1] + c * lx - s * ly
             ey = pos[:, 1:2] + s * lx + c * ly
@@ -127,8 +134,8 @@ def main():
             print()
             print(f" 본보기 (0번 개) — 몸통 ({float(pos[i,0]):+.2f}, {float(pos[i,1]):+.2f}, "
                   f"{float(pos[i,2]):.3f}) · yaw {math.degrees(float(yaw[i])):+.1f}도")
-            print("   가운데 줄 (뒤 −0.3 → 앞 +0.9):")
-            mid = got[i, (SEE_NY // 2) * SEE_NX:(SEE_NY // 2 + 1) * SEE_NX]
+            print(f"   가운데 줄 (뒤 {SEE_X0 + SEE_FWD - SEE_STEP * SEE_REAR:+.1f} → 앞 +0.9):")
+            mid = got[i, (SEE_NY // 2) * SEE_ROW:(SEE_NY // 2 + 1) * SEE_ROW]
             print("   " + " ".join(f"{float(v):+.2f}" for v in mid))
             print(f"   값의 범위 (모든 개)  {float(got.min()):+.3f} ~ {float(got.max()):+.3f}"
                   f"   (평지에서 키 0.30 이면 −0.20)")

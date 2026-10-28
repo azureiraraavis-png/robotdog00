@@ -860,11 +860,23 @@ class UnitreeGo2GuideSeeEnvCfg(UnitreeGo2GuideRoughEnvCfg):
         from isaaclab.sensors import RayCasterCfg, patterns
         from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 
+        # ─── 스위치 (README 80-1) ───
+        #   REAR_EYE   뒤 눈 — False = 끔(기본 · 65점 · 앞뒤 −0.3~+0.9 그대로)
+        #              True  = 격자 x −0.9~+0.9 (19) · 앞으로 0 → 앞뒤 −0.9 ~ +0.9 m · 19 × 5 = 95점 (정책 입력 143)
+        #              순서는 그대로 y 바깥 · x 안쪽 → 옛 65점의 (iy, ix) 는 새 자리 iy·19 + ix + 6.
+        #              ⚠ 65점 정책 (2600 등) 에 이것만 켜면 입력 칸 수가 안 맞아 못 불러옵니다 —
+        #                rear_warm.py 로 만든 체크포인트 (뒤 30칸이 0 인 2600w) 와 같이 씁니다.
+        #              ⚠ sim_go2.py 는 정책 입력 143 을 보고 스스로 95점을 줍니다 (뒤 30점은 지형만).
+        REAR_EYE = False
+        _see_size, _see_fwd = ([1.8, 0.4], 0.0) if REAR_EYE else ([1.2, 0.4], 0.3)
+        if REAR_EYE:
+            print("[뒤 눈] 95점 · 앞뒤 −0.9~+0.9 · 좌우 ±0.2 · 정책 입력 143 (README 80-1)")
+
         self.scene.see_scanner = RayCasterCfg(
             prim_path="{ENV_REGEX_NS}/Robot/base",
-            offset=RayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 20.0)),
+            offset=RayCasterCfg.OffsetCfg(pos=(_see_fwd, 0.0, 20.0)),
             ray_alignment="yaw",
-            pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.2, 0.4]),
+            pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=_see_size),
             debug_vis=False,
             mesh_prim_paths=["/World/ground"],
         )
