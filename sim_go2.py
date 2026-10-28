@@ -353,6 +353,9 @@ ap.add_argument("--sb-pass-shift", type=float, default=0.20, dest="sb_pass_shift
 ap.add_argument("--fall-hold", type=float, default=0.5, dest="fall_hold",
                 help="참 계단의 넘어짐 판정: 몸통-바닥이 0.15 m 아래로 이만큼(초) **이어서** 머물면 넘어짐 (README 76-13 · 기본 0.5) · "
                      "0 = 76-12 까지처럼 한 순간이라도 0.15 m 아래면 넘어짐")
+ap.add_argument("--sb-prewait", action="store_true", dest="sb_prewait",
+                help="참 계단 · 사람과 문 · 길잡이 반응: 참에서 미리 기다리기 (README 81) — 참에 몸이 다 올라선 뒤, 다음 단과 그다음 참"
+                     " (앞으로 곧게 보이는 곳) 에 사람이 있으면 단에 들어서지 않고 참에서 기다림. 기본 끔 (76 그대로)")
 ap.add_argument("--sb-park", choices=["safe", "old"], default="safe", dest="sb_park",
                 help="사람 상자를 치우고 놓는 법 (README 76-6) — safe: 부딪힘을 끈 다음 바퀴에 옮기고, 놓은 다음 바퀴에 켬 (기본) · "
                      "old: 76-5 까지처럼 부딪힘을 켠 채 한 번에 옮김 (그 순간 붙어 있던 개를 칠 수 있음)")
@@ -1745,11 +1748,38 @@ def _sbx_ahead(s_r, e_r, rz):
     return best
 
 
+SBX_PRE_IN = 0.60                  # 참에서 미리 기다리기 (81): 참에 들어서서 이만큼 (길 따라 · 몸 중심) 간 뒤부터 봄 — 뒷발까지 참 위 (76 의 '참 + 0.6' 과 같음)
+SBX_PRE_WHY = "다음 단의 사람"
+
+
+def _sbx_pre(s_r):
+    """참에서 미리 기다리기 (README 81): 지금 참에 있고 다음 단 + 그다음 참 에 사람이 있으면 그 사람의 길 따라 자리 · 아니면 None.
+    보는 곳은 지금 서 있는 참에서 앞으로 곧게 보이는 데까지 (다음 단 · 그 끝의 참) — 그 너머 (꺾여 돌아가는 단) 는 안 봄 (실물도 못 봄 · 79-12)."""
+    X = SBX
+    on = X["person"]["on"]
+    if on is None or on.get("xyz") is None:
+        return None
+    L = X["lands"]
+    cur = next(((a, b) for (a, b) in L if a - 0.02 <= s_r <= b + 0.02), None)
+    if cur is None or s_r < cur[0] + SBX_PRE_IN:
+        return None
+    nxt = [(a, b) for (a, b) in L if a > cur[1] + 0.05]
+    if not nxt:                                  # 앞에 단이 더 없음 (마지막 참) — 76 그대로
+        return None
+    if s_r + 0.30 < on["s"] <= nxt[0][1]:
+        return on["s"]
+    return None
+
+
 def sbx_react(now, t_run, s_r, e_r, rz):
     """길잡이의 멈추고 · 기다리고 · 다시 가기 (README 76). True 면 이번 바퀴는 [0, 0, 0]."""
     X = SBX
     R = X["r"]
     s_o, why = _sbx_ahead(s_r, e_r, rz)
+    if args.sb_prewait:                          # 참에서 미리 기다리기 (README 81)
+        s_q = _sbx_pre(s_r)
+        if s_q is not None and (s_o is None or s_q < s_o):
+            s_o, why = s_q, SBX_PRE_WHY
     X["blocked"] = s_o is not None
     here = "참" if X["isl"](s_r) else "단 위"
     X["shift"] = 0.0
@@ -1798,6 +1828,8 @@ def sbx_react(now, t_run, s_r, e_r, rz):
     def wait(where):
         R["mode"], R["t0"], R["clear"], R["where"] = "wait", now, None, where
         R["n"] += 1
+        if why == SBX_PRE_WHY:
+            R["n_pre"] = R.get("n_pre", 0) + 1
         if where == "단 위":
             R["n_flight"] += 1
         print(f" [길잡이] {t_run:.1f}초 · 잠시만요 — 앞 {gap:.1f} m 에 {why} · {where}에서 기다립니다 (개는 {sb_where_now[0]})")
@@ -3878,7 +3910,8 @@ else:
                                 + (" eng" if SBX["checked"] else "")
                                 + ((f" | w{SBX['r']['n']} f{SBX['r']['n_flight']} g{SBX['r']['n_go']} t{SBX['r']['total']:.0f}"
                                     + ("!" if SBX["r"]["mode"] == "wait" else "")
-                                    + (f" v{SBX['r'].get('n_pass', 0)}" if args.sb_pass else "")) if args.sb_react else "")) if (_sbk and SBX is not None) else "")),
+                                    + (f" v{SBX['r'].get('n_pass', 0)}" if args.sb_pass else "")
+                                    + (f" q{SBX['r'].get('n_pre', 0)}" if args.sb_prewait else "")) if args.sb_react else "")) if (_sbk and SBX is not None) else "")),
                 ("sb_low_s", (f"{sb_low_max:.2f}/{args.fall_hold:g}" if _sbk else "")),   # 0.15 m 아래 이어서 가장 길게 / 판정 초 (76-13)
                 ("sb_back", ((f"{args.sb_back}:" + ("-" if sb_b is None else
                               f"{sb_b['k']}:{'ok' if sb_b['done'] is not None else 'no'}:{sb_b['land']}:"
