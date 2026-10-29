@@ -62,6 +62,17 @@ class GuideMixVelocityCommand(_UniformVelocityCommand):
         self.mix_sharp[ids] = (mode > 0) & ~self.is_standing_env[ids]
         self.mix_ever[ids] |= mode > 0                                   # 82-4: 판 끝의 커리큘럼이 읽고 지움
 
+    def _update_command(self):
+        """83-1: 꺾인 계단 조각 위의 개는 길잡이처럼 — 방향 (heading) 은 길의 방향 · 옆 명령은 줄에서 벗어난 만큼 되돌림.
+        나머지 개는 그대로. 그다음 원래의 _update_command (heading → 돌기 · 서 있으라는 개는 0)."""
+        g = _switch_guide(self._env)
+        if g is not None:
+            ids, heading, e_left, _s = g
+            self.heading_target[ids] = heading
+            self.is_heading_env[ids] = True
+            self.vel_command_b[ids, 1] = torch.clamp(-SWITCH_K_LANE * e_left, -SWITCH_VY_MAX, SWITCH_VY_MAX)
+        super()._update_command()
+
     def _update_metrics(self):
         super()._update_metrics()
         b = ((self.mix_mode == 1) & ~self.is_standing_env).float()
@@ -124,4 +135,135 @@ def terrain_levels_vel_hold_mix(env, env_ids, asset_cfg: SceneEntityCfg = SceneE
         print(f"[강등 멈추기] terrain_levels_vel_hold_mix · 명령 클래스 {type(term).__name__} · mix_ever "
               + (f"있음 · 이번에 끝난 개 {_n} 중 줄을 안 바꾼 개 {int(hold.sum())}" if ever is not None else "없음 (✖ 모두 원래대로)"), flush=True)
     terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
+
+
+# ─────────────────────────────────────────────────────────────
+#  83-1: 꺾인 계단 조각 (switch_terrain.py · flat_env_cfg.py 의 SWITCH_STAIRS) 위의 개를 위한 길잡이 · 커리큘럼
+#  놓인 자리 (env_origins = 바닥참 가운데) 에서 본 길: 처음 단 쪽으로 +x → 가운데 참에서 건너편으로 (±y) → 건너편 단을 −x.
+#  rig 의 길잡이 (sim_go2.py · 68 · 79) 처럼: 방향은 길의 방향 · 옆 명령 = −2 × (줄에서 왼쪽으로 벗어난 양) (±0.2 에서 자름) ·
+#  꺾는 곳 0.3 m 앞에서 다음 줄로 (SB_SWITCH). 앞 · 뒤 명령 (빠르기 · 뒤로 · 거의 0) 은 뽑힌 그대로.
+#  지형 조각의 승급 · 강등은 곧은 거리 대신 **길 따라 간 거리 s** 로 (꺾인 계단은 처음과 끝이 1.65 m 밖에 안 떨어짐).
+# ─────────────────────────────────────────────────────────────
+SWITCH_K_LANE, SWITCH_VY_MAX, SWITCH_PRE = 2.0, 0.2, 0.30
+SWITCH_PROMOTE_S, SWITCH_DEMOTE_CAP = 5.0, 2.5
+_SW_SAID = [False]
+
+
+def _switch_state(env):
+    """꺾인 계단 조각 위의 개 (번호 · dy · u_mid) — 한 번 셈해 명령 항에 걸어 둠. 없으면 None."""
+    term = env.command_manager.get_term("base_velocity")
+    st = getattr(term, "_sw_state", None)
+    if st is not None:
+        return st if st["ids"].numel() > 0 else None
+    import numpy as _np
+    terrain = env.scene.terrain
+    tg = getattr(terrain.cfg, "terrain_generator", None)
+    ids = torch.zeros(0, dtype=torch.long, device=env.device)
+    st = {"ids": ids}
+    if tg is not None and getattr(terrain, "terrain_types", None) is not None:
+        names = list(tg.sub_terrains.keys())
+        if any(n.startswith("switch_") for n in names):
+            pr = _np.array([c.proportion for c in tg.sub_terrains.values()], dtype=float)
+            pr /= pr.sum()
+            col_kind = [names[int(_np.min(_np.where(i / tg.num_cols + 0.001 < _np.cumsum(pr))[0]))] for i in range(tg.num_cols)]
+            from .switch_terrain import switch_offsets
+            dy_col = torch.zeros(tg.num_cols, device=env.device)
+            u_mid = None
+            for i, k in enumerate(col_kind):
+                if k.startswith("switch_"):
+                    off = switch_offsets(tg.sub_terrains[k])
+                    dy_col[i] = off["dy"]
+                    u_mid = off["u_mid"]
+            types = terrain.terrain_types.to(env.device).long()
+            sw = dy_col[types] != 0.0
+            ids = sw.nonzero(as_tuple=False).flatten()
+            st = {"ids": ids, "dy": dy_col[types][ids], "u_mid": float(u_mid or 0.0)}
+            if not _SW_SAID[0]:
+                _SW_SAID[0] = True
+                print(f"[꺾인 계단] " + " · ".join(f"{n} {col_kind.count(n)}열" for n in names if n.startswith("switch_"))
+                      + f" · 그 위의 개 {int(ids.numel())} / {env.num_envs} · 가운데 참까지 {st['u_mid']:.2f} m · 건너편 {float(dy_col.abs().max()):.2f} m"
+                      + " · 길잡이 (방향 · 옆 되돌림) · 길 따라 승급 " + f"{SWITCH_PROMOTE_S:.1f} m", flush=True)
+    term._sw_state = st
+    return st if st["ids"].numel() > 0 else None
+
+
+def switch_path(p, o, dy, u_mid):
+    """길잡이의 셈 (텐서) — p · o: (n, 2) 개 · 놓인 자리 / dy: (n,) 건너편 줄까지 (부호 있음).
+    돌려줌: heading (world) · e_left (길의 왼쪽으로 벗어난 양) · s (길 따라 간 거리)."""
+    u = p[:, 0] - o[:, 0]
+    sg = torch.sign(dy)
+    D = dy.abs()
+    v = (p[:, 1] - o[:, 1]) * sg
+    phase0 = (v < 0.5 * D) & (u < u_mid - SWITCH_PRE)
+    phase2 = (~phase0) & (v >= D - SWITCH_PRE)
+    phase1 = ~(phase0 | phase2)
+    pi = torch.full_like(u, 3.141592653589793)
+    heading = torch.where(phase0, torch.zeros_like(u), torch.where(phase2, pi, sg * 0.5 * pi))
+    e0 = p[:, 1] - o[:, 1]
+    e1 = -sg * (u - u_mid)
+    e2 = -(p[:, 1] - (o[:, 1] + dy))
+    e_left = torch.where(phase0, e0, torch.where(phase2, e2, e1))
+    s0 = u
+    s1 = (u_mid - SWITCH_PRE) + torch.clamp(v, min=0.0)
+    s2 = (u_mid - SWITCH_PRE) + D + (u_mid - u)
+    s = torch.where(phase0, s0, torch.where(phase2, s2, s1))
+    return heading, e_left, s
+
+
+def _switch_guide(env):
+    st = _switch_state(env)
+    if st is None:
+        return None
+    ids = st["ids"]
+    p = env.scene["robot"].data.root_pos_w.torch[ids, :2]
+    o = env.scene.env_origins[ids, :2]
+    heading, e_left, s = switch_path(p, o, st["dy"], st["u_mid"])
+    return ids, heading, e_left, s
+
+
+def switch_progress(env, env_ids):
+    """눈금자 (보기만): 판이 끝난 개 가운데 꺾인 계단 위의 개가 길 따라 간 거리의 평균 (없으면 0). terrain_levels 보다 먼저."""
+    g = _switch_guide(env)
+    if g is None:
+        return torch.zeros((), device=env.device)
+    ids, _h, _e, s = g
+    full = torch.full((env.num_envs,), float("nan"), device=env.device)
+    full[ids] = s
+    sel = full[torch.as_tensor(env_ids, device=env.device, dtype=torch.long)]
+    sel = sel[~torch.isnan(sel)]
+    return sel.mean() if sel.numel() > 0 else torch.zeros((), device=env.device)
+
+
+def terrain_levels_vel_hold_mix_switch(env, env_ids, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """terrain_levels_vel_hold_mix 와 같되, 꺾인 계단 위의 개는 곧은 거리 대신 길 따라 간 거리 s 로
+    (승급 s > 5.0 m · 강등 s < min(|명령| × 판 길이 × 0.5, 2.5 m)) — 83-1. 섞인 개는 그대로 줄을 안 바꿈 (82-4)."""
+    asset = env.scene[asset_cfg.name]
+    terrain = env.scene.terrain
+    command = env.command_manager.get_command("base_velocity")
+    eids = torch.as_tensor(env_ids, device=env.device, dtype=torch.long).flatten() if not isinstance(env_ids, slice) \
+        else torch.arange(env.num_envs, device=env.device)[env_ids]
+    distance = torch.linalg.norm(asset.data.root_pos_w.torch[eids, :2] - env.scene.env_origins[eids, :2], dim=1)
+    cmdn = torch.linalg.norm(command[eids, :2], dim=1)
+    move_up = distance > terrain.cfg.terrain_generator.size[0] / 2
+    move_down = distance < cmdn * env.max_episode_length_s * 0.5
+    g = _switch_guide(env)
+    if g is not None:
+        ids, _h, _e, s = g
+        full = torch.full((env.num_envs,), float("nan"), device=env.device)
+        full[ids] = s
+        se = full[eids]
+        sw = ~torch.isnan(se)
+        se0 = torch.nan_to_num(se, nan=0.0)
+        move_up = torch.where(sw, se0 > SWITCH_PROMOTE_S, move_up)
+        move_down = torch.where(sw, se0 < torch.clamp(cmdn * env.max_episode_length_s * 0.5, max=SWITCH_DEMOTE_CAP), move_down)
+    move_down = move_down & ~move_up
+    term = env.command_manager.get_term("base_velocity")
+    ever = getattr(term, "mix_ever", None)
+    if ever is not None:
+        hold = ever[eids]
+        move_up = move_up & ~hold
+        move_down = move_down & ~hold
+        ever[eids] = False
+    terrain.update_env_origins(eids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())

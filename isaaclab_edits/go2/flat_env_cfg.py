@@ -155,6 +155,27 @@ class UnitreeGo2GuideEnvCfg_PLAY(UnitreeGo2GuideEnvCfg):
 import isaaclab.terrains as terrain_gen
 from isaaclab.terrains import TerrainGeneratorCfg
 
+
+# ─────────────────────────────────────────────────────────────
+#  robotdog00 — 꺾인 계단 지형 조각 (2026-10-29, README 83-1)
+#  rig 의 v2 무대 (79-2) 를 본뜬 한 층 높이의 꺾인 계단: 바닥참 1.30 · 단 10칸 × 디딤 0.24 · 가운데 참 1.30 ·
+#  단 폭 1.25 · 칸막이 0.40 · 둘레 벽. 높이는 난이도대로 (0.13 ~ 0.23 · FINE_TUNE_STAIRS 의 계단과 같음).
+#  만드는 함수는 switch_terrain.py (글자로만 적음 — 지형을 만들 때 불러옴 · 77-2 와 같은 까닭).
+#  start = "bottom" → A 쪽 바닥참에 놓임 (오르기) · "top" → B 쪽 위 바닥참에 놓임 (내려가기).
+# ─────────────────────────────────────────────────────────────
+@configclass
+class SwitchStairsTerrainCfg(terrain_gen.SubTerrainBaseCfg):
+    function: str = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.switch_terrain:switch_stairs_terrain"
+    step_height_range: tuple = (0.13, 0.23)
+    step_width: float = 0.24
+    num_steps: int = 10
+    flight_width: float = 1.25
+    gap: float = 0.40
+    floor_depth: float = 1.30
+    landing_depth: float = 1.30
+    wall_height: float = 1.0
+    start: str = "bottom"
+
 # ※ 2026-10-01 (README 41-17): 아래 이름표가 **거꾸로** 입니다.
 #   mesh_terrains.py 의 origin 을 보면 —
 #     pyramid_stairs          origin z = +(계단수+1)×높이  → 꼭대기 출발, **내려옴**
@@ -353,6 +374,8 @@ def walked_distance(env, env_ids):
 GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideMixVelocityCommand"
 GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
+GUIDE_SWITCH_LEVELS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix_switch"   # 83-1
+GUIDE_SWITCH_PROG = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:switch_progress"                       # 83-1
 
 
 # ─────────────────────────────────────────────────────────────
@@ -407,6 +430,16 @@ class GuideCurriculumCfg:
     stuck_frac = CurrTerm(func=stuck_fraction)
     walk_dist = CurrTerm(func=walked_distance)
     terrain_levels = CurrTerm(func=vel_mdp.terrain_levels_vel)
+
+
+@configclass
+class GuideSwitchCurriculumCfg:
+    """꺾인 계단 (README 83-1) — 눈금자 셋 (switch_prog 는 꺾인 계단 위의 개가 길 따라 간 거리) 뒤에 terrain_levels (길 따라 승급 · 섞인 개는 그대로)."""
+
+    stuck_frac = CurrTerm(func=stuck_fraction)
+    walk_dist = CurrTerm(func=walked_distance)
+    switch_prog = CurrTerm(func=GUIDE_SWITCH_PROG)
+    terrain_levels = CurrTerm(func=GUIDE_SWITCH_LEVELS)
 
 
 @configclass
@@ -687,6 +720,14 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         MIX_HOLD_LEVEL = False
         if MIX_HOLD_LEVEL and not MOVE_MIX:
             raise ValueError("MIX_HOLD_LEVEL 은 MOVE_MIX = True 와 함께만 씁니다 (README 82-4)")
+        #   SWITCH_STAIRS     꺾인 계단 지형 조각을 넣음 — 계단의 몫 0.50 가운데 피라미드 계단 (내려가는 · 오르는) 에서 0.10 씩 떼어
+        #     switch_up (오르기 · 0.10) · switch_down (내려가기 · 0.10) 으로 (README 83-1) · False = 끔(기본)
+        #     그 위의 개는 길잡이처럼 방향 · 옆 명령을 받고 (guide_mix_command.py), 승급 · 강등은 길 따라 간 거리로.
+        #     첫머리에 "[꺾인 계단] …" 줄을 찍습니다. TREAD_MIX · DOWN_SHARE · MOVE_MIX · MIX_HOLD_LEVEL 과 함께만.
+        #   10/29 꺾인 계단 판 (83)       82b 와 같음 + SWITCH_STAIRS = True
+        SWITCH_STAIRS = False
+        if SWITCH_STAIRS and not (MOVE_MIX and MIX_HOLD_LEVEL and TREAD_MIX and DOWN_SHARE):
+            raise ValueError("SWITCH_STAIRS 는 MOVE_MIX · MIX_HOLD_LEVEL · TREAD_MIX · DOWN_SHARE 와 함께만 씁니다 (README 83-1)")
         if MIX_SHARP:
             if not MOVE_MIX:
                 raise ValueError("MIX_SHARP 는 MOVE_MIX = True 와 함께만 씁니다 (README 78-3)")
@@ -706,6 +747,9 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                 _tg.sub_terrains["pyramid_stairs"].proportion = float(DOWN_SHARE)
                 _tg.sub_terrains["pyramid_stairs_inv"].proportion = 0.50 - float(DOWN_SHARE)
                 print(f"[내려가기 몫] 내려가는 계단 {DOWN_SHARE:.2f} · 오르는 계단 {0.50 - DOWN_SHARE:.2f}", flush=True)
+            if SWITCH_STAIRS:                       # 83-1: 피라미드 계단에서 0.10 씩 떼어 꺾인 계단으로
+                _tg.sub_terrains["pyramid_stairs"].proportion -= 0.10
+                _tg.sub_terrains["pyramid_stairs_inv"].proportion -= 0.10
             if FINE_TUNE_STAIRS:
                 _tg.sub_terrains["pyramid_stairs"].step_height_range = (0.13, 0.23)
                 _tg.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.13, 0.23)
@@ -723,6 +767,9 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                 for _nm, _c in _tg.sub_terrains.items():
                     if _nm not in _split:
                         _sub[_nm] = _c
+                if SWITCH_STAIRS:                   # 83-1: 맨 끝에 (열은 이 순서대로 채워짐)
+                    _sub["switch_up"] = SwitchStairsTerrainCfg(proportion=0.10, start="bottom")
+                    _sub["switch_down"] = SwitchStairsTerrainCfg(proportion=0.10, start="top")
                 _tg.sub_terrains = _sub
                 _tg.num_cols = 60
                 _pr = _np.array([_c.proportion for _c in _sub.values()], dtype=float)
@@ -834,6 +881,8 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             if GUIDE_PROMOTION:
                 raise ValueError("MIX_HOLD_LEVEL 은 GUIDE_PROMOTION = False 일 때만 씁니다 (terrain_levels_vel 을 본뜸 · README 82-4)")
             self.curriculum.terrain_levels.func = GUIDE_MIX_HOLD
+        if SWITCH_STAIRS:                        # 83-1: 눈금자 switch_prog 를 더한 묶음으로 갈아끼움 (terrain_levels 는 길 따라 · 섞인 개 그대로)
+            self.curriculum = GuideSwitchCurriculumCfg()
 
 # ─────────────────────────────────────────────────────────────
 #  ★ 눈을 줍니다 — Isaac-Velocity-Rough-Unitree-Go2-GuideSee-v0 (2026-10-06, README 48) ★
