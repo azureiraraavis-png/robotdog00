@@ -116,6 +116,7 @@ Unitree Go2 PRO가 **한국어로 말하면서 방문객을 안내하도록** �
 - [79. 실측을 무대에 — 시설 무대 v2 (2026-10-27)](docs/2_training.md#c79)
 - [80. 계단에서 뒤로 물러나기 — 뒤 눈을 주고 다시 가르친다 (2026-10-28)](docs/2_training.md#c80)
 - [81. 참에서 미리 기다리기 — 단 위에서 막히는 일을 줄인다 (2026-10-29)](docs/2_training.md#c81)
+- [82. 계단에서 뒤로 걷기 — 진짜 원인을 고친다 (2026-10-29)](docs/2_training.md#c82)
 
 <a id="a01"></a>
 
@@ -183,7 +184,7 @@ Unitree Go2 PRO가 **한국어로 말하면서 방문객을 안내하도록** �
 robotdog00/
 ├── README.md              첫 화면 — 소개 · 현재 상태 · 두 문서로 가는 목차
 ├── docs/1_control.md      ★ 1부. 로봇개 조종 (실기체) — 삽질 기록 1~29 · 30~32장
-├── docs/2_training.md     ★ 2부. 가상 로봇개 훈련 (시뮬레이터) — 33장~ (지금 81장)
+├── docs/2_training.md     ★ 2부. 가상 로봇개 훈련 (시뮬레이터) — 33장~ (지금 82장)
 ├── DECISION.md            ★ 왜 로봇이 스스로 걷지 않기로 했는가
 ├── MEASURE.md             복도를 줄자로 재는 법
 ├── ISAACLAB.md            ★ Isaac Lab 에 고친 곳 (남의 저장소라 git 이 안 봅니다)
@@ -199,6 +200,7 @@ robotdog00/
 ├── feet_read.py           발 자취(sim\feet\*.csv)에서 헛발질을 셉니다 (시뮬레이터 불필요)
 ├── scan_check.py          학습 환경의 높이 스캔과 시험대의 식이 같은지 잽니다
 ├── rear_warm.py           65점 정책을 뒤 눈 95점으로 늘림 (뒤 30칸 0 · 따뜻한 출발 · 2부 80-2)
+├── back_probe.py          학습 지형 (피라미드 계단) 에서 뒤로 걷기를 잼 (2부 82-1)
 ├── curve.py               학습 곡선 보기 (tensorboard 없이 tfevents 직독)
 ├── isaaclab_edits/go2/    ★ Isaac Lab 에 덮어쓰는 과제 설정 원본 (flat_env_cfg.py · guide_mix_command.py — 77-2)
 │
