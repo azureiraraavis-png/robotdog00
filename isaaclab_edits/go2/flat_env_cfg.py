@@ -352,6 +352,7 @@ def walked_distance(env, env_ids):
 #     그래서 cfg 에는 "모듈:클래스" 글자만 적고, Isaac Lab 이 명령을 만들 때 (시뮬레이터가 뜬 뒤) 불러오게 합니다.
 GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideMixVelocityCommand"
 GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
+GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
 
 
 # ─────────────────────────────────────────────────────────────
@@ -679,6 +680,13 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     guide_mix_command.py 의 track_lin_vel_xy_exp_mix (글자로만 적음). 첫 상을 셀 때 "[상 날카롭게] …" 줄을 찍습니다.
         #   10/27 상 날카롭게 판 (78)    77 과 같음 + MIX_SHARP = 0.0625
         MIX_SHARP = 0.0
+        #   MIX_HOLD_LEVEL    강등 멈추기 — 그 판에 뒤로 · 거의 0 명령을 뽑은 개는 줄을 안 바꿈 (승급도 강등도 없음) · False = 끔(기본) (README 82-4)
+        #     왜: 뒤로 개는 계단 끝에서 서서 (82-3) 늘 강등선 (약 2 m) 에 못 미쳐 쉬운 줄로 밀려남 → 높은 계단에서 뒤로를 연습할 일이 줌.
+        #     guide_mix_command.py 의 terrain_levels_vel_hold_mix (글자로만 적음). 첫 판 끝에 "[강등 멈추기] …" 줄을 찍습니다. MOVE_MIX 와 함께만.
+        #   10/29 강등 멈추기 판 (82-4)   80 과 같음 + MIX_HOLD_LEVEL = True
+        MIX_HOLD_LEVEL = False
+        if MIX_HOLD_LEVEL and not MOVE_MIX:
+            raise ValueError("MIX_HOLD_LEVEL 은 MOVE_MIX = True 와 함께만 씁니다 (README 82-4)")
         if MIX_SHARP:
             if not MOVE_MIX:
                 raise ValueError("MIX_SHARP 는 MOVE_MIX = True 와 함께만 씁니다 (README 78-3)")
@@ -822,6 +830,10 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     (첫 판이 정확히 그랬습니다 — GuideCurriculumCfg 주석 참고)
         self.curriculum = (GuidePromoteCurriculumCfg() if GUIDE_PROMOTION
                            else GuideCurriculumCfg())
+        if MIX_HOLD_LEVEL:                       # 82-4: 위에서 갈아끼운 뒤에 함수만 바꿈 (항 순서 · 이름은 그대로)
+            if GUIDE_PROMOTION:
+                raise ValueError("MIX_HOLD_LEVEL 은 GUIDE_PROMOTION = False 일 때만 씁니다 (terrain_levels_vel 을 본뜸 · README 82-4)")
+            self.curriculum.terrain_levels.func = GUIDE_MIX_HOLD
 
 # ─────────────────────────────────────────────────────────────
 #  ★ 눈을 줍니다 — Isaac-Velocity-Rough-Unitree-Go2-GuideSee-v0 (2026-10-06, README 48) ★

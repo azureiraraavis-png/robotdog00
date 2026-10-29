@@ -32,6 +32,7 @@ class GuideMixVelocityCommand(_UniformVelocityCommand):
         super().__init__(cfg, env)
         self.mix_mode = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)      # 0 앞 · 1 뒤로 · 2 거의 0 (78-3)
         self.mix_sharp = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)     # 날카로운 상을 쓸 개 (78-3)
+        self.mix_ever = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)      # 이 판에 한 번이라도 뒤로 · 거의 0 을 뽑았나 (82-4)
         for _k in ("back_steps", "back_vx_sum", "back_cmd_sum"):                               # 보기만 (78-3)
             self.metrics[_k] = torch.zeros(self.num_envs, device=self.device)
         print(f"[명령 섞기] GuideMixVelocityCommand · 뒤로 {MIX_P_BACK:.2f} ({MIX_BACK[0]:+.2f}~{MIX_BACK[1]:+.2f})"
@@ -59,6 +60,7 @@ class GuideMixVelocityCommand(_UniformVelocityCommand):
         mode = torch.where(slow, torch.full_like(mode, 2), mode)
         self.mix_mode[ids] = mode
         self.mix_sharp[ids] = (mode > 0) & ~self.is_standing_env[ids]
+        self.mix_ever[ids] |= mode > 0                                   # 82-4: 판 끝의 커리큘럼이 읽고 지움
 
     def _update_metrics(self):
         super()._update_metrics()
@@ -87,3 +89,39 @@ def track_lin_vel_xy_exp_mix(env, std: float, std_mix: float, command_name: str,
         return torch.exp(-err / std ** 2)
     s2 = torch.where(sharp, torch.full_like(err, std_mix ** 2), torch.full_like(err, std ** 2))
     return torch.exp(-err / s2)
+
+
+# ─────────────────────────────────────────────────────────────
+#  82-4: 강등 멈추기 — 이 판에 뒤로 · 거의 0 명령을 한 번이라도 뽑은 개는 줄 (난이도) 을 안 바꿈 (승급도 강등도 없음).
+#  왜 (82-3): 뒤로 개는 계단 끝에서 서면 중심에서 1~1.5 m — 강등선 (|명령| × 20초 × 0.5 = 약 2 m) 보다 짧아 늘 강등되고,
+#      높은 계단에서 뒤로를 연습할 일이 준다. 나머지 개는 terrain_levels_vel (velocity/mdp/curriculums.py) 그대로.
+#  판 끝 (_reset_idx) 에서 커리큘럼은 명령을 다시 뽑기 **전에** 불리므로, 끝난 판의 mix_ever 를 읽을 수 있다.
+#  읽은 뒤 지우고, 곧 다시 뽑히는 명령이 새 판의 값을 채운다.
+# ─────────────────────────────────────────────────────────────
+_HOLD_SAID = [False]
+
+
+def terrain_levels_vel_hold_mix(env, env_ids, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """terrain_levels_vel 과 같되 mix_ever 인 개는 move_up · move_down 을 모두 끔 (82-4)."""
+    asset = env.scene[asset_cfg.name]
+    terrain = env.scene.terrain
+    command = env.command_manager.get_command("base_velocity")
+    distance = torch.linalg.norm(asset.data.root_pos_w.torch[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1)
+    move_up = distance > terrain.cfg.terrain_generator.size[0] / 2
+    move_down = distance < torch.linalg.norm(command[env_ids, :2], dim=1) * env.max_episode_length_s * 0.5
+    move_down *= ~move_up
+    term = env.command_manager.get_term("base_velocity")
+    ever = getattr(term, "mix_ever", None)
+    hold = None
+    if ever is not None:
+        hold = ever[env_ids]
+        move_up = move_up & ~hold
+        move_down = move_down & ~hold
+        ever[env_ids] = False
+    if not _HOLD_SAID[0]:
+        _HOLD_SAID[0] = True
+        _n = int(move_up.numel())
+        print(f"[강등 멈추기] terrain_levels_vel_hold_mix · 명령 클래스 {type(term).__name__} · mix_ever "
+              + (f"있음 · 이번에 끝난 개 {_n} 중 줄을 안 바꾼 개 {int(hold.sum())}" if ever is not None else "없음 (✖ 모두 원래대로)"), flush=True)
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
