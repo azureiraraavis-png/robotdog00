@@ -13,10 +13,11 @@
  하는 일:
    · 학습 설정 그대로 (돌리는 쪽에서 디딤 섞기 · 내려가기 몫 · 필요하면 뒤 눈 스위치를 켜 둠) 환경을 띄우고
    · 개마다 지형 종류 (피라미드 계단 6종 + 울퉁불퉁) · 난이도 줄 (2 · 6 · 9) · 앞 명령 (−0.2 · +0.2) 을 정해 그 칸 한가운데에 놓고
-   · 명령을 고정한 채 (돌기 0 · 옆 0 · 다시 뽑기 없음 · 밀기 없음 · 잡음 없음) 20초 걷게 하고
+   · 명령을 고정한 채 (옆 0 · 돌기는 놓은 방향을 붙잡는 heading 되먹임 · 다시 뽑기 없음 · 밀기 없음 · 잡음 없음) 20초 걷게 하고
    · 개마다 잽니다: 처음 바라본 쪽으로 명령 방향으로 간 거리 · 높이 바뀜 · 넘어졌는가 (끝남 = 몸 닿음 등).
    피라미드 계단은 가운데 (폭 3 m 평판) 에서 바깥으로 가면 내려가고 (pyramid_stairs) · 올라갑니다 (_inv).
-   개가 놓일 때 방향은 무작위 (reset_base 그대로) — 어느 쪽으로 가든 1.0~2.0 m 뒤에 계단이 시작됩니다.
+   개는 계단 모서리에 곧게 (방향 --yaw0 · 기본 0도) 놓입니다 — 앞뒤 어느 쪽으로 가든 1.0~2.0 m 뒤에 계단이 시작됩니다.
+   (82-1 의 첫 판은 방향 무작위 · 돌기 0 · 앞 0.2 였고, 점검 (2600 의 앞으로) 을 못 지나 고쳤습니다 — 82-2.)
 
  돌리는 법 (Isaac Lab 폴더에서 · 정책은 꺼낸 jit 파일):
    .\\isaaclab.bat -p D:\\workspace_raraavis\\robotdog00\\back_probe.py --headless --policy <policy_XXXX.pt> --label <이름> --out <tsv>
@@ -50,7 +51,9 @@ parser.add_argument("--policy", type=str, required=True, help="꺼낸 정책 (ji
 parser.add_argument("--label", type=str, required=True, help="tsv 에 적을 이름")
 parser.add_argument("--out", type=str, default="", help="개마다 한 줄씩 덧붙일 tsv (기본 없음)")
 parser.add_argument("--rows", type=str, default="2,6,9", help="난이도 줄 (0~9 · 계단 높이 0.13 + 0.10 × (줄 + 0~1) / 10)")
-parser.add_argument("--vx", type=str, default="-0.2,0.2", help="앞 명령 (m/s)")
+parser.add_argument("--vx", type=str, default="-0.2,0.31", help="앞 명령 (m/s) — 앞으로는 rig 의 기본 빠르기 0.31 (82-2)")
+parser.add_argument("--yaw0", type=float, default=0.0,
+                    help="놓을 때 바라보는 방향 (도) · 방향 붙잡기 (heading) 도 이 쪽으로 — 계단 모서리에 곧게 (82-2). 'rand' 대신 숫자만")
 parser.add_argument("--reps", type=int, default=8, help="칸마다 개 수")
 parser.add_argument("--seconds", type=float, default=20.0)
 add_launcher_args(parser)
@@ -91,9 +94,14 @@ def main():
             env_cfg.curriculum.terrain_levels = None
         c = env_cfg.commands.base_velocity
         c.resampling_time_range = (1.0e6, 1.0e6)
-        c.heading_command = False
+        # 82-2: 방향을 붙잡음 — 학습처럼 heading 되먹임 (rel_heading_envs 1.0) · 목표 방향 = 놓은 방향 (계단 모서리에 곧게)
+        _y0 = math.radians(args_cli.yaw0)
+        c.heading_command = True
+        c.rel_heading_envs = 1.0
+        c.ranges.heading = (_y0, _y0)
         c.rel_standing_envs = 0.0
-        c.rel_heading_envs = 0.0
+        if hasattr(env_cfg.events, "reset_base") and env_cfg.events.reset_base is not None:
+            env_cfg.events.reset_base.params["pose_range"]["yaw"] = (_y0, _y0)
         env_cfg.episode_length_s = args_cli.seconds + 10.0
 
         env = gym.make(args_cli.task, cfg=env_cfg)
@@ -123,15 +131,15 @@ def main():
         terrain.terrain_types = torch.tensor(ty, device=dev, dtype=torch.long)
         terrain.env_origins[:] = terrain.terrain_origins[terrain.terrain_levels, terrain.terrain_types]
         VX = torch.tensor(vx_e, device=dev, dtype=torch.float)
-        print(f"[탐침] {args_cli.label} · 개 {n_env} · 종류 {len(kinds)} ({', '.join(kinds)}) · 줄 {rows} · 명령 {vxs} · 칸마다 {args_cli.reps} · {args_cli.seconds:.0f}초")
+        print(f"[탐침] {args_cli.label} · 개 {n_env} · 종류 {len(kinds)} ({', '.join(kinds)}) · 줄 {rows} · 명령 {vxs} · 칸마다 {args_cli.reps} · {args_cli.seconds:.0f}초 · 방향 {args_cli.yaw0:.0f}도 붙잡음")
 
         env.reset()
         cmd = u.command_manager.get_term("base_velocity")
         robot = u.scene["robot"]
 
-        def setcmd():
+        def setcmd():                       # 돌기 (열 2) 는 heading 되먹임이 셈한 것 그대로
             cmd.vel_command_b[:, 0] = VX
-            cmd.vel_command_b[:, 1:] = 0.0
+            cmd.vel_command_b[:, 1] = 0.0
 
         setcmd()
         obs = u.observation_manager.compute()
