@@ -376,6 +376,7 @@ GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
 GUIDE_SWITCH_LEVELS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix_switch"   # 83-1
 GUIDE_SWITCH_PROG = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:switch_progress"                       # 83-1
+SWITCH_PATCH_COUNT = 20 * 2**15   # 83-3: 꺾인 계단 (벽 · 칸막이) 은 접촉 패치가 많아 기본 10 × 2^15 (327680) 이 넘침 ("Patch buffer overflow" · 83 의 학습 내내)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -883,6 +884,14 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             self.curriculum.terrain_levels.func = GUIDE_MIX_HOLD
         if SWITCH_STAIRS:                        # 83-1: 눈금자 switch_prog 를 더한 묶음으로 갈아끼움 (terrain_levels 는 길 따라 · 섞인 개 그대로)
             self.curriculum = GuideSwitchCurriculumCfg()
+            # 83-3: 접촉 패치 버퍼를 늘림 — 83 의 학습은 내내 "Patch buffer overflow" (접촉을 잃음) 였다
+            _ph = self.sim.physics
+            _set = 0
+            for _c in [_ph] + [getattr(_ph, _n, None) for _n in ("default", "physx")]:
+                if _c is not None and hasattr(_c, "gpu_max_rigid_patch_count"):
+                    _c.gpu_max_rigid_patch_count = SWITCH_PATCH_COUNT
+                    _set += 1
+            print(f"[접촉 버퍼] gpu_max_rigid_patch_count = {SWITCH_PATCH_COUNT} ({_set}곳) · README 83-3", flush=True)
 
 # ─────────────────────────────────────────────────────────────
 #  ★ 눈을 줍니다 — Isaac-Velocity-Rough-Unitree-Go2-GuideSee-v0 (2026-10-06, README 48) ★
