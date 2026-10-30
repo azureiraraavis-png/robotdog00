@@ -332,6 +332,8 @@ ap.add_argument("--sb-back", type=int, default=0, dest="sb_back",
 ap.add_argument("--sb-back-v", type=float, default=0.2, dest="sb_back_v", help="뒤로 빠르기 m/s (기본 0.2 · 학습한 뒤로 범위 0.1~0.3 의 가운데)")
 ap.add_argument("--sb-back-hold", type=float, default=5.0, dest="sb_back_hold", help="참에 닿은 뒤 서 있게 둘 초 — 그 뒤 판을 끝냄 (기본 5)")
 ap.add_argument("--sb-back-limit", type=float, default=40.0, dest="sb_back_limit", help="'뒤로' 를 시작하고 이 초 안에 참에 못 닿으면 못 물러남 (기본 40)")
+ap.add_argument("--back-policy", default=None, dest="back_policy",
+                help="뒤로 물러나기 (--sb-back) 를 시작하는 순간 이 정책 (.pt) 으로 바꿔 끼웁니다 — 앞으로는 --policy 그대로 (README 84-1)")
 ap.add_argument("--sb-seed", type=int, default=None, dest="sb_seed",
                 help="참 계단 · 여러 층: 사람과 문을 이 씨앗으로 무작위로 넣음 (README 74). 기본 없음")
 ap.add_argument("--sb-people-max", type=int, default=3, dest="sb_people_max", help="한 판에 사람 일 최대 (기본 3 · 사이안 님 10/14)")
@@ -2251,6 +2253,51 @@ if see_on:
 
     robot._compute_observation = _see_obs
 
+# ★ 두 정책 바꿔 끼우기 (2026-10-30, README 84-1) ★
+#   앞으로 걸을 때는 --policy (2600) · 뒤로 물러나기 (--sb-back) 를 시작하는 순간 --back-policy (83c_4598) 로 바꿉니다.
+#   관측 48칸 (앞 행동 포함) 은 같은 몸에서 그대로 이어지고, 눈은 뒤 정책의 입력 칸 수에 맞춰 65점 ↔ 95점으로 바꿉니다.
+#   두 정책은 같은 과제 · 같은 관절 설정 · 같은 주기로 배운 것이라 그대로 꽂힙니다 (다르면 여기서 멈춥니다).
+_bk = None
+if args.back_policy:
+    if not args.sb_back:
+        print(" [바꿔 끼우기] ✖ --back-policy 는 --sb-back 과 함께만 씁니다 — 무시합니다")
+    elif not see_on:
+        print(" [바꿔 끼우기] ✖ 앞 정책이 눈 없이 돕니다 — 무시합니다")
+    else:
+        import torch as _torch
+        try:
+            _dev0 = next(robot.policy.parameters()).device
+        except Exception:
+            _dev0 = "cpu"
+        _bp = _torch.jit.load(args.back_policy, map_location=_dev0)
+        _bp.eval()
+        _bn = None
+        for _prm in _bp.parameters():
+            if _prm.dim() == 2:
+                _bn = int(_prm.shape[1])
+                break
+        _bo = None
+        for _prm in reversed(list(_bp.parameters())):
+            if _prm.dim() == 2:
+                _bo = int(_prm.shape[0])
+                break
+        _ao = None
+        for _prm in reversed(list(robot.policy.parameters())):
+            if _prm.dim() == 2:
+                _ao = int(_prm.shape[0])
+                break
+        if _bo != _ao:
+            print(f" [바꿔 끼우기] ✖ 행동 칸 수가 다릅니다 (앞 {_ao} · 뒤 {_bo}) — 멈춥니다")
+            raise SystemExit(1)
+        if _bn == 48 + SEE_N_REAR:
+            _bk = {"pol": _bp, "rear": SEE_REAR_COLS, "n": _bn, "at": None}
+        elif _bn == 48 + SEE_N:
+            _bk = {"pol": _bp, "rear": 0, "n": _bn, "at": None}
+        else:
+            print(f" [바꿔 끼우기] ✖ 뒤 정책 입력이 {_bn}칸입니다 ({48 + SEE_N} · {48 + SEE_N_REAR} 이 아님) — 멈춥니다")
+            raise SystemExit(1)
+        print(f" [바꿔 끼우기] 앞 정책 입력 {_n_in}칸 · 뒤로 물러나기를 시작하면 {args.back_policy} (입력 {_bn}칸 · 행동 {_bo}칸) 로 바꿉니다")
+
 # ★ 물리 주기를 **정책에게 물어봅니다** ★
 #
 #   policy_controller.py 원본에 이 줄이 있습니다 —
@@ -2760,6 +2807,7 @@ sb_where_now = ("", 0)
 sb_clr_min = None         # 몸통과 바로 아래 바닥 사이 — 가장 좁았던 값 (재는 구간)
 sb_low_t0 = None          # 몸통-바닥이 0.15 m 아래로 내려간 때 (이어지는 동안) — README 76-13
 sb_low_max = 0.0          # 0.15 m 아래로 이어서 머문 가장 긴 시간 (초)
+sb_fall_t = None          # 처음으로 넘어짐 판정 (fall_hold 초 넘게 0.15 m 아래) 에 든 때 — 그 낮아진 시작 (초 · 84-1 · 기록만)
 sb_offA = sb_offB = None  # 첫 단 · 둘째 단 위에서 그 단의 가운데 줄에서 가장 멀리 벗어난 값 (부호 · m)
 sb_land_in = sb_land_out = None   # 참에 들어선 때 · 다음 단의 첫 칸을 지난 때
 sb_xmax_land = None       # 참에서 가장 멀리 간 x (참 끝 벽까지 남은 거리를 냅니다)
@@ -2993,6 +3041,11 @@ while simulation_app.is_running():
                 sb_b = {"t0": now, "x0": _px, "y0": _py, "z0": _pz, "k": sb_k, "where": sb_where_now[0],
                         "done": None, "gave": None, "land": "", "dz": 0.0, "dist": 0.0}
                 print(f" [뒤로] {now - began:.1f}초 · {sb_where_now[0]} ({sb_k}칸) — 뒤로 {args.sb_back_v:.2f} m/s 로 뒤쪽 참까지")
+                if _bk is not None:                      # 84-1: 이 순간 뒤 정책으로
+                    robot.policy = _bk["pol"]
+                    SEE_REAR = _bk["rear"]
+                    _bk["at"] = now - began
+                    print(f" [바꿔 끼우기] {now - began:.1f}초 · 뒤 정책으로 바꿈 (입력 {_bk['n']}칸 · 눈 {SEE_N_REAR if SEE_REAR else SEE_N}점)")
             if sb_b is not None:
                 if sb_b["done"] is None and sb_b["gave"] is None:
                     _bc, _bs = math.cos(_yw), math.sin(_yw)
@@ -3029,6 +3082,8 @@ while simulation_app.is_running():
                 if sb_low_t0 is None:
                     sb_low_t0 = now
                 sb_low_max = max(sb_low_max, now - sb_low_t0)
+                if sb_fall_t is None and now - sb_low_t0 > args.fall_hold:     # 84-1: 처음 넘어진 때 (기록만)
+                    sb_fall_t = sb_low_t0 - began
             else:
                 sb_low_t0 = None
         _aS = _py < SB["ymid"]
@@ -3917,6 +3972,9 @@ else:
                               f"{sb_b['k']}:{'ok' if sb_b['done'] is not None else 'no'}:{sb_b['land']}:"
                               f"{((sb_b['done'] or sb_b['gave']) - sb_b['t0']) if (sb_b['done'] or sb_b['gave']) else 0:.1f}:"
                               f"{sb_b['dist']:.2f}:{sb_b['dz'] * 100:+.0f}")) if (_sbk and args.sb_back) else "")),   # 80-3
+                ("back_policy", (("/".join(args.back_policy.replace("\\", "/").split("/")[-3:])
+                                  + (f"@{_bk['at']:.1f}" if _bk.get("at") is not None else "@-")
+                                  + (f" f{sb_fall_t:.1f}" if sb_fall_t is not None else "")) if _bk is not None else "")),   # 84-1 · f = 넘어진 때
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
