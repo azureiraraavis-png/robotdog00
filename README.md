@@ -202,6 +202,7 @@ robotdog00/
 ├── scan_check.py          학습 환경의 높이 스캔과 시험대의 식이 같은지 잽니다
 ├── rear_warm.py           65점 정책을 뒤 눈 95점으로 늘림 (뒤 30칸 0 · 따뜻한 출발 · 2부 80-2)
 ├── back_probe.py          학습 지형 (피라미드 계단) 에서 뒤로 걷기를 잼 (2부 82-1)
+├── switch_probe.py        학습 지형의 꺾인 계단을 앞으로 끝까지 가는가를 잼 (2부 83-8)
 ├── curve.py               학습 곡선 보기 (tensorboard 없이 tfevents 직독)
 ├── isaaclab_edits/go2/    ★ Isaac Lab 에 덮어쓰는 과제 설정 원본 (flat_env_cfg.py · guide_mix_command.py · switch_terrain.py — 77-2 · 83-1)
 │
