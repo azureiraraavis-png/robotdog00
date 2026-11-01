@@ -27,6 +27,8 @@ MIX_P_SLOW, MIX_SLOW = 0.15, (-0.05, 0.05)
 
 class GuideMixVelocityCommand(_UniformVelocityCommand):
     """UniformVelocityCommand 와 같되, 앞 명령의 일부를 뒤로 · 거의 0 으로 바꿈 (README 77-1)."""
+    P_BACK = MIX_P_BACK              # 85-2: 몫을 클래스에 둠 (GuideSideMixVelocityCommand 가 0 으로 바꿈)
+    P_SLOW = MIX_P_SLOW
 
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
@@ -35,8 +37,8 @@ class GuideMixVelocityCommand(_UniformVelocityCommand):
         self.mix_ever = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)      # 이 판에 한 번이라도 뒤로 · 거의 0 을 뽑았나 (82-4)
         for _k in ("back_steps", "back_vx_sum", "back_cmd_sum"):                               # 보기만 (78-3)
             self.metrics[_k] = torch.zeros(self.num_envs, device=self.device)
-        print(f"[명령 섞기] GuideMixVelocityCommand · 뒤로 {MIX_P_BACK:.2f} ({MIX_BACK[0]:+.2f}~{MIX_BACK[1]:+.2f})"
-              f" · 거의 0 {MIX_P_SLOW:.2f} ({MIX_SLOW[0]:+.2f}~{MIX_SLOW[1]:+.2f}) · 나머지 앞 {cfg.ranges.lin_vel_x}"
+        print(f"[명령 섞기] {type(self).__name__} · 뒤로 {self.P_BACK:.2f} ({MIX_BACK[0]:+.2f}~{MIX_BACK[1]:+.2f})"
+              f" · 거의 0 {self.P_SLOW:.2f} ({MIX_SLOW[0]:+.2f}~{MIX_SLOW[1]:+.2f}) · 나머지 앞 {cfg.ranges.lin_vel_x}"
               f" · 옆 {cfg.ranges.lin_vel_y} · 서 있기 {cfg.rel_standing_envs}", flush=True)
 
     def _resample_command(self, env_ids):
@@ -49,8 +51,8 @@ class GuideMixVelocityCommand(_UniformVelocityCommand):
         if n == 0:
             return
         u = torch.rand(n, device=self.device)
-        back = u < MIX_P_BACK
-        slow = (u >= MIX_P_BACK) & (u < MIX_P_BACK + MIX_P_SLOW)
+        back = u < self.P_BACK
+        slow = (u >= self.P_BACK) & (u < self.P_BACK + self.P_SLOW)
         vx = self.vel_command_b[ids, 0].clone()
         vx = torch.where(back, torch.empty(n, device=self.device).uniform_(*MIX_BACK), vx)
         vx = torch.where(slow, torch.empty(n, device=self.device).uniform_(*MIX_SLOW), vx)
@@ -79,6 +81,12 @@ class GuideMixVelocityCommand(_UniformVelocityCommand):
         self.metrics["back_steps"] += b
         self.metrics["back_vx_sum"] += b * self.robot.data.root_lin_vel_b.torch[:, 0]
         self.metrics["back_cmd_sum"] += b * self.vel_command_b[:, 0]
+
+
+class GuideSideMixVelocityCommand(GuideMixVelocityCommand):
+    """85-2: GuideMixVelocityCommand 와 같되 뒤로 몫 0 — 그 15 % 는 앞으로 (0.2~0.5) 남음. 거의 0 (옆 · 돌기) 15 % 는 그대로.
+    flat_env_cfg.py 의 MIX_NO_BACK = True 일 때 씁니다 (글자로만 적음)."""
+    P_BACK = 0.0
 
 
 _SHARP_SAID = [False]

@@ -2807,6 +2807,8 @@ sb_where_now = ("", 0)
 sb_clr_min = None         # 몸통과 바로 아래 바닥 사이 — 가장 좁았던 값 (재는 구간)
 sb_low_t0 = None          # 몸통-바닥이 0.15 m 아래로 내려간 때 (이어지는 동안) — README 76-13
 sb_low_max = 0.0          # 0.15 m 아래로 이어서 머문 가장 긴 시간 (초)
+sb_sh_cur = None          # 단 위에서 옆으로 비켜 서는 중 (--sb-pass · shift > 0) — 85-1 · 기록만
+sb_sh_done = []           # 끝난 비켜 서기: (시작 초, 끝 초, 시킨 m, 시킨 쪽으로 간 가장 큰 m, 반대쪽 가장 큰 m, 길 따라 밀린 m, 높이 바뀜 m)
 sb_fall_t = None          # 처음으로 넘어짐 판정 (fall_hold 초 넘게 0.15 m 아래) 에 든 때 — 그 낮아진 시작 (초 · 84-1 · 기록만)
 sb_offA = sb_offB = None  # 첫 단 · 둘째 단 위에서 그 단의 가운데 줄에서 가장 멀리 벗어난 값 (부호 · m)
 sb_land_in = sb_land_out = None   # 참에 들어선 때 · 다음 단의 첫 칸을 지난 때
@@ -2995,6 +2997,26 @@ while simulation_app.is_running():
                     _vy = -args.lane_vy * (_e - _sh) * (_uy * math.sin(_yw) + _ux * math.cos(_yw))
                     _vy = max(-args.vy_max, min(args.vy_max, _vy))
                 base_command = torch.tensor([0.0, _vy, 0.0], device=args.device)
+            # 85-1: 옆으로 비켜 서기를 실제로 얼마나 했나 (기록만 · 명령은 위 그대로)
+            _shn = SBX.get("shift", 0.0) if SBX.get("blocked") else 0.0
+            _sn = SBX["cum"][sb_seg] + max(0.0, min(_L, _t))
+            if _shn and sb_sh_cur is None:
+                sb_sh_cur = {"t0": now - began, "e0": _e, "s0": _sn, "z0": _pz, "sh": _shn, "best": 0.0, "worst": 0.0, "ds": 0.0, "dz": 0.0}
+            if sb_sh_cur is not None:
+                if _shn:
+                    _d = (_e - sb_sh_cur["e0"]) * (1.0 if sb_sh_cur["sh"] > 0 else -1.0)
+                    sb_sh_cur["best"] = max(sb_sh_cur["best"], _d)
+                    sb_sh_cur["worst"] = min(sb_sh_cur["worst"], _d)
+                    if abs(_sn - sb_sh_cur["s0"]) > abs(sb_sh_cur["ds"]):
+                        sb_sh_cur["ds"] = _sn - sb_sh_cur["s0"]
+                    if abs(_pz - sb_sh_cur["z0"]) > abs(sb_sh_cur["dz"]):
+                        sb_sh_cur["dz"] = _pz - sb_sh_cur["z0"]
+                else:
+                    _c = sb_sh_cur
+                    sb_sh_done.append((_c["t0"], now - began, _c["sh"], _c["best"], _c["worst"], _c["ds"], _c["dz"]))
+                    print(f" [비켜 서기] {_c['t0']:.1f}~{now - began:.1f}초 · 시킨 {abs(_c['sh']):.2f} m · 그쪽으로 {_c['best'] * 100:.0f} cm"
+                          f" · 반대쪽 {-_c['worst'] * 100:.0f} cm · 길 따라 {_c['ds'] * 100:+.0f} cm · 높이 {_c['dz'] * 100:+.0f} cm")
+                    sb_sh_cur = None
         if sb_w_act is not None or sb_b is not None:   # 시켜서 서 있는 · 뒤로 가는 동안은 멈춤으로 안 봅니다 (README 72 · 80-3)
             sb_g_hist = []
         elif SBX is not None and args.sb_react and SBX.get("blocked"):   # 앞에 사람 · 문짝이 있으면 지키기가 밀지 않음 (README 76)
@@ -3975,6 +3997,11 @@ else:
                 ("back_policy", (("/".join(args.back_policy.replace("\\", "/").split("/")[-3:])
                                   + (f"@{_bk['at']:.1f}" if _bk.get("at") is not None else "@-")
                                   + (f" f{sb_fall_t:.1f}" if sb_fall_t is not None else "")) if _bk is not None else "")),   # 84-1 · f = 넘어진 때
+                ("sb_shift", ((" ".join(f"{a:.1f}-{b:.1f}:{abs(c):.2f}:{d:.2f}:{-e:.2f}:{f_ * 100:+.0f}:{g * 100:+.0f}"
+                                        + ("!" if (sb_fall_t is not None and a - 0.5 <= sb_fall_t <= b + 3.0) else "")
+                                        for (a, b, c, d, e, f_, g) in (sb_sh_done + ([(sb_sh_cur["t0"], now - began, sb_sh_cur["sh"], sb_sh_cur["best"],
+                                                                                     sb_sh_cur["worst"], sb_sh_cur["ds"], sb_sh_cur["dz"])] if sb_sh_cur else []))))
+                              if (_sbk and args.sb_pass and args.sb_pass_shift > 0.0) else "")),   # 85-1 · 시작-끝:시킨:그쪽:반대쪽:길 cm:높이 cm (! = 그 사이 또는 3초 안에 넘어짐)
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)

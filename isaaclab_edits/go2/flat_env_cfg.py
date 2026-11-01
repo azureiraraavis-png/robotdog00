@@ -374,6 +374,7 @@ def walked_distance(env, env_ids):
 GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideMixVelocityCommand"
 GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
+GUIDE_SIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideSideMixVelocityCommand"   # 85-2
 GUIDE_SWITCH_LEVELS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix_switch"   # 83-1
 GUIDE_SWITCH_PROG = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:switch_progress"                       # 83-1
 SWITCH_PATCH_COUNT = 20 * 2**15   # 83-3: 꺾인 계단 (벽 · 칸막이) 은 접촉 패치가 많아 기본 10 × 2^15 (327680) 이 넘침 ("Patch buffer overflow" · 83 의 학습 내내)
@@ -721,6 +722,15 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         MIX_HOLD_LEVEL = False
         if MIX_HOLD_LEVEL and not MOVE_MIX:
             raise ValueError("MIX_HOLD_LEVEL 은 MOVE_MIX = True 와 함께만 씁니다 (README 82-4)")
+        #   MIX_NO_BACK       명령 섞기에서 뒤로 몫을 0 으로 — 그 15 % 는 앞으로 · 거의 0 (옆 · 돌기) 15 % 는 그대로 (README 85-2) · False = 끔(기본)
+        #     왜: 옆걸음을 배운 정책 (78 이후 · σ 날카롭게) 은 모두 뒤로도 같이 배웠고 앞으로 계단을 잃었다 — 뒤로가 탓인지 가른다.
+        #     guide_mix_command.py 의 GuideSideMixVelocityCommand (글자로만 적음 · "[명령 섞기] GuideSideMixVelocityCommand · 뒤로 0.00 …" 줄). MOVE_MIX 와 함께만.
+        #   11/02 옆걸음만 섞기 판 (85)  82b 와 같음 + MIX_NO_BACK = True
+        MIX_NO_BACK = False
+        if MIX_NO_BACK:
+            if not MOVE_MIX:
+                raise ValueError("MIX_NO_BACK 은 MOVE_MIX = True 와 함께만 씁니다 (README 85-2)")
+            self.commands.base_velocity.class_type = ResolvableString(GUIDE_SIDE_MIX_CLASS)
         #   SWITCH_STAIRS     꺾인 계단 지형 조각을 넣음 — 계단의 몫 0.50 가운데 피라미드 계단 (내려가는 · 오르는) 에서 0.10 씩 떼어
         #     switch_up (오르기 · 0.10) · switch_down (내려가기 · 0.10) 으로 (README 83-1) · False = 끔(기본)
         #     그 위의 개는 길잡이처럼 방향 · 옆 명령을 받고 (guide_mix_command.py), 승급 · 강등은 길 따라 간 거리로.
