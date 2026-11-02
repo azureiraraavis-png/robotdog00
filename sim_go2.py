@@ -353,6 +353,8 @@ ap.add_argument("--sb-pass", action="store_true", dest="sb_pass",
 ap.add_argument("--sb-rule856", action="store_true", dest="sb_rule856",
                 help="--sb-pass 와 함께: 85-6 의 규칙 — 단 위에서 사람은 늘 **안쪽 (칸막이 쪽)** 으로 비키고 개는 바깥 벽 쪽으로 · "
                      "내려가는 판 (--down) 에서는 개가 비키지 않음 · 멈출 때 '[말] 먼저 지나가세요' 를 찍음. 기본 끔")
+ap.add_argument("--sb-pass-hold", type=float, default=0.0, dest="sb_pass_hold",
+                help="단 위에서 비켜 서는 동안 길 따라 자리를 붙잡는 앞뒤 명령의 이득 (밀린 m × 이득 만큼 되돌림 · ±0.15 m/s 에서 자름) · 0 = 끔 (기본 · 앞 0) · README 85-9")
 ap.add_argument("--sb-pass-shift", type=float, default=0.20, dest="sb_pass_shift",
                 help="--sb-pass 에서 단 위의 개가 옆으로 비키는 거리 m (기본 0.20 · 0 = 비키지 않고 그 자리에서 기다림 · README 76-11)")
 ap.add_argument("--fall-hold", type=float, default=0.5, dest="fall_hold",
@@ -2814,6 +2816,8 @@ sb_where_now = ("", 0)
 sb_clr_min = None         # 몸통과 바로 아래 바닥 사이 — 가장 좁았던 값 (재는 구간)
 sb_low_t0 = None          # 몸통-바닥이 0.15 m 아래로 내려간 때 (이어지는 동안) — README 76-13
 sb_low_max = 0.0          # 0.15 m 아래로 이어서 머문 가장 긴 시간 (초)
+sb_hold_s0 = None         # 85-9: 비켜 서기를 시작한 길 따라 자리 (--sb-pass-hold) · 비키지 않으면 None
+SB_HOLD_VMAX = 0.15       # 85-9: 자리 붙잡기 앞뒤 명령의 한계 m/s
 sb_sh_cur = None          # 단 위에서 옆으로 비켜 서는 중 (--sb-pass · shift > 0) — 85-1 · 기록만
 sb_sh_done2 = []          # 85-4: (시작, 끝, 목표 m, 처음 u, 가장 큰 u, 끝 u, 길 따라 m, 높이 m, 사람과 가장 가까운 m) · u = 줄에서 목표 쪽으로 m
 sb_sh_done = []           # 끝난 비켜 서기: (시작 초, 끝 초, 시킨 m, 시킨 쪽으로 간 가장 큰 m, 반대쪽 가장 큰 m, 길 따라 밀린 m, 높이 바뀜 m)
@@ -3004,7 +3008,16 @@ while simulation_app.is_running():
                 if _sh:                              # 엇갈리기 (76-9): 앞으로는 안 가고, 줄을 _sh 만큼 옮긴 듯 옆으로만
                     _vy = -args.lane_vy * (_e - _sh) * (_uy * math.sin(_yw) + _ux * math.cos(_yw))
                     _vy = max(-args.vy_max, min(args.vy_max, _vy))
-                base_command = torch.tensor([0.0, _vy, 0.0], device=args.device)
+                    if args.sb_pass_hold > 0.0:          # 85-9: 비키는 동안 길 따라 자리를 붙잡음 (밀린 만큼 되돌림)
+                        _sn_h = SBX["cum"][sb_seg] + max(0.0, min(_L, _t))
+                        if sb_hold_s0 is None:
+                            sb_hold_s0 = _sn_h
+                        _vx = max(-SB_HOLD_VMAX, min(SB_HOLD_VMAX, -args.sb_pass_hold * (_sn_h - sb_hold_s0)))
+                else:
+                    sb_hold_s0 = None
+                base_command = torch.tensor([_vx, _vy, 0.0], device=args.device)
+            else:
+                sb_hold_s0 = None
             # 85-1: 옆으로 비켜 서기를 실제로 얼마나 했나 (기록만 · 명령은 위 그대로)
             _shn = SBX.get("shift", 0.0) if SBX.get("blocked") else 0.0
             _sn = SBX["cum"][sb_seg] + max(0.0, min(_L, _t))
