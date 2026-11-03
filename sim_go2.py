@@ -355,6 +355,8 @@ ap.add_argument("--sb-rule856", action="store_true", dest="sb_rule856",
                      "내려가는 판 (--down) 에서는 개가 비키지 않음 · 멈출 때 '[말] 먼저 지나가세요' 를 찍음. 기본 끔")
 ap.add_argument("--sb-pass-hold", type=float, default=0.0, dest="sb_pass_hold",
                 help="단 위에서 비켜 서는 동안 길 따라 자리를 붙잡는 앞뒤 명령의 이득 (밀린 m × 이득 만큼 되돌림 · ±0.15 m/s 에서 자름) · 0 = 끔 (기본 · 앞 0) · README 85-9")
+ap.add_argument("--sb-pass-vymin", type=float, default=0.0, dest="sb_pass_vymin",
+                help="단 위에서 비켜 서는 동안 목표까지 2 cm 넘게 남았으면 옆 명령을 이만큼 (m/s) 아래로는 안 줄임 · 0 = 끔 (기본 · 줄과의 차 × lane-vy 그대로) · README 86-3")
 ap.add_argument("--sb-pass-shift", type=float, default=0.20, dest="sb_pass_shift",
                 help="--sb-pass 에서 단 위의 개가 옆으로 비키는 거리 m (기본 0.20 · 0 = 비키지 않고 그 자리에서 기다림 · README 76-11)")
 ap.add_argument("--fall-hold", type=float, default=0.5, dest="fall_hold",
@@ -3008,6 +3010,12 @@ while simulation_app.is_running():
                 if _sh:                              # 엇갈리기 (76-9): 앞으로는 안 가고, 줄을 _sh 만큼 옮긴 듯 옆으로만
                     _vy = -args.lane_vy * (_e - _sh) * (_uy * math.sin(_yw) + _ux * math.cos(_yw))
                     _vy = max(-args.vy_max, min(args.vy_max, _vy))
+                    if args.sb_pass_vymin > 0.0:         # 86-3: 목표 앞 2 cm 까지는 옆 명령을 하한 아래로 안 줄임
+                        _sg_v = 1.0 if _sh > 0 else -1.0
+                        _gap_v = (_sh - _e) * _sg_v
+                        if _gap_v > 0.02:
+                            _vy = _sg_v * max(args.sb_pass_vymin, args.lane_vy * _gap_v) * (_uy * math.sin(_yw) + _ux * math.cos(_yw))
+                            _vy = max(-args.vy_max, min(args.vy_max, _vy))
                     if args.sb_pass_hold > 0.0:          # 85-9: 비키는 동안 길 따라 자리를 붙잡음 (밀린 만큼 되돌림)
                         _sn_h = SBX["cum"][sb_seg] + max(0.0, min(_L, _t))
                         if sb_hold_s0 is None:
@@ -3043,7 +3051,7 @@ while simulation_app.is_running():
                 else:
                     _c = sb_sh_cur
                     sb_sh_done.append((_c["t0"], now - began, _c["sh"], _c["best"], _c["worst"], _c["ds"], _c["dz"]))
-                    sb_sh_done2.append((_c["t0"], now - began, abs(_c["sh"]), _c["e0"] * _c["sg"], _c["umax"], _c["uend"], _c["ds"], _c["dz"], _c["clr"], _c["wall"]))
+                    sb_sh_done2.append((_c["t0"], now - began, _c["sh"], _c["e0"] * _c["sg"], _c["umax"], _c["uend"], _c["ds"], _c["dz"], _c["clr"], _c["wall"]))
                     print(f" [비켜 서기] {_c['t0']:.1f}~{now - began:.1f}초 · 시킨 {abs(_c['sh']):.2f} m · 그쪽으로 {_c['best'] * 100:.0f} cm"
                           f" · 반대쪽 {-_c['worst'] * 100:.0f} cm · 길 따라 {_c['ds'] * 100:+.0f} cm · 높이 {_c['dz'] * 100:+.0f} cm"
                           f" · 줄에서 (목표 쪽 +) 처음 {_c['e0'] * _c['sg'] * 100:+.0f} → 가장 {_c['umax'] * 100:+.0f} → 끝 {_c['uend'] * 100:+.0f} cm")
@@ -4033,9 +4041,9 @@ else:
                                         for (a, b, c, d, e, f_, g) in (sb_sh_done + ([(sb_sh_cur["t0"], now - began, sb_sh_cur["sh"], sb_sh_cur["best"],
                                                                                      sb_sh_cur["worst"], sb_sh_cur["ds"], sb_sh_cur["dz"])] if sb_sh_cur else []))))
                               if (_sbk and args.sb_pass and args.sb_pass_shift > 0.0) else "")),   # 85-1 · 시작-끝:시킨:그쪽:반대쪽:길 cm:높이 cm (! = 그 사이 또는 3초 안에 넘어짐)
-                ("sb_shift2", ((" ".join(f"{a:.1f}-{b:.1f}:{c:.2f}:{u0:+.2f}:{um:+.2f}:{ue:+.2f}:{f_ * 100:+.0f}:{g * 100:+.0f}:" + ("-" if cl is None else f"{cl * 100:.0f}") + f":{wl}"
+                ("sb_shift2", ((" ".join(f"{a:.1f}-{b:.1f}:{abs(c):.2f}:{u0:+.2f}:{um:+.2f}:{ue:+.2f}:{f_ * 100:+.0f}:{g * 100:+.0f}:" + ("-" if cl is None else f"{cl * 100:.0f}") + f":{wl}:{'L' if c > 0 else 'R'}"
                                          + ("!" if (sb_fall_t is not None and a - 0.5 <= sb_fall_t <= b + 3.0) else "")
-                                         for (a, b, c, u0, um, ue, f_, g, cl, wl) in (sb_sh_done2 + ([(sb_sh_cur["t0"], now - began, abs(sb_sh_cur["sh"]), sb_sh_cur["e0"] * sb_sh_cur["sg"],
+                                         for (a, b, c, u0, um, ue, f_, g, cl, wl) in (sb_sh_done2 + ([(sb_sh_cur["t0"], now - began, sb_sh_cur["sh"], sb_sh_cur["e0"] * sb_sh_cur["sg"],
                                                                                               sb_sh_cur["umax"], sb_sh_cur["uend"], sb_sh_cur["ds"], sb_sh_cur["dz"], sb_sh_cur["clr"], sb_sh_cur["wall"])] if sb_sh_cur else []))))
                                if (_sbk and args.sb_pass and args.sb_pass_shift > 0.0) else "")),   # 85-4 · 시작-끝:목표 m:처음 u:가장 u:끝 u:길 cm:높이 cm:사람과 가장 가까이 cm (u = 줄에서 목표 쪽 +)
             ]
