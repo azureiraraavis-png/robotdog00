@@ -355,6 +355,8 @@ ap.add_argument("--sb-rule856", action="store_true", dest="sb_rule856",
                      "내려가는 판 (--down) 에서는 개가 비키지 않음 · 멈출 때 '[말] 먼저 지나가세요' 를 찍음. 기본 끔")
 ap.add_argument("--sb-pass-hold", type=float, default=0.0, dest="sb_pass_hold",
                 help="단 위에서 비켜 서는 동안 길 따라 자리를 붙잡는 앞뒤 명령의 이득 (밀린 m × 이득 만큼 되돌림 · ±0.15 m/s 에서 자름) · 0 = 끔 (기본 · 앞 0) · README 85-9")
+ap.add_argument("--sb-pass-down", action="store_true", dest="sb_pass_down",
+                help="--sb-rule856 와 함께: 내려가는 판에서도 단 위에서 바깥 벽 쪽으로 비켜 섬 (85-6 의 규칙은 내려가기에서 안 비킴 · 재기용 · README 86-7). 기본 끔")
 ap.add_argument("--sb-pass-vymin", type=float, default=0.0, dest="sb_pass_vymin",
                 help="단 위에서 비켜 서는 동안 목표까지 2 cm 넘게 남았으면 옆 명령을 이만큼 (m/s) 아래로는 안 줄임 · 0 = 끔 (기본 · 줄과의 차 × lane-vy 그대로) · README 86-3")
 ap.add_argument("--sb-pass-shift", type=float, default=0.20, dest="sb_pass_shift",
@@ -1798,7 +1800,7 @@ def sbx_react(now, t_run, s_r, e_r, rz):
         pw = _sbx_passing(s_r, rz)
         if pw is not None:
             X["blocked"] = True
-            if here == "단 위" and args.sb_pass_shift > 0.0 and not (args.sb_rule856 and args.down):   # 85-6: 내려가는 판은 비키지 않음
+            if here == "단 위" and args.sb_pass_shift > 0.0 and not (args.sb_rule856 and args.down and not args.sb_pass_down):   # 85-6: 내려가는 판은 비키지 않음 (86-7: --sb-pass-down 이면 비킴)
                 X["shift"] = -pw[1] * args.sb_pass_shift
             if not R.get("passing"):
                 R["passing"] = True
