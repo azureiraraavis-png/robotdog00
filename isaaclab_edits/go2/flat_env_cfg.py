@@ -619,6 +619,15 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         FLAT_ORI_W = 0.0
         if FLAT_ORI_W:
             self.rewards.flat_orientation_l2.weight = FLAT_ORI_W
+        #   ANG_VEL_XY_W      몸통이 좌우 · 앞뒤로 빠르게 기우는 것 (ang_vel_xy_l2 · 몸의 x · y 축 각속도²) 의 벌 무게 — 0.0 = 건드리지 않음 (기본 · Isaac Lab 의 −0.05 그대로) (README 90-1)
+        #     왜 (87 · 88 · 89): 명령 섞기 (거의 0 + 옆) 를 배운 정책은 오르는 단에서 앞뒤로 빠르게 끄덕인다 (2600 2.8 ↔ 88 17.3 번 /100초).
+        #     켜면 학습 첫머리에 "[끄덕임 벌] …" 줄을 찍습니다.
+        #   11/04 끄덕임 벌 판 (90)       88 과 같음 + ANG_VEL_XY_W = -0.15
+        ANG_VEL_XY_W = 0.0
+        if ANG_VEL_XY_W:
+            _w0 = self.rewards.ang_vel_xy_l2.weight
+            self.rewards.ang_vel_xy_l2.weight = ANG_VEL_XY_W
+            print(f"[끄덕임 벌] ang_vel_xy_l2 무게 {_w0:g} → {ANG_VEL_XY_W:g} (README 90-1)", flush=True)
         #   FEET_AIR_W        발을 오래 들고 있으라는 상 (feet_air_time) 의 무게 (README 52)
         #     Isaac Lab 의 기본은 0.125 인데 Go2 설정(rough_env_cfg.py:39)이 0.01 로 낮춰 둡니다.
         #     우리 걸음은 발이 공중에 0.15초쯤 있고 문턱이 0.5초라, 0.01 로는 초당 −0.02 —
