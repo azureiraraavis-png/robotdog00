@@ -353,6 +353,9 @@ ap.add_argument("--sb-pass", action="store_true", dest="sb_pass",
 ap.add_argument("--sb-rule856", action="store_true", dest="sb_rule856",
                 help="--sb-pass 와 함께: 85-6 의 규칙 — 단 위에서 사람은 늘 **안쪽 (칸막이 쪽)** 으로 비키고 개는 바깥 벽 쪽으로 · "
                      "내려가는 판 (--down) 에서는 개가 비키지 않음 · 멈출 때 '[말] 먼저 지나가세요' 를 찍음. 기본 끔")
+ap.add_argument("--sb-rule856-fix", action="store_true", dest="sb_rule856_fix",
+                help="--sb-rule856 와 함께: 86-8 의 구멍 고침 — 개가 단 위에 있는데 마주 오는 사람이 참에 있으면, 사람은 단에 들어설 때까지 "
+                     "비키지 않고 (옛 쪽 셈을 안 씀) 단에 들어서면 안쪽으로 비킴 · 개가 참에 있으면 옛 셈 그대로 · 끄면 옛 판과 글자 하나 안 다름 · README 96-1. 기본 끔")
 ap.add_argument("--sb-pass-hold", type=float, default=0.0, dest="sb_pass_hold",
                 help="단 위에서 비켜 서는 동안 길 따라 자리를 붙잡는 앞뒤 명령의 이득 (밀린 m × 이득 만큼 되돌림 · ±0.15 m/s 에서 자름) · 0 = 끔 (기본 · 앞 0) · README 85-9")
 ap.add_argument("--sb-pass-down", action="store_true", dest="sb_pass_down",
@@ -1626,7 +1629,13 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
             clr = 9.0
         # 비키기 (사이안 님 10/14: 사람이 옆으로 비켜 가게) — 마주 오거나 앞서 가는 사람이 개와 2.5 m (앞서 가면 1.2 m) 안이면 단의 바깥쪽으로
         side_max = (0.80 if X["isl"](on["s"]) else SB["W"] / 2.0 - SBX_PW / 2.0 - 0.02)   # 참에서는 더 멀리 비킴
-        if on["kind"] in ("oncoming", "door") and 0.0 < gap < 2.5 and on["state"] == "go":
+        _defer = (args.sb_rule856 and args.sb_rule856_fix and on["kind"] in ("oncoming", "door") and 0.0 < gap < 2.5
+                  and on["state"] == "go" and X["isl"](on["s"]) and not X["isl"](s_r))       # 96-1: 개는 단 위 · 사람은 참 → 단에 들어설 때까지 안 비킴
+        if _defer and not on.get("deferred"):
+            on["deferred"] = True
+            X["n_defer"] = X.get("n_defer", 0) + 1
+            print(f" [사람] {t_run:.1f}초 · 참에 있어 단에 들어설 때 안쪽으로 비킵니다 (개는 단 위 · 96-1)")
+        if on["kind"] in ("oncoming", "door") and 0.0 < gap < 2.5 and on["state"] == "go" and not _defer:
             on["state"] = "yield"
             on["side"] = -1.0 if e_r > 0 else 1.0
             if args.sb_rule856 and not X["isl"](on["s"]) and abs(math.cos(yaw)) > 0.5:   # 85-6: 단 위에서는 늘 안쪽 (칸막이 쪽) 으로
