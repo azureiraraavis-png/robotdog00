@@ -356,6 +356,8 @@ ap.add_argument("--sb-rule856", action="store_true", dest="sb_rule856",
 ap.add_argument("--sb-rule856-fix", action="store_true", dest="sb_rule856_fix",
                 help="--sb-rule856 와 함께: 86-8 의 구멍 고침 — 개가 단 위에 있는데 마주 오는 사람이 참에 있으면, 사람은 단에 들어설 때까지 "
                      "비키지 않고 (옛 쪽 셈을 안 씀) 단에 들어서면 안쪽으로 비킴 · 개가 참에 있으면 옛 셈 그대로 · 끄면 옛 판과 글자 하나 안 다름 · README 96-1. 기본 끔")
+ap.add_argument("--sb-see-people", action=argparse.BooleanOptionalAction, default=True, dest="sb_see_people",
+                help="사람을 개의 눈 (높이 스캔) 에 벽처럼 넣음 (74 · 기본 켬 · 켜면 옛 판과 글자 하나 안 다름). --no-sb-see-people 이면 사람만 빼고 문짝은 그대로 · README 96-4")
 ap.add_argument("--sb-pass-hold", type=float, default=0.0, dest="sb_pass_hold",
                 help="단 위에서 비켜 서는 동안 길 따라 자리를 붙잡는 앞뒤 명령의 이득 (밀린 m × 이득 만큼 되돌림 · ±0.15 m/s 에서 자름) · 0 = 끔 (기본 · 앞 0) · README 85-9")
 ap.add_argument("--sb-pass-down", action="store_true", dest="sb_pass_down",
@@ -1516,7 +1518,7 @@ def sbx_blocks(x, y, zref):
     if SBX is None:
         return False
     p = SBX["person"]
-    if p["on"] is not None:
+    if p["on"] is not None and args.sb_see_people:            # 96-4: --no-sb-see-people 이면 사람은 눈에 안 넣음
         cx, cy, yaw, zc = p["on"]["xyz"]
         if abs(zc - zref) <= SBX_PH / 2.0 + SB_SEE_UP and _sbx_rect_dist(x, y, cx, cy, yaw, SBX_PD, SBX_PW) <= 0.0:
             return True
@@ -2831,6 +2833,8 @@ sb_low_t0 = None          # 몸통-바닥이 0.15 m 아래로 내려간 때 (이
 sb_low_max = 0.0          # 0.15 m 아래로 이어서 머문 가장 긴 시간 (초)
 sb_hold_s0 = None         # 85-9: 비켜 서기를 시작한 길 따라 자리 (--sb-pass-hold) · 비키지 않으면 None
 SB_HOLD_VMAX = 0.15       # 85-9: 자리 붙잡기 앞뒤 명령의 한계 m/s
+sb_cr_cur = None          # 96-4: 그 자리에서 기다리는 동안 (비켜 서기 없이) 몸이 움직인 것 — 기록만
+sb_cr_done = []           # 96-4: (시작, 끝, 시작에서 가장 멀어진 m, 움직인 길이 m, 사람과 가장 가까운 m)
 sb_sh_cur = None          # 단 위에서 옆으로 비켜 서는 중 (--sb-pass · shift > 0) — 85-1 · 기록만
 sb_sh_done2 = []          # 85-4: (시작, 끝, 목표 m, 처음 u, 가장 큰 u, 끝 u, 길 따라 m, 높이 m, 사람과 가장 가까운 m) · u = 줄에서 목표 쪽으로 m
 sb_sh_done = []           # 끝난 비켜 서기: (시작 초, 끝 초, 시킨 m, 시킨 쪽으로 간 가장 큰 m, 반대쪽 가장 큰 m, 길 따라 밀린 m, 높이 바뀜 m)
@@ -3034,9 +3038,25 @@ while simulation_app.is_running():
                         _vx = max(-SB_HOLD_VMAX, min(SB_HOLD_VMAX, -args.sb_pass_hold * (_sn_h - sb_hold_s0)))
                 else:
                     sb_hold_s0 = None
+                if not _sh:                          # 96-4: 그 자리 기다림 — 몸이 얼마나 움직였나 (기록만)
+                    _clc = SBX.get("clr_now")
+                    if sb_cr_cur is None:
+                        sb_cr_cur = {"t0": now - began, "x0": _px, "y0": _py, "xl": _px, "yl": _py, "mx": 0.0, "pl": 0.0, "clr": _clc}
+                    else:
+                        sb_cr_cur["mx"] = max(sb_cr_cur["mx"], math.hypot(_px - sb_cr_cur["x0"], _py - sb_cr_cur["y0"]))
+                        sb_cr_cur["pl"] += math.hypot(_px - sb_cr_cur["xl"], _py - sb_cr_cur["yl"])
+                        sb_cr_cur["xl"], sb_cr_cur["yl"] = _px, _py
+                        if _clc is not None:
+                            sb_cr_cur["clr"] = _clc if sb_cr_cur["clr"] is None else min(sb_cr_cur["clr"], _clc)
+                elif sb_cr_cur is not None:
+                    sb_cr_done.append((sb_cr_cur["t0"], now - began, sb_cr_cur["mx"], sb_cr_cur["pl"], sb_cr_cur["clr"]))
+                    sb_cr_cur = None
                 base_command = torch.tensor([_vx, _vy, 0.0], device=args.device)
             else:
                 sb_hold_s0 = None
+                if sb_cr_cur is not None:            # 96-4: 기다림이 끝남
+                    sb_cr_done.append((sb_cr_cur["t0"], now - began, sb_cr_cur["mx"], sb_cr_cur["pl"], sb_cr_cur["clr"]))
+                    sb_cr_cur = None
             # 85-1: 옆으로 비켜 서기를 실제로 얼마나 했나 (기록만 · 명령은 위 그대로)
             _shn = SBX.get("shift", 0.0) if SBX.get("blocked") else 0.0
             _sn = SBX["cum"][sb_seg] + max(0.0, min(_L, _t))
@@ -4057,6 +4077,9 @@ else:
                                          for (a, b, c, u0, um, ue, f_, g, cl, wl) in (sb_sh_done2 + ([(sb_sh_cur["t0"], now - began, sb_sh_cur["sh"], sb_sh_cur["e0"] * sb_sh_cur["sg"],
                                                                                               sb_sh_cur["umax"], sb_sh_cur["uend"], sb_sh_cur["ds"], sb_sh_cur["dz"], sb_sh_cur["clr"], sb_sh_cur["wall"])] if sb_sh_cur else []))))
                                if (_sbk and args.sb_pass and args.sb_pass_shift > 0.0) else "")),   # 85-4 · 시작-끝:목표 m:처음 u:가장 u:끝 u:길 cm:높이 cm:사람과 가장 가까이 cm (u = 줄에서 목표 쪽 +)
+                ("sb_creep", ((" ".join(f"{a:.1f}-{b:.1f}:{m_ * 100:.1f}:{l_ * 100:.1f}:" + ("-" if cl is None else f"{cl * 100:.0f}")
+                                        for (a, b, m_, l_, cl) in (sb_cr_done + ([(sb_cr_cur["t0"], now - began, sb_cr_cur["mx"], sb_cr_cur["pl"], sb_cr_cur["clr"])] if sb_cr_cur else []))))
+                              if (_sbk and SBX is not None and args.sb_react) else "")),   # 96-4 · 시작-끝:시작에서 가장 멀어진 cm:움직인 길이 cm:사람과 가장 가까이 cm (그 자리 기다림만)
             ]
             _os.makedirs(_os.path.dirname(_lp), exist_ok=True)
             _new = not _os.path.exists(_lp)
