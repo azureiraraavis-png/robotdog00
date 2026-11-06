@@ -373,6 +373,7 @@ def walked_distance(env, env_ids):
 #     그래서 cfg 에는 "모듈:클래스" 글자만 적고, Isaac Lab 이 명령을 만들 때 (시뮬레이터가 뜬 뒤) 불러오게 합니다.
 GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideMixVelocityCommand"
 GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
+GUIDE_STAND_STILL = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_speed"         # 97-1
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
 GUIDE_SIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideSideMixVelocityCommand"   # 85-2
 GUIDE_SWITCH_LEVELS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix_switch"   # 83-1
@@ -628,6 +629,17 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             _w0 = self.rewards.ang_vel_xy_l2.weight
             self.rewards.ang_vel_xy_l2.weight = ANG_VEL_XY_W
             print(f"[끄덕임 벌] ang_vel_xy_l2 무게 {_w0:g} → {ANG_VEL_XY_W:g} (README 90-1)", flush=True)
+        #   STAND_STILL_W     명령이 거의 0 (서 있기) 인 개의 몸통 수평 빠르기 (m/s) 의 무게 — 0.0 = 항을 넣지 않음 (기본) (README 97-1)
+        #     왜 (96-5 · 96-6): 2600 은 0 명령에 그 자리에서 5~16 cm 꼼지락 → 단 위 옆 틈 0 에서 사람과 닿음.
+        #     함수는 guide_mix_command.py 의 stand_still_speed. 켜면 학습 첫머리에 "[가만히 서기] …" 줄을 찍습니다.
+        #   11/06 가만히 서기 판 (97)     2600 의 레시피 (75-12) + STAND_STILL_W = -1.0
+        STAND_STILL_W = 0.0
+        if STAND_STILL_W:
+            from isaaclab.managers import RewardTermCfg as _RewTerm3
+
+            self.rewards.stand_still_speed = _RewTerm3(func=GUIDE_STAND_STILL, weight=STAND_STILL_W,
+                                                       params={"command_name": "base_velocity", "threshold": 0.05})
+            print(f"[가만히 서기] stand_still_speed 무게 {STAND_STILL_W:g} (README 97-1)", flush=True)
         #   FEET_AIR_W        발을 오래 들고 있으라는 상 (feet_air_time) 의 무게 (README 52)
         #     Isaac Lab 의 기본은 0.125 인데 Go2 설정(rough_env_cfg.py:39)이 0.01 로 낮춰 둡니다.
         #     우리 걸음은 발이 공중에 0.15초쯤 있고 문턱이 0.5초라, 0.01 로는 초당 −0.02 —
