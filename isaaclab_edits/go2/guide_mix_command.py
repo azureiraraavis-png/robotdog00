@@ -152,14 +152,15 @@ SHIFT_P, SHIFT_M = 0.30, 0.20
 
 
 class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
-    """99-1: GuidePauseVelocityCommand + 꺾인 계단 길잡이 + 바깥쪽 옆 비키기."""
+    """99-1: GuidePauseVelocityCommand + 꺾인 계단 길잡이 + 바깥쪽 옆 비키기 (99B). 99A 는 아래 GuideScratchAVelocityCommand (옆 비키기 0)."""
+    SHIFT_P = SHIFT_P
 
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
         self.shift_on = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.metrics["shift_steps"] = torch.zeros(self.num_envs, device=self.device)
         self._shift_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        print(f"[처음부터 99] {type(self).__name__} · 멈춤 {PAUSE_P:.2f} · 바깥쪽 옆 비키기 {SHIFT_P:.2f} ({SHIFT_M:.2f} m · 단 위에서만 · 멈춤 중에도) (README 99-1)", flush=True)
+        print(f"[처음부터 99] {type(self).__name__} · 멈춤 {PAUSE_P:.2f} · 바깥쪽 옆 비키기 {self.SHIFT_P:.2f} ({SHIFT_M:.2f} m · 단 위에서만 · 멈춤 중에도) (README 99-1)", flush=True)
 
     def _resample_command(self, env_ids):
         super()._resample_command(env_ids)
@@ -168,7 +169,7 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
         else:
             ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).flatten()
         if ids.numel():
-            self.shift_on[ids] = (torch.rand(ids.numel(), device=self.device) < SHIFT_P) & ~self.is_standing_env[ids]
+            self.shift_on[ids] = (torch.rand(ids.numel(), device=self.device) < self.SHIFT_P) & ~self.is_standing_env[ids]
 
     def _update_command(self):
         s = self.pause_on
@@ -200,6 +201,11 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
     def _update_metrics(self):
         super()._update_metrics()
         self.metrics["shift_steps"] += self._shift_now.float()
+
+
+class GuideScratchAVelocityCommand(GuideScratchVelocityCommand):
+    """99-4 · 99A: 옆 비키기 없음 (멈췄다 가기 + 꺾인 계단 길잡이만)."""
+    SHIFT_P = 0.0
 
 
 _STUMBLE_SAID = [False]

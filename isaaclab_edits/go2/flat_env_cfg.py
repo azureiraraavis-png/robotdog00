@@ -379,7 +379,8 @@ GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.g
 GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
 GUIDE_STAND_STILL = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_speed"         # 97-1
 GUIDE_PAUSE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuidePauseVelocityCommand"   # 98-1
-GUIDE_SCRATCH_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchVelocityCommand"  # 99-1
+GUIDE_SCRATCH_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchVelocityCommand"  # 99-1 · 99B
+GUIDE_SCRATCH_A_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAVelocityCommand"  # 99-4 · 99A
 GUIDE_STUMBLE = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:feet_stumble_count"                # 99-1
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
 GUIDE_SIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideSideMixVelocityCommand"   # 85-2
@@ -782,6 +783,7 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     상:   발 걸림 벌 STUMBLE_W · 끄덕임 벌 (ang_vel_xy_l2 −0.15) · 행동 급변 벌 (action_rate_l2 × 2) · 발 미끄럼 −0.25
         #     커리큘럼 · 접촉 버퍼: 꺾인 계단과 같게 (83-1 · 83-3). MOVE_MIX · SWITCH_STAIRS · PAUSE_GO · TREAD_MIX 와 같이 못 씀.
         SCRATCH99 = False
+        SCRATCH99_B = True          # 99-4: True = 99B (사람 높이 기둥 0.5 · 바깥쪽 옆 비키기 0.30 · 99-2 탐침과 같음) · False = 99A (기둥 · 옆 비키기 없음)
         STUMBLE_W = -0.5
         if SCRATCH99 and (MOVE_MIX or SWITCH_STAIRS or PAUSE_GO or TREAD_MIX):
             raise ValueError("SCRATCH99 는 MOVE_MIX · SWITCH_STAIRS · PAUSE_GO · TREAD_MIX 와 같이 못 씁니다 (README 99-1)")
@@ -855,8 +857,9 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                     _sub[f"{_nm}_w{int(round(_w * 100))}"] = _c
             _sub["boxes"] = copy.deepcopy(_old["boxes"]); _sub["boxes"].proportion = 0.10
             _sub["random_rough"] = copy.deepcopy(_old["random_rough"]); _sub["random_rough"].proportion = 0.10
-            _sub["switch_up"] = SwitchStairsTerrainCfg(proportion=0.22, start="bottom", pillar_p=0.5)
-            _sub["switch_down"] = SwitchStairsTerrainCfg(proportion=0.22, start="top", pillar_p=0.5)
+            _pp = 0.5 if SCRATCH99_B else 0.0
+            _sub["switch_up"] = SwitchStairsTerrainCfg(proportion=0.22, start="bottom", pillar_p=_pp)
+            _sub["switch_down"] = SwitchStairsTerrainCfg(proportion=0.22, start="top", pillar_p=_pp)
             _tg.sub_terrains = _sub
             _tg.num_cols = 60
             _pr = _np.array([_c.proportion for _c in _sub.values()], dtype=float)
@@ -864,8 +867,8 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             _ix = [int(_np.min(_np.where(_i / _tg.num_cols + 0.001 < _np.cumsum(_pr))[0])) for _i in range(_tg.num_cols)]
             self.scene.terrain.terrain_generator = _tg
             print("[처음부터 99] 지형 열 60 · " + " · ".join(f"{_n} {_ix.count(_k)}열" for _k, _n in enumerate(_sub.keys()))
-                  + " · 기둥 0.5", flush=True)
-            self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS)
+                  + f" · 기둥 {_pp:g} · 판 {'99B' if SCRATCH99_B else '99A'}", flush=True)
+            self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS if SCRATCH99_B else GUIDE_SCRATCH_A_CLASS)
             self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
             self.rewards.feet_stumble = _RT99(func=GUIDE_STUMBLE, weight=STUMBLE_W,
                                               params={"sensor_cfg": _SE99("contact_forces", body_names=[".*_foot", ".*_calf"]), "threshold": 30.0})
