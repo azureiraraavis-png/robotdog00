@@ -374,6 +374,7 @@ def walked_distance(env, env_ids):
 GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideMixVelocityCommand"
 GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
 GUIDE_STAND_STILL = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_speed"         # 97-1
+GUIDE_PAUSE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuidePauseVelocityCommand"   # 98-1
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
 GUIDE_SIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideSideMixVelocityCommand"   # 85-2
 GUIDE_SWITCH_LEVELS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix_switch"   # 83-1
@@ -730,6 +731,16 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         if MOVE_MIX:
             from isaaclab.utils.string import ResolvableString   # 가벼움 (configclass 가 이미 불러온 것) — 불러오기는 쓸 때 (77-2)
             self.commands.base_velocity.class_type = ResolvableString(GUIDE_MIX_CLASS)
+        #   PAUSE_GO          멈췄다 가기 — 걷는 개의 30 % 가 10초 안에 한 번 1~3초 서 있다가 같은 명령으로 다시 감 (README 98-1) · False = 끔(기본)
+        #     왜 (97-3): 97b 는 단 위에서 기다린 뒤 가만히 서서 버티고 다시 못 오름 — 학습 때 "서 있다가 다시 오르기" 연습이 드묾.
+        #     guide_mix_command.py 의 GuidePauseVelocityCommand (글자로만 적음). 켜면 첫머리에 "[멈췄다 가기] …" 줄. MOVE_MIX 와 같이 못 씀.
+        #   11/08 멈췄다 가기 판 (98)     2600 의 레시피 (75-12) + PAUSE_GO = True
+        PAUSE_GO = False
+        if PAUSE_GO:
+            if MOVE_MIX:
+                raise ValueError("PAUSE_GO 는 MOVE_MIX 와 같이 못 씁니다 (README 98-1)")
+            from isaaclab.utils.string import ResolvableString as _RS98
+            self.commands.base_velocity.class_type = _RS98(GUIDE_PAUSE_CLASS)
         #   MIX_SHARP         뒤로 · 거의 0 명령의 개 (서 있기 아님) 만 속도 상의 σ² 를 이 값으로 — 0.0 = 끔(기본 · 모두 0.25) (README 78-3)
         #     왜: 77 의 2999 는 뒤로 −0.2 · −0.3 · −0.4 모두 0 m (78-2). σ² 0.25 면 −0.3 명령에 서 있어도 상 0.70 배 (78-1).
         #     0.0625 면 0.24 배. 앞으로 가는 70 % 와 서 있는 개는 그대로 0.25. MOVE_MIX 와 함께만 씁니다.

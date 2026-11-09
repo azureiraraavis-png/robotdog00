@@ -89,6 +89,60 @@ class GuideSideMixVelocityCommand(GuideMixVelocityCommand):
     P_BACK = 0.0
 
 
+# ─────────────────────────────────────────────────────────────
+#  98-1: 멈췄다 가기 — 걷는 명령을 받은 개 가운데 PAUSE_P 는 그 10초 안에 한 번 PAUSE_DUR 초 동안 0 명령 (서 있기) 을 받고,
+#      끝나면 **같은 걷는 명령** 으로 돌아감. 계단 위에서 "서 있다가 다시 오르기" 를 연습시키려고 (97-3: 97b 는 단 위에서
+#      기다린 뒤 가만히 서서 버팀). 명령 주기 (10초) · 서 있기 몫 (0.15) · 명령 범위는 그대로 (40 · 73 에서 배운 것 — 한 번에 하나).
+#  멈춤 동안은 원래의 "서 있으라는 개" 와 똑같이 다룸 (is_standing_env → _update_command 가 0 으로).
+#  학습 로그: Metrics/base_velocity/pause_steps = 판마다 멈춤 걸음 수의 평균 (보기만).
+# ─────────────────────────────────────────────────────────────
+PAUSE_P, PAUSE_START, PAUSE_DUR = 0.30, (2.0, 6.0), (1.0, 3.0)
+
+
+class GuidePauseVelocityCommand(_UniformVelocityCommand):
+    """UniformVelocityCommand 와 같되, 걷는 개의 일부가 10초 안에 한 번 잠깐 서 있다가 같은 명령으로 다시 감 (README 98-1)."""
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        n = self.num_envs
+        self.pause_on = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self.pause_hi = torch.zeros(n, device=self.device)        # time_left 가 이 값 아래로 내려오면 멈춤 시작
+        self.pause_lo = torch.zeros(n, device=self.device)        # time_left 가 이 값 아래로 내려오면 멈춤 끝
+        self.saved_cmd = torch.zeros(n, 3, device=self.device)
+        self.real_standing = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self.pausing = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self.metrics["pause_steps"] = torch.zeros(n, device=self.device)
+        print(f"[멈췄다 가기] {type(self).__name__} · 걷는 개의 {PAUSE_P:.2f} · 시작 {PAUSE_START[0]:g}~{PAUSE_START[1]:g}초 · "
+              f"길이 {PAUSE_DUR[0]:g}~{PAUSE_DUR[1]:g}초 · 명령 주기 {cfg.resampling_time_range} · 서 있기 {cfg.rel_standing_envs} (README 98-1)", flush=True)
+
+    def _resample_command(self, env_ids):
+        super()._resample_command(env_ids)
+        if isinstance(env_ids, slice):
+            ids = torch.arange(self.num_envs, device=self.device)[env_ids]
+        else:
+            ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).flatten()
+        n = ids.numel()
+        if n == 0:
+            return
+        self.real_standing[ids] = self.is_standing_env[ids]
+        self.saved_cmd[ids] = self.vel_command_b[ids]
+        hi = self.time_left[ids] - torch.empty(n, device=self.device).uniform_(*PAUSE_START)
+        lo = hi - torch.empty(n, device=self.device).uniform_(*PAUSE_DUR)
+        on = (torch.rand(n, device=self.device) < PAUSE_P) & ~self.is_standing_env[ids] & (lo > 0.5)
+        self.pause_hi[ids], self.pause_lo[ids], self.pause_on[ids] = hi, lo, on
+
+    def _update_command(self):
+        s = self.pause_on
+        self.vel_command_b[s] = self.saved_cmd[s]                     # 멈춤 앞뒤로는 같은 걷는 명령
+        self.pausing = s & (self.time_left <= self.pause_hi) & (self.time_left > self.pause_lo)
+        self.is_standing_env[:] = self.real_standing | self.pausing   # 멈춤 동안은 "서 있으라는 개"
+        super()._update_command()
+
+    def _update_metrics(self):
+        super()._update_metrics()
+        self.metrics["pause_steps"] += self.pausing.float()
+
+
 _SHARP_SAID = [False]
 
 
