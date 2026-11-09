@@ -785,6 +785,7 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         SCRATCH99 = False
         SCRATCH99_B = True          # 99-4: True = 99B (사람 높이 기둥 0.5 · 바깥쪽 옆 비키기 0.30 · 99-2 탐침과 같음) · False = 99A (기둥 · 옆 비키기 없음)
         STUMBLE_W = -0.5
+        SCRATCH99_H = (0.03, 0.23)  # 99-6: 계단 높이 범위 (단계 0 → 9) — 99-5 의 (0.13, 0.23) 은 처음부터 배우기에 단계 0 부터 너무 높았음
         if SCRATCH99 and (MOVE_MIX or SWITCH_STAIRS or PAUSE_GO or TREAD_MIX):
             raise ValueError("SCRATCH99 는 MOVE_MIX · SWITCH_STAIRS · PAUSE_GO · TREAD_MIX 와 같이 못 씁니다 (README 99-1)")
         if SWITCH_STAIRS and not (MOVE_MIX and MIX_HOLD_LEVEL and TREAD_MIX and DOWN_SHARE):
@@ -853,13 +854,13 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             for _nm in ("pyramid_stairs", "pyramid_stairs_inv"):
                 for _w in (0.24, 0.27, 0.29):
                     _c = copy.deepcopy(_old[_nm])
-                    _c.step_width, _c.step_height_range, _c.proportion = _w, (0.13, 0.23), 0.06
+                    _c.step_width, _c.step_height_range, _c.proportion = _w, SCRATCH99_H, 0.06
                     _sub[f"{_nm}_w{int(round(_w * 100))}"] = _c
             _sub["boxes"] = copy.deepcopy(_old["boxes"]); _sub["boxes"].proportion = 0.10
             _sub["random_rough"] = copy.deepcopy(_old["random_rough"]); _sub["random_rough"].proportion = 0.10
             _pp = 0.5 if SCRATCH99_B else 0.0
-            _sub["switch_up"] = SwitchStairsTerrainCfg(proportion=0.22, start="bottom", pillar_p=_pp)
-            _sub["switch_down"] = SwitchStairsTerrainCfg(proportion=0.22, start="top", pillar_p=_pp)
+            _sub["switch_up"] = SwitchStairsTerrainCfg(proportion=0.22, start="bottom", pillar_p=_pp, step_height_range=SCRATCH99_H)
+            _sub["switch_down"] = SwitchStairsTerrainCfg(proportion=0.22, start="top", pillar_p=_pp, step_height_range=SCRATCH99_H)
             _tg.sub_terrains = _sub
             _tg.num_cols = 60
             _pr = _np.array([_c.proportion for _c in _sub.values()], dtype=float)
@@ -867,7 +868,7 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             _ix = [int(_np.min(_np.where(_i / _tg.num_cols + 0.001 < _np.cumsum(_pr))[0])) for _i in range(_tg.num_cols)]
             self.scene.terrain.terrain_generator = _tg
             print("[처음부터 99] 지형 열 60 · " + " · ".join(f"{_n} {_ix.count(_k)}열" for _k, _n in enumerate(_sub.keys()))
-                  + f" · 기둥 {_pp:g} · 판 {'99B' if SCRATCH99_B else '99A'}", flush=True)
+                  + f" · 계단 높이 {SCRATCH99_H[0]:g}~{SCRATCH99_H[1]:g} · 기둥 {_pp:g} · 판 {'99B' if SCRATCH99_B else '99A'}", flush=True)
             self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS if SCRATCH99_B else GUIDE_SCRATCH_A_CLASS)
             self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
             self.rewards.feet_stumble = _RT99(func=GUIDE_STUMBLE, weight=STUMBLE_W,
