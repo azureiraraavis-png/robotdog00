@@ -143,6 +143,82 @@ class GuidePauseVelocityCommand(_UniformVelocityCommand):
         self.metrics["pause_steps"] += self.pausing.float()
 
 
+# ─────────────────────────────────────────────────────────────
+#  99-1: 처음부터 다시 짜는 걸음 — 명령: 멈췄다 가기 (98-1) + 꺾인 계단 길잡이 (83-1) + 단 위에서 바깥쪽으로 옆 비키기.
+#  꺾인 계단 위의 개 가운데 SHIFT_P 는 그 10초 동안 줄을 SHIFT_M 만큼 바깥 벽 쪽 (칸막이 반대쪽 · 오를 때 길의 오른쪽) 으로 옮긴 줄을 따라감
+#  (단 위에서만 · 참에서는 원래 줄). 멈춤 동안에도 옆 명령은 살려 둠 → "서서 옆으로 비키기" 연습 (85 의 "거의 0 + 옆" 과 같은 뜻).
+# ─────────────────────────────────────────────────────────────
+SHIFT_P, SHIFT_M = 0.30, 0.20
+
+
+class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
+    """99-1: GuidePauseVelocityCommand + 꺾인 계단 길잡이 + 바깥쪽 옆 비키기."""
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self.shift_on = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.metrics["shift_steps"] = torch.zeros(self.num_envs, device=self.device)
+        self._shift_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        print(f"[처음부터 99] {type(self).__name__} · 멈춤 {PAUSE_P:.2f} · 바깥쪽 옆 비키기 {SHIFT_P:.2f} ({SHIFT_M:.2f} m · 단 위에서만 · 멈춤 중에도) (README 99-1)", flush=True)
+
+    def _resample_command(self, env_ids):
+        super()._resample_command(env_ids)
+        if isinstance(env_ids, slice):
+            ids = torch.arange(self.num_envs, device=self.device)[env_ids]
+        else:
+            ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).flatten()
+        if ids.numel():
+            self.shift_on[ids] = (torch.rand(ids.numel(), device=self.device) < SHIFT_P) & ~self.is_standing_env[ids]
+
+    def _update_command(self):
+        s = self.pause_on
+        self.vel_command_b[s] = self.saved_cmd[s]
+        g = _switch_guide(self._env)
+        vy_sw = None
+        if g is not None:
+            ids, heading, e_left, _s = g
+            st = _switch_state(self._env)
+            on_flight = (heading.abs() < 0.1) | ((heading.abs() - 3.141592653589793).abs() < 0.1)
+            tgt = -torch.sign(st["dy"]) * SHIFT_M * (self.shift_on[ids] & on_flight).float()   # 바깥쪽 = 길의 오른쪽 (오를 때) · 99-1
+            self._shift_now.zero_()
+            self._shift_now[ids] = self.shift_on[ids] & on_flight
+            self.heading_target[ids] = heading
+            self.is_heading_env[ids] = True
+            vy_sw = torch.clamp(-SWITCH_K_LANE * (e_left - tgt), -SWITCH_VY_MAX, SWITCH_VY_MAX)
+            self.vel_command_b[ids, 1] = vy_sw
+        self.pausing = s & (self.time_left <= self.pause_hi) & (self.time_left > self.pause_lo)
+        self.is_standing_env[:] = self.real_standing | self.pausing
+        _UniformVelocityCommand._update_command(self)
+        if vy_sw is not None:                                       # 멈춤 중이라도 옆 비키기 중이면 옆 명령만 살림
+            keep = self.pausing[ids] & self._shift_now[ids]
+            if keep.any():
+                kid = ids[keep]
+                self.vel_command_b[kid, 0] = 0.0
+                self.vel_command_b[kid, 1] = vy_sw[keep]
+                self.vel_command_b[kid, 2] = 0.0
+
+    def _update_metrics(self):
+        super()._update_metrics()
+        self.metrics["shift_steps"] += self._shift_now.float()
+
+
+_STUMBLE_SAID = [False]
+
+
+def feet_stumble_count(env, sensor_cfg: SceneEntityCfg, threshold: float = 30.0) -> torch.Tensor:
+    """99-1 · 발 걸림 벌: 고른 몸 (발 · 종아리) 가운데 수평 접촉 힘이 수직보다 크고 힘이 threshold N 넘는 것의 수 (95-5 의 "걸림" 자)."""
+    sensor = env.scene.sensors[sensor_cfg.name]
+    f = sensor.data.net_forces_w
+    f = f.torch if hasattr(f, "torch") else f
+    f = f[:, sensor_cfg.body_ids, :]
+    fh = torch.norm(f[..., :2], dim=-1)
+    hit = (fh > torch.abs(f[..., 2])) & (torch.norm(f, dim=-1) > threshold)
+    if not _STUMBLE_SAID[0]:
+        _STUMBLE_SAID[0] = True
+        print(f"[발 걸림 벌] feet_stumble_count · 몸 {f.shape[1]}개 · 힘 {threshold:g} N 넘고 수평 > 수직 · 지금 걸린 몸 {int(hit.sum())} (README 99-1)", flush=True)
+    return hit.float().sum(dim=1)
+
+
 _SHARP_SAID = [False]
 
 

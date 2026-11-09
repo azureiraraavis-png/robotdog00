@@ -64,6 +64,20 @@ def switch_stairs_terrain(difficulty: float, cfg):
     m.append(_box(0.0, sx, g["yB1"], sy, zb, wall))
     m.append(_box(0.0, g["x0"], g["yA0"], g["yB1"], zb, wall))
     m.append(_box(g["x1"], sx, g["yA0"], g["yB1"], zb, wall))
+    # 99-1: 사람 높이 기둥 — 단마다 pillar_p 의 확률로 하나 · 칸막이 쪽 (안쪽) 에 붙여 세움 (85-6: 사람은 안쪽으로 비킴)
+    #   기둥은 어깨 폭 pillar_w × 디딤 하나 깊이 pillar_d × 키 pillar_h. 단의 3~N−2 번째 칸 위. 바깥쪽으로 1.25 − pillar_w 가 남음.
+    if getattr(cfg, "pillar_p", 0.0) > 0.0:
+        pw, pd, ph = cfg.pillar_w, min(cfg.pillar_d, t), cfg.pillar_h
+        for side in ("A", "B"):
+            if np.random.rand() >= cfg.pillar_p:
+                continue
+            k = int(np.random.randint(3, N - 1))                 # 3 .. N−2
+            if side == "A":                                      # A 쪽 단: +x 로 오름 · 안쪽 = yA1 쪽
+                x0p = g["xa"] + (k - 1) * t
+                m.append(_box(x0p, x0p + pd, g["yA1"] - pw, g["yA1"], k * r, k * r + ph))
+            else:                                                # B 쪽 단: −x 로 오름 · 안쪽 = yB0 쪽
+                x1p = g["xm"] - (k - 1) * t
+                m.append(_box(x1p - pd, x1p, g["yB0"], g["yB0"] + pw, N * r + k * r, N * r + k * r + ph))
     xc = 0.5 * (g["x0"] + g["xa"])
     if cfg.start == "top":
         origin = np.array([xc, 0.5 * (g["yB0"] + g["yB1"]), top])
