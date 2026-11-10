@@ -225,6 +225,25 @@ def feet_stumble_count(env, sensor_cfg: SceneEntityCfg, threshold: float = 30.0)
     return hit.float().sum(dim=1)
 
 
+# ─────────────────────────────────────────────────────────────
+#  99-8: 벌을 나중에 올리기 — 커리큘럼 항: 학습 at_iter 번째 (common_step_counter ≥ at_iter × steps_per_iter) 에 상 항의 무게를 weight 로.
+#  왜 (99-7): 처음부터 새 벌 넷을 목표 무게로 주면 개가 걷지 않고 서 있기를 배움 → 걷기를 먼저 배운 뒤 올림.
+#  돌려줌 = 지금 무게 (학습 로그의 Curriculum/<항 이름> 으로 보임).
+# ─────────────────────────────────────────────────────────────
+_RAMP_DONE = set()
+
+
+def ramp_reward_weight(env, env_ids, term_name: str, weight: float, at_iter: int, steps_per_iter: int = 24):
+    cfg = env.reward_manager.get_term_cfg(term_name)
+    if term_name not in _RAMP_DONE and env.common_step_counter >= at_iter * steps_per_iter:
+        w0 = cfg.weight
+        cfg.weight = weight
+        env.reward_manager.set_term_cfg(term_name, cfg)
+        _RAMP_DONE.add(term_name)
+        print(f"[벌 올리기] {term_name} {w0:g} → {weight:g} · 걸음 {env.common_step_counter} (약 {at_iter}번째) (README 99-8)", flush=True)
+    return torch.tensor(float(env.reward_manager.get_term_cfg(term_name).weight), device=env.device)
+
+
 _SHARP_SAID = [False]
 
 

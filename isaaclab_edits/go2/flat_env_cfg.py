@@ -382,6 +382,7 @@ GUIDE_PAUSE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2
 GUIDE_SCRATCH_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchVelocityCommand"  # 99-1 · 99B
 GUIDE_SCRATCH_A_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAVelocityCommand"  # 99-4 · 99A
 GUIDE_STUMBLE = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:feet_stumble_count"                # 99-1
+GUIDE_RAMP = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:ramp_reward_weight"                     # 99-8
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
 GUIDE_SIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideSideMixVelocityCommand"   # 85-2
 GUIDE_SWITCH_LEVELS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix_switch"   # 83-1
@@ -785,6 +786,7 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         SCRATCH99 = False
         SCRATCH99_B = True          # 99-4: True = 99B (사람 높이 기둥 0.5 · 바깥쪽 옆 비키기 0.30 · 99-2 탐침과 같음) · False = 99A (기둥 · 옆 비키기 없음)
         STUMBLE_W = -0.5
+        SCRATCH99_RAMP = 500        # 99-8: 새 벌 넷 (발 걸림 · 끄덕임 · 행동 급변 · 발 미끄럼) 을 이 번째에 목표 무게로 올림 (그 전엔 기본값 · 0 = 처음부터 목표 무게 · 99-5 · 99-6 과 같음)
         SCRATCH99_H = (0.03, 0.23)  # 99-6: 계단 높이 범위 (단계 0 → 9) — 99-5 의 (0.13, 0.23) 은 처음부터 배우기에 단계 0 부터 너무 높았음
         if SCRATCH99 and (MOVE_MIX or SWITCH_STAIRS or PAUSE_GO or TREAD_MIX):
             raise ValueError("SCRATCH99 는 MOVE_MIX · SWITCH_STAIRS · PAUSE_GO · TREAD_MIX 와 같이 못 씁니다 (README 99-1)")
@@ -871,14 +873,19 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                   + f" · 계단 높이 {SCRATCH99_H[0]:g}~{SCRATCH99_H[1]:g} · 기둥 {_pp:g} · 판 {'99B' if SCRATCH99_B else '99A'}", flush=True)
             self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS if SCRATCH99_B else GUIDE_SCRATCH_A_CLASS)
             self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
-            self.rewards.feet_stumble = _RT99(func=GUIDE_STUMBLE, weight=STUMBLE_W,
+            _scratch_goal = {"feet_stumble": STUMBLE_W, "ang_vel_xy_l2": -0.15,
+                             "action_rate_l2": 2.0 * self.rewards.action_rate_l2.weight, "feet_slide": -0.25}       # 목표 무게 (99-1)
+            _tiny = -1e-6                       # 99-8: 올리기 전 — 0 이면 상 관리자가 항을 아예 안 셈하므로 아주 작게 (줄 · 로그가 나오게)
+            self.rewards.feet_stumble = _RT99(func=GUIDE_STUMBLE, weight=(_tiny if SCRATCH99_RAMP else STUMBLE_W),
                                               params={"sensor_cfg": _SE99("contact_forces", body_names=[".*_foot", ".*_calf"]), "threshold": 30.0})
-            self.rewards.ang_vel_xy_l2.weight = -0.15
-            self.rewards.action_rate_l2.weight = 2.0 * self.rewards.action_rate_l2.weight
-            self.rewards.feet_slide = _RT99(func=vel_mdp.feet_slide, weight=-0.25,
+            if not SCRATCH99_RAMP:
+                self.rewards.ang_vel_xy_l2.weight = _scratch_goal["ang_vel_xy_l2"]
+                self.rewards.action_rate_l2.weight = _scratch_goal["action_rate_l2"]
+            self.rewards.feet_slide = _RT99(func=vel_mdp.feet_slide, weight=(_tiny if SCRATCH99_RAMP else -0.25),
                                             params={"sensor_cfg": _SE99("contact_forces", body_names=".*_foot"),
                                                     "asset_cfg": _SE99("robot", body_names=".*_foot")})
-            print(f"[처음부터 99] 상 · 발 걸림 {STUMBLE_W:g} · 끄덕임 {self.rewards.ang_vel_xy_l2.weight:g} · 행동 급변 {self.rewards.action_rate_l2.weight:g} · 발 미끄럼 -0.25", flush=True)
+            print(f"[처음부터 99] 상 · 발 걸림 {STUMBLE_W:g} · 끄덕임 {_scratch_goal['ang_vel_xy_l2']:g} · 행동 급변 {_scratch_goal['action_rate_l2']:g} · 발 미끄럼 -0.25"
+                  + (f" · {SCRATCH99_RAMP}번째에 올림 (그 전: 발 걸림 · 발 미끄럼 ≈0 · 끄덕임 {self.rewards.ang_vel_xy_l2.weight:g} · 행동 급변 {self.rewards.action_rate_l2.weight:g})" if SCRATCH99_RAMP else " · 처음부터"), flush=True)
 
 
         # ★ 정책의 눈만 가립니다 — 스캐너는 남겨둡니다 ★
@@ -982,6 +989,9 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             self.curriculum.terrain_levels.func = GUIDE_MIX_HOLD
         if SWITCH_STAIRS or SCRATCH99:           # 83-1: 눈금자 switch_prog 를 더한 묶음으로 갈아끼움 (terrain_levels 는 길 따라 · 섞인 개 그대로)
             self.curriculum = GuideSwitchCurriculumCfg()
+            if SCRATCH99 and SCRATCH99_RAMP:     # 99-8: 새 벌 넷을 SCRATCH99_RAMP 번째에 목표 무게로
+                for _tn, _tw in _scratch_goal.items():
+                    setattr(self.curriculum, f"ramp_{_tn}", CurrTerm(func=GUIDE_RAMP, params={"term_name": _tn, "weight": float(_tw), "at_iter": int(SCRATCH99_RAMP)}))
             # 83-3: 접촉 패치 버퍼를 늘림 — 83 의 학습은 내내 "Patch buffer overflow" (접촉을 잃음) 였다
             _ph = self.sim.physics
             _set = 0
