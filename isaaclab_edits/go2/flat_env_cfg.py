@@ -788,6 +788,16 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         STUMBLE_W = -0.5
         SCRATCH99_RAMP = 500        # 99-8: 새 벌 넷 (발 걸림 · 끄덕임 · 행동 급변 · 발 미끄럼) 을 이 번째에 목표 무게로 올림 (그 전엔 기본값 · 0 = 처음부터 목표 무게 · 99-5 · 99-6 과 같음)
         SCRATCH99_H = (0.03, 0.23)  # 99-6: 계단 높이 범위 (단계 0 → 9) — 99-5 의 (0.13, 0.23) 은 처음부터 배우기에 단계 0 부터 너무 높았음
+        #   SYM99             좌우 대칭 가르치기 (README 99-13) — False = 끔(기본). 켜면 학습 때 미니배치마다 왼 ↔ 오른을 비춘 경험을 더함
+        #     (rsl_rl PPO 의 symmetry_cfg · use_data_augmentation · go2_symmetry.py). 에이전트 설정 파일은 그대로 — 이 학습 과정 안에서만 넣음.
+        #     SCRATCH99 와 함께만. 첫머리에 "[대칭 99] …" 줄 · 첫 갱신 때 "[대칭] …" 줄 · 걸음마다 "Mean symmetry loss" 를 찍습니다.
+        SYM99 = False
+        if SYM99:
+            if not SCRATCH99:
+                raise ValueError("SYM99 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-13)")
+            from .go2_symmetry import install as _sym_install
+            _sym_install()
+            print("[대칭 99] 켬 — 왼 ↔ 오른을 비춘 경험을 더해 배움 (README 99-13)", flush=True)
         if SCRATCH99 and (MOVE_MIX or SWITCH_STAIRS or PAUSE_GO or TREAD_MIX):
             raise ValueError("SCRATCH99 는 MOVE_MIX · SWITCH_STAIRS · PAUSE_GO · TREAD_MIX 와 같이 못 씁니다 (README 99-1)")
         if SWITCH_STAIRS and not (MOVE_MIX and MIX_HOLD_LEVEL and TREAD_MIX and DOWN_SHARE):
