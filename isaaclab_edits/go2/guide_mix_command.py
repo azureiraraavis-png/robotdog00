@@ -287,6 +287,31 @@ def stand_still_speed(env, command_name: str, threshold: float = 0.05,
 
 
 # ─────────────────────────────────────────────────────────────
+#  99-20: 서 있기 관절 벌 — 명령이 거의 0 인 개의 열두 관절 빠르기 합 (|rad/s| · L1).
+#  왜 (99-19): 99S5b 는 기다리라는 말에 바로 서지만 선 뒤 2~3 cm 꼼지락 · 사람 코앞에서는 발만 구르는 제자리걸음.
+#      몸통 빠르기 벌 (97 · stand_still_speed) 은 판 전체에서 −0.01 남짓이라 못 배웠고, 몸통이 안 가는 제자리걸음은 못 잡음.
+#      관절 빠르기는 발을 구르기만 해도 커지고, 계단 위 자세를 어느 모양으로 강요하지는 않는다.
+# ─────────────────────────────────────────────────────────────
+_STILL_JV_SAID = [False]
+
+
+def stand_still_joint_vel(env, command_name: str, threshold: float = 0.05,
+                          asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """|명령 (앞 · 옆)| + |회전 명령| < threshold 인 개의 관절 빠르기 |rad/s| 합 · 나머지 개는 0 (99-20)."""
+    asset = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    still = (torch.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])) < threshold
+    jv = asset.data.joint_vel
+    jv = jv.torch if hasattr(jv, "torch") else jv
+    s = torch.sum(torch.abs(jv), dim=1)
+    if not _STILL_JV_SAID[0]:
+        _STILL_JV_SAID[0] = True
+        print(f"[서기 관절 벌] stand_still_joint_vel · 명령 {threshold:g} 아래인 개의 관절 빠르기 |rad/s| 합 · 관절 {jv.shape[1]}개 · "
+              f"지금 그런 개 {int(still.sum())} / {still.numel()} (README 99-20)", flush=True)
+    return still.float() * s
+
+
+# ─────────────────────────────────────────────────────────────
 #  82-4: 강등 멈추기 — 이 판에 뒤로 · 거의 0 명령을 한 번이라도 뽑은 개는 줄 (난이도) 을 안 바꿈 (승급도 강등도 없음).
 #  왜 (82-3): 뒤로 개는 계단 끝에서 서면 중심에서 1~1.5 m — 강등선 (|명령| × 20초 × 0.5 = 약 2 m) 보다 짧아 늘 강등되고,
 #      높은 계단에서 뒤로를 연습할 일이 준다. 나머지 개는 terrain_levels_vel (velocity/mdp/curriculums.py) 그대로.

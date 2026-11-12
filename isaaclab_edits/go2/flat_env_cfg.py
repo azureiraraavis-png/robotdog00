@@ -378,6 +378,7 @@ def walked_distance(env, env_ids):
 GUIDE_MIX_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideMixVelocityCommand"
 GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:track_lin_vel_xy_exp_mix"   # 78-3
 GUIDE_STAND_STILL = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_speed"         # 97-1
+GUIDE_STILL_JV = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_joint_vel"     # 99-20
 GUIDE_PAUSE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuidePauseVelocityCommand"   # 98-1
 GUIDE_SCRATCH_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchVelocityCommand"  # 99-1 · 99B
 GUIDE_SCRATCH_A_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAVelocityCommand"  # 99-4 · 99A
@@ -792,6 +793,11 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     (rsl_rl PPO 의 symmetry_cfg · use_data_augmentation · go2_symmetry.py). 에이전트 설정 파일은 그대로 — 이 학습 과정 안에서만 넣음.
         #     SCRATCH99 와 함께만. 첫머리에 "[대칭 99] …" 줄 · 첫 갱신 때 "[대칭] …" 줄 · 걸음마다 "Mean symmetry loss" 를 찍습니다.
         SYM99 = False
+        #   STILL_JV_W        서 있기 관절 벌 (README 99-20) — 명령이 거의 0 (0.05 아래) 인 개의 열두 관절 빠르기 |rad/s| 합의 무게 · 0.0 = 끔(기본).
+        #     SCRATCH99 와 함께만 · 다른 새 벌처럼 SCRATCH99_RAMP 번째에 올림 (그 전 ≈0). 첫머리에 "[서기 관절 벌] …" 줄 둘.
+        STILL_JV_W = 0.0
+        if STILL_JV_W and not SCRATCH99:
+            raise ValueError("STILL_JV_W 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-20)")
         if SYM99:
             if not SCRATCH99:
                 raise ValueError("SYM99 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-13)")
@@ -894,6 +900,12 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             self.rewards.feet_slide = _RT99(func=vel_mdp.feet_slide, weight=(_tiny if SCRATCH99_RAMP else -0.25),
                                             params={"sensor_cfg": _SE99("contact_forces", body_names=".*_foot"),
                                                     "asset_cfg": _SE99("robot", body_names=".*_foot")})
+            if STILL_JV_W:                      # 99-20: 서 있기 관절 벌 — 다른 새 벌과 같이 SCRATCH99_RAMP 번째에 올림
+                self.rewards.stand_still_jvel = _RT99(func=GUIDE_STILL_JV, weight=(_tiny if SCRATCH99_RAMP else STILL_JV_W),
+                                                      params={"command_name": "base_velocity", "threshold": 0.05})
+                _scratch_goal["stand_still_jvel"] = STILL_JV_W
+                print(f"[서기 관절 벌] stand_still_jvel 무게 {STILL_JV_W:g} · "
+                      + (f"{SCRATCH99_RAMP}번째에 올림" if SCRATCH99_RAMP else "처음부터") + " (README 99-20)", flush=True)
             print(f"[처음부터 99] 상 · 발 걸림 {STUMBLE_W:g} · 끄덕임 {_scratch_goal['ang_vel_xy_l2']:g} · 행동 급변 {_scratch_goal['action_rate_l2']:g} · 발 미끄럼 -0.25"
                   + (f" · {SCRATCH99_RAMP}번째에 올림 (그 전: 발 걸림 · 발 미끄럼 ≈0 · 끄덕임 {self.rewards.ang_vel_xy_l2.weight:g} · 행동 급변 {self.rewards.action_rate_l2.weight:g})" if SCRATCH99_RAMP else " · 처음부터"), flush=True)
 
