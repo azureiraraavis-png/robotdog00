@@ -312,6 +312,31 @@ def stand_still_joint_vel(env, command_name: str, threshold: float = 0.05,
 
 
 # ─────────────────────────────────────────────────────────────
+#  99-22: 서 있기 발 디딤 벌 — 명령이 거의 0 인 개의 "땅에 안 닿은 발" 의 수 (접촉 힘 force N 아래).
+#  왜 (99-22): 2600 · 99A5a · 99S5b 모두 기다리는 동안 뒷다리 하나를 12~35 cm 든 채 세 다리로 얼어붙는다 (사이안 님이 창으로 봄 · 자취로 확인).
+#      관절 빠르기 벌 (99-20) 은 다리를 들고 가만히 있으면 0 이라 이것을 못 잡는다.
+# ─────────────────────────────────────────────────────────────
+_STILL_AIR_SAID = [False]
+
+
+def stand_still_feet_air(env, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float = 0.05,
+                         force: float = 1.0) -> torch.Tensor:
+    """|명령 (앞 · 옆)| + |회전 명령| < threshold 인 개의 땅에 안 닿은 발 (접촉 힘 < force N) 의 수 · 나머지 개는 0 (99-22)."""
+    cmd = env.command_manager.get_command(command_name)
+    still = (torch.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])) < threshold
+    sensor = env.scene.sensors[sensor_cfg.name]
+    f = sensor.data.net_forces_w
+    f = f.torch if hasattr(f, "torch") else f
+    f = f[:, sensor_cfg.body_ids, :]
+    air = torch.norm(f, dim=-1) < force
+    if not _STILL_AIR_SAID[0]:
+        _STILL_AIR_SAID[0] = True
+        print(f"[서기 발 디딤 벌] stand_still_feet_air · 명령 {threshold:g} 아래인 개의 안 닿은 발 (힘 {force:g} N 아래) 의 수 · 발 {f.shape[1]}개 · "
+              f"지금 그런 개 {int(still.sum())} / {still.numel()} (README 99-22)", flush=True)
+    return still.float() * air.float().sum(dim=1)
+
+
+# ─────────────────────────────────────────────────────────────
 #  82-4: 강등 멈추기 — 이 판에 뒤로 · 거의 0 명령을 한 번이라도 뽑은 개는 줄 (난이도) 을 안 바꿈 (승급도 강등도 없음).
 #  왜 (82-3): 뒤로 개는 계단 끝에서 서면 중심에서 1~1.5 m — 강등선 (|명령| × 20초 × 0.5 = 약 2 m) 보다 짧아 늘 강등되고,
 #      높은 계단에서 뒤로를 연습할 일이 준다. 나머지 개는 terrain_levels_vel (velocity/mdp/curriculums.py) 그대로.
