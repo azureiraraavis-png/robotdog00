@@ -802,6 +802,12 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #   STILL_AIR_W       서 있기 발 디딤 벌 (README 99-22) — 명령이 거의 0 인 개의 땅에 안 닿은 발의 수의 무게 · 0.0 = 끔(기본).
         #     왜: 기다리는 동안 뒷다리 하나를 든 채 세 다리로 얼어붙음 (2600 · 99A5a · 99S5b). SCRATCH99 와 함께만 · SCRATCH99_RAMP 번째에 올림.
         STILL_AIR_W = 0.0
+        #   REW_GUARD         보상 지킴 (README 99-27) — False = 끔(기본). 켜면 rsl_rl PPO 가 받는 한 걸음의 보상에서 무한대 · NaN → 0 · ±10 넘으면 자름
+        #     (go2_guard.py · 그 학습 과정 안에서만). 왜: 99U5b 3164번째에 returns 무한대로 학습이 무너짐 (99-26). 첫머리에 "[보상 지킴] 켬" 줄.
+        REW_GUARD = False
+        if REW_GUARD:
+            from .go2_guard import install as _guard_install
+            _guard_install()
         if STILL_AIR_W and not SCRATCH99:
             raise ValueError("STILL_AIR_W 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-22)")
         if SYM99:
