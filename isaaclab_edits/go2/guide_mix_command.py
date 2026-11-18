@@ -337,6 +337,36 @@ def stand_still_feet_air(env, command_name: str, sensor_cfg: SceneEntityCfg, thr
 
 
 # ─────────────────────────────────────────────────────────────
+#  99-31: 걸음 고르기 벌 — 네 발의 "지난번 공중에 있던 시간" · "지난번 디뎌 있던 시간" 이 서로 다른 만큼 (분산 · 0.5초에서 자름).
+#  Isaac Lab 의 Spot 레시피 (air_time_variance_penalty) 와 같은 셈 + **걷는 개만** (명령이 threshold 넘는 개 · 서 있는 개는 발 디딤 벌이 맡음).
+#  왜 (99-28 · 99-30): 99U 의 세 씨앗 모두 7a (걸음 수의 쏠림) 에서 걸림 — 어느 다리만 잔걸음을 더 함 (a 앞 좌우 · c 뒤 좌우 · 셋 다 뒤 > 앞).
+#  접촉 센서의 track_air_time 이 켜져 있어야 함 (feet_air_time 상이 이미 씀).
+# ─────────────────────────────────────────────────────────────
+_AIRVAR_SAID = [False]
+
+
+def feet_air_time_variance(env, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float = 0.05,
+                           clip: float = 0.5) -> torch.Tensor:
+    """걷는 개 (|명령 (앞 · 옆)| + |회전 명령| ≥ threshold) 의 var(지난 공중 시간) + var(지난 디딘 시간) · 나머지 개는 0 (99-31)."""
+    cmd = env.command_manager.get_command(command_name)
+    moving = (torch.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])) >= threshold
+    sensor = env.scene.sensors[sensor_cfg.name]
+    la, lc = sensor.data.last_air_time, sensor.data.last_contact_time
+    if la is None or lc is None:
+        raise ValueError("[걸음 고르기 벌] ✖ 접촉 센서에 last_air_time / last_contact_time 이 없습니다 — track_air_time=True 가 필요 (README 99-31)")
+    la = la.torch if hasattr(la, "torch") else la
+    lc = lc.torch if hasattr(lc, "torch") else lc
+    la = torch.clamp(la[:, sensor_cfg.body_ids], max=clip)
+    lc = torch.clamp(lc[:, sensor_cfg.body_ids], max=clip)
+    v = torch.var(la, dim=1) + torch.var(lc, dim=1)
+    if not _AIRVAR_SAID[0]:
+        _AIRVAR_SAID[0] = True
+        print(f"[걸음 고르기 벌] feet_air_time_variance · 걷는 개 (명령 {threshold:g} 넘음) 의 네 발 공중 · 디딘 시간 분산 ({clip:g}초에서 자름) · "
+              f"발 {la.shape[1]}개 · 지금 걷는 개 {int(moving.sum())} / {moving.numel()} (README 99-31)", flush=True)
+    return moving.float() * v
+
+
+# ─────────────────────────────────────────────────────────────
 #  82-4: 강등 멈추기 — 이 판에 뒤로 · 거의 0 명령을 한 번이라도 뽑은 개는 줄 (난이도) 을 안 바꿈 (승급도 강등도 없음).
 #  왜 (82-3): 뒤로 개는 계단 끝에서 서면 중심에서 1~1.5 m — 강등선 (|명령| × 20초 × 0.5 = 약 2 m) 보다 짧아 늘 강등되고,
 #      높은 계단에서 뒤로를 연습할 일이 준다. 나머지 개는 terrain_levels_vel (velocity/mdp/curriculums.py) 그대로.

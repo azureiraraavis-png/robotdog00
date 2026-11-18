@@ -380,6 +380,7 @@ GUIDE_MIX_REWARD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.
 GUIDE_STAND_STILL = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_speed"         # 97-1
 GUIDE_STILL_JV = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_joint_vel"     # 99-20
 GUIDE_STILL_AIR = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:stand_still_feet_air"     # 99-22
+GUIDE_AIR_VAR = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:feet_air_time_variance"   # 99-31
 GUIDE_PAUSE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuidePauseVelocityCommand"   # 98-1
 GUIDE_SCRATCH_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchVelocityCommand"  # 99-1 · 99B
 GUIDE_SCRATCH_A_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAVelocityCommand"  # 99-4 · 99A
@@ -810,6 +811,12 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             _guard_install()
         if STILL_AIR_W and not SCRATCH99:
             raise ValueError("STILL_AIR_W 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-22)")
+        #   AIRVAR_W          걸음 고르기 벌 (README 99-31) — 걷는 개의 네 발 공중 · 디딘 시간 분산의 무게 · 0.0 = 끔(기본).
+        #     왜: 99U 세 씨앗 모두 7a (걸음 수 쏠림) 에서 걸림 (99-30). Isaac Lab Spot 레시피의 air_time_variance (무게 -1.0) 와 같은 셈 + 걷는 개만.
+        #     SCRATCH99 와 함께만 · 다른 새 벌처럼 SCRATCH99_RAMP 번째에 올림. 첫머리에 "[걸음 고르기 벌] …" 줄 둘.
+        AIRVAR_W = 0.0
+        if AIRVAR_W and not SCRATCH99:
+            raise ValueError("AIRVAR_W 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-31)")
         if SYM99:
             if not SCRATCH99:
                 raise ValueError("SYM99 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-13)")
@@ -925,6 +932,13 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                 _scratch_goal["stand_still_air"] = STILL_AIR_W
                 print(f"[서기 발 디딤 벌] stand_still_air 무게 {STILL_AIR_W:g} · "
                       + (f"{SCRATCH99_RAMP}번째에 올림" if SCRATCH99_RAMP else "처음부터") + " (README 99-22)", flush=True)
+            if AIRVAR_W:                        # 99-31: 걸음 고르기 벌 — 다른 새 벌과 같이 SCRATCH99_RAMP 번째에 올림
+                self.rewards.feet_air_var = _RT99(func=GUIDE_AIR_VAR, weight=(_tiny if SCRATCH99_RAMP else AIRVAR_W),
+                                                  params={"command_name": "base_velocity", "threshold": 0.05, "clip": 0.5,
+                                                          "sensor_cfg": _SE99("contact_forces", body_names=".*_foot")})
+                _scratch_goal["feet_air_var"] = AIRVAR_W
+                print(f"[걸음 고르기 벌] feet_air_var 무게 {AIRVAR_W:g} · "
+                      + (f"{SCRATCH99_RAMP}번째에 올림" if SCRATCH99_RAMP else "처음부터") + " (README 99-31)", flush=True)
             print(f"[처음부터 99] 상 · 발 걸림 {STUMBLE_W:g} · 끄덕임 {_scratch_goal['ang_vel_xy_l2']:g} · 행동 급변 {_scratch_goal['action_rate_l2']:g} · 발 미끄럼 -0.25"
                   + (f" · {SCRATCH99_RAMP}번째에 올림 (그 전: 발 걸림 · 발 미끄럼 ≈0 · 끄덕임 {self.rewards.ang_vel_xy_l2.weight:g} · 행동 급변 {self.rewards.action_rate_l2.weight:g})" if SCRATCH99_RAMP else " · 처음부터"), flush=True)
 
