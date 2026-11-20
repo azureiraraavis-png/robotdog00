@@ -356,6 +356,12 @@ ap.add_argument("--sb-rule856", action="store_true", dest="sb_rule856",
 ap.add_argument("--sb-rule856-fix", action="store_true", dest="sb_rule856_fix",
                 help="--sb-rule856 와 함께: 86-8 의 구멍 고침 — 개가 단 위에 있는데 마주 오는 사람이 참에 있으면, 사람은 단에 들어설 때까지 "
                      "비키지 않고 (옛 쪽 셈을 안 씀) 단에 들어서면 안쪽으로 비킴 · 개가 참에 있으면 옛 셈 그대로 · 끄면 옛 판과 글자 하나 안 다름 · README 96-1. 기본 끔")
+ap.add_argument("--sb-wait-onland", action="store_true", dest="sb_wait_onland",
+                help="99-38: 길잡이가 단 끝 (참에 들어서기 0.3 m 전 ~ 참 + 0.6 m · 몸 중심 길 따라) 에서는 기다리기를 시작하지 않고, 앞 막힘까지 자리가 있으면 "
+                     "참 + 0.6 m (뒷발까지 참 위) 까지 더 가서 기다림 (엇갈리기 기다림도 같음) · 자리가 없으면 옛 그대로 그 자리 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
+ap.add_argument("--sb-person-nopush", type=float, default=None, dest="sb_person_nopush",
+                help="99-38: 사람의 움직임 (길 따라 · 옆 비키기) 이 개와의 틈을 이 값 (m) 아래로 줄이면 그 움직임을 안 함 (사람이 개를 밀지 않음) · "
+                     "그렇게 막힌 채 15초면 옛 '못 지나가 돌아감' 과 같이 돌아감 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
 ap.add_argument("--sb-see-people", action=argparse.BooleanOptionalAction, default=True, dest="sb_see_people",
                 help="사람을 개의 눈 (높이 스캔) 에 벽처럼 넣음 (74 · 기본 켬 · 켜면 옛 판과 글자 하나 안 다름). --no-sb-see-people 이면 사람만 빼고 문짝은 그대로 · README 96-4")
 ap.add_argument("--sb-pass-hold", type=float, default=0.0, dest="sb_pass_hold",
@@ -1647,14 +1653,36 @@ def sbx_step(now, t_run, rx, ry, rz, ryaw, s_r, e_r):
             on["state"] = "yield"
             on["side"] = -1.0 if e_r > 0 else 1.0
             print(f" [사람] {t_run:.1f}초 · 앞서 가다 비켜 줍니다 ({'왼' if on['side'] > 0 else '오른'}쪽 · 개와 {clr * 100:.0f} cm)")
+        dlat = 0.0
         if on["state"] == "yield":
             tgt = on["side"] * side_max
-            on["lat"] += max(-0.5 * dt, min(0.5 * dt, tgt - on["lat"]))
+            dlat = max(-0.5 * dt, min(0.5 * dt, tgt - on["lat"]))
         # 개를 밀지 않기: 10 cm 안이면 그 자리에 섬
         moving = on["ds"]
         if on["kind"] == "ahead" and on["state"] == "yield":
             moving = 0.08
         frozen = clr < 0.10
+        blocked = False
+        if args.sb_person_nopush is not None:     # 99-38: 틈을 nopush 아래로 줄이는 움직임 (옆 · 길 따라) 은 안 함
+            def _clr_at(s_, lat_):
+                if abs(X["ground"](s_) - (rz - 0.30)) > 1.0:
+                    return 9.0
+                cx_, cy_, yw_ = X["pos"](s_)
+                return _sbx_clear(rx, ry, ryaw, cx_ - math.sin(yw_) * lat_, cy_ + math.cos(yw_) * lat_, yw_, SBX_PD, SBX_PW)
+
+            def _bad(s_, lat_):
+                c_ = _clr_at(s_, lat_)
+                return c_ < args.sb_person_nopush and c_ < clr - 1e-4
+            if dlat and _bad(on["s"], on["lat"] + dlat):
+                dlat, blocked = 0.0, True
+            if not frozen and moving and _bad(on["s"] + moving * dt, on["lat"] + dlat):
+                frozen, blocked = True, True
+            if blocked and not on.get("nopush_said"):
+                on["nopush_said"] = True
+                X["n_nopush"] = X.get("n_nopush", 0) + 1
+                X["log"].append(f"nopush@{t_run:.1f}")
+                print(f" [사람] {t_run:.1f}초 · 개와 {clr * 100:.0f} cm — 더 다가가면 개를 밀어 멈춥니다 (99-38)")
+        on["lat"] += dlat
         if frozen and not on.get("frozen"):
             on["fz0"] = now
             print(f" [사람] {t_run:.1f}초 · 개와 {clr * 100:.0f} cm — 사람이 멈춥니다")
@@ -1795,6 +1823,22 @@ def _sbx_pre(s_r):
     return None
 
 
+SBX_EDGE_BEFORE = 0.30             # 99-38: 단 끝 걸침 구역 — 참에 들어서기 이만큼 전부터 (몸 중심 · 길 따라)
+SBX_EDGE_IN = 0.60                 # 99-38: 참에 들어서서 이만큼까지 (뒷발까지 참 위 · 76 의 '참 + 0.6' 과 같음)
+
+
+def _sbx_edge(s_r, s_o):
+    """99-38: 지금 단 끝 걸침 구역이고 앞 막힘까지 자리가 있으면 (참 + 0.6) 자리 · 아니면 None."""
+    if not args.sb_wait_onland:
+        return None
+    for a, b in SBX["lands"]:
+        if a - SBX_EDGE_BEFORE <= s_r < a + SBX_EDGE_IN and a + SBX_EDGE_IN <= b:
+            if s_o is None or s_o - SBX_STOP >= a + SBX_EDGE_IN:
+                return a + SBX_EDGE_IN
+            return None
+    return None
+
+
 def sbx_react(now, t_run, s_r, e_r, rz):
     """길잡이의 멈추고 · 기다리고 · 다시 가기 (README 76). True 면 이번 바퀴는 [0, 0, 0]."""
     X = SBX
@@ -1809,6 +1853,16 @@ def sbx_react(now, t_run, s_r, e_r, rz):
     X["shift"] = 0.0
     if args.sb_pass:                             # 엇갈리기 (README 76-9): 비켜 선 사람이 다 지나갈 때까지 앞으로 안 감 · 단 위에서는 개도 비킴
         pw = _sbx_passing(s_r, rz)
+        _eg = _sbx_edge(s_r, s_o) if (pw is not None and R["mode"] != "wait") else None
+        if _eg is not None:                      # 99-38: 단 끝에서는 엇갈리기 기다림도 뒷발까지 참에 오른 뒤
+            if not R.get("edge_said"):
+                R["edge_said"] = True
+                R["n_edge"] = R.get("n_edge", 0) + 1
+                X["log"].append(f"edge@{t_run:.1f}")
+                print(f" [길잡이] {t_run:.1f}초 · 단 끝 — 뒷발까지 참에 오를 때까지 {_eg - s_r:.2f} m 더 가서 기다립니다 (99-38 · 엇갈리기)")
+            pw = None
+        else:
+            R["edge_said"] = False
         if pw is not None:
             X["blocked"] = True
             if here == "단 위" and args.sb_pass_shift > 0.0 and not (args.sb_rule856 and args.down and not args.sb_pass_down):   # 85-6: 내려가는 판은 비키지 않음 (86-7: --sb-pass-down 이면 비킴)
@@ -1860,6 +1914,14 @@ def sbx_react(now, t_run, s_r, e_r, rz):
             R["n_flight"] += 1
         print(f" [길잡이] {t_run:.1f}초 · 잠시만요 — 앞 {gap:.1f} m 에 {why} · {where}에서 기다립니다 (개는 {sb_where_now[0]})")
         return True
+    _eg = _sbx_edge(s_r, s_o)
+    if _eg is not None and not (R["mode"] == "go" and s_r >= R["target"]):   # 99-38: 단 끝에서는 뒷발까지 참에 오른 뒤 기다림
+        if not (R["mode"] == "go" and abs(R["target"] - _eg) < 1e-6):
+            R["mode"], R["target"] = "go", _eg
+            R["n_edge"] = R.get("n_edge", 0) + 1
+            X["log"].append(f"edge@{t_run:.1f}")
+            print(f" [길잡이] {t_run:.1f}초 · 단 끝 — 뒷발까지 참에 오를 때까지 {_eg - s_r:.2f} m 더 가서 기다립니다 (99-38)")
+        return False
     if X["isl"](s_r) and (R["mode"] != "go" or s_r >= R["target"]):
         return wait("참")
     if gap < SBX_STOP:
