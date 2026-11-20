@@ -359,6 +359,10 @@ ap.add_argument("--sb-rule856-fix", action="store_true", dest="sb_rule856_fix",
 ap.add_argument("--sb-wait-onland", action="store_true", dest="sb_wait_onland",
                 help="99-38: 길잡이가 단 끝 (참에 들어서기 0.3 m 전 ~ 참 + 0.6 m · 몸 중심 길 따라) 에서는 기다리기를 시작하지 않고, 앞 막힘까지 자리가 있으면 "
                      "참 + 0.6 m (뒷발까지 참 위) 까지 더 가서 기다림 (엇갈리기 기다림도 같음) · 자리가 없으면 옛 그대로 그 자리 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
+ap.add_argument("--sb-edge-commit", action="store_true", dest="sb_edge_commit",
+                help="99-40: --sb-wait-onland 와 함께 — 단 끝에서 '참 + 0.6 m 까지 더 감' 을 정하는 자리 셈을 '그 자리에서 앞 막힘까지 0.7 m 남음' 으로 바꾸고, "
+                     "한 번 정하면 앞 막힘이 몸 중심에서 0.7 m 안으로 들어오기 전에는 끝까지 감 (99-39: 다가오는 사람에게 곧 자리를 잃어 옛 그대로 섰음) · "
+                     "끄면 99-38 과 글자 하나 안 다름. 기본 끔")
 ap.add_argument("--sb-person-nopush", type=float, default=None, dest="sb_person_nopush",
                 help="99-38: 사람의 움직임 (길 따라 · 옆 비키기) 이 개와의 틈을 이 값 (m) 아래로 줄이면 그 움직임을 안 함 (사람이 개를 밀지 않음) · "
                      "그렇게 막힌 채 15초면 옛 '못 지나가 돌아감' 과 같이 돌아감 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
@@ -1825,16 +1829,31 @@ def _sbx_pre(s_r):
 
 SBX_EDGE_BEFORE = 0.30             # 99-38: 단 끝 걸침 구역 — 참에 들어서기 이만큼 전부터 (몸 중심 · 길 따라)
 SBX_EDGE_IN = 0.60                 # 99-38: 참에 들어서서 이만큼까지 (뒷발까지 참 위 · 76 의 '참 + 0.6' 과 같음)
+SBX_EDGE_MIN = 0.70                # 99-40: 단 끝에서 더 갈 때 앞 막힘과 남겨 둘 거리 (몸 중심끼리 · 길 따라) — 개 반길이 0.35 + 사람 반두께 0.15 + 여유 0.20
 
 
 def _sbx_edge(s_r, s_o):
-    """99-38: 지금 단 끝 걸침 구역이고 앞 막힘까지 자리가 있으면 (참 + 0.6) 자리 · 아니면 None."""
+    """99-38: 지금 단 끝 걸침 구역이고 앞 막힘까지 자리가 있으면 (참 + 0.6) 자리 · 아니면 None.
+    99-40 (--sb-edge-commit): 자리 = 그 자리에서 앞 막힘까지 0.7 m 남음 · 이미 그 자리로 가는 중이면 지금 몸 중심에서 0.7 m 남는 동안 계속."""
     if not args.sb_wait_onland:
         return None
     for a, b in SBX["lands"]:
         if a - SBX_EDGE_BEFORE <= s_r < a + SBX_EDGE_IN and a + SBX_EDGE_IN <= b:
-            if s_o is None or s_o - SBX_STOP >= a + SBX_EDGE_IN:
-                return a + SBX_EDGE_IN
+            tgt = a + SBX_EDGE_IN
+            if s_o is None:
+                return tgt
+            if args.sb_edge_commit:
+                R = SBX["r"]
+                going = R.get("mode") == "go" and abs(R.get("target", -1.0) - tgt) < 1e-6
+                if s_o - tgt >= SBX_EDGE_MIN or (going and s_o - s_r >= SBX_EDGE_MIN):
+                    return tgt
+                if going and not R.get("edge_broke"):
+                    R["edge_broke"] = True
+                    SBX["log"].append("edgebreak")
+                    print(f" [길잡이] 단 끝 — 앞 막힘이 {s_o - s_r:.2f} m 로 들어와 그 자리에서 섭니다 (99-40)")
+                return None
+            if s_o - SBX_STOP >= tgt:
+                return tgt
             return None
     return None
 
@@ -1917,7 +1936,7 @@ def sbx_react(now, t_run, s_r, e_r, rz):
     _eg = _sbx_edge(s_r, s_o)
     if _eg is not None and not (R["mode"] == "go" and s_r >= R["target"]):   # 99-38: 단 끝에서는 뒷발까지 참에 오른 뒤 기다림
         if not (R["mode"] == "go" and abs(R["target"] - _eg) < 1e-6):
-            R["mode"], R["target"] = "go", _eg
+            R["mode"], R["target"], R["edge_broke"] = "go", _eg, False
             R["n_edge"] = R.get("n_edge", 0) + 1
             X["log"].append(f"edge@{t_run:.1f}")
             print(f" [길잡이] {t_run:.1f}초 · 단 끝 — 뒷발까지 참에 오를 때까지 {_eg - s_r:.2f} m 더 가서 기다립니다 (99-38)")
