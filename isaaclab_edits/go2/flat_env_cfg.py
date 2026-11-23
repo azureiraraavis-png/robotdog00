@@ -384,6 +384,7 @@ GUIDE_AIR_VAR = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.gui
 GUIDE_PAUSE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuidePauseVelocityCommand"   # 98-1
 GUIDE_SCRATCH_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchVelocityCommand"  # 99-1 · 99B
 GUIDE_SCRATCH_A_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAVelocityCommand"  # 99-4 · 99A
+GUIDE_SCRATCH_AE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAEdgeVelocityCommand"  # 99-47 · 99A + 단 끝 멈춤
 GUIDE_STUMBLE = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:feet_stumble_count"                # 99-1
 GUIDE_RAMP = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:ramp_reward_weight"                     # 99-8
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
@@ -817,6 +818,12 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         AIRVAR_W = 0.0
         if AIRVAR_W and not SCRATCH99:
             raise ValueError("AIRVAR_W 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-31)")
+        #   EDGE99            단 끝 멈춤 (README 99-47) — False = 끔(기본). 켜면 명령이 GuideScratchAEdgeVelocityCommand:
+        #     오르다 앞발이 참에 오르고 뒷발이 아래 단에 남은 때 (눈의 바닥으로 셈), 걷는 개의 절반이 1~3초 섰다가 같은 명령으로 다시 감.
+        #     왜: 99V5b 가 그 자세에서 스스로 굳고 다시 못 감 (99-35 · 37 · 39). 99A (SCRATCH99_B = False) 와 함께만. 첫머리에 "[단 끝 멈춤] …" 줄.
+        EDGE99 = False
+        if EDGE99 and not SCRATCH99:
+            raise ValueError("EDGE99 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-47)")
         if SYM99:
             if not SCRATCH99:
                 raise ValueError("SYM99 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-13)")
@@ -906,7 +913,9 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
             self.scene.terrain.terrain_generator = _tg
             print("[처음부터 99] 지형 열 60 · " + " · ".join(f"{_n} {_ix.count(_k)}열" for _k, _n in enumerate(_sub.keys()))
                   + f" · 계단 높이 {SCRATCH99_H[0]:g}~{SCRATCH99_H[1]:g} · 기둥 {_pp:g} · 판 {'99B' if SCRATCH99_B else '99A'}", flush=True)
-            self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS if SCRATCH99_B else GUIDE_SCRATCH_A_CLASS)
+            if EDGE99 and SCRATCH99_B:
+                raise ValueError("EDGE99 는 99A (SCRATCH99_B = False) 와 함께만 씁니다 (README 99-47)")
+            self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS if SCRATCH99_B else (GUIDE_SCRATCH_AE_CLASS if EDGE99 else GUIDE_SCRATCH_A_CLASS))
             self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
             _scratch_goal = {"feet_stumble": STUMBLE_W, "ang_vel_xy_l2": -0.15,
                              "action_rate_l2": 2.0 * self.rewards.action_rate_l2.weight, "feet_slide": -0.25}       # 목표 무게 (99-1)

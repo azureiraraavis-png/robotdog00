@@ -154,9 +154,17 @@ SHIFT_P, SHIFT_M = 0.30, 0.20
 class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
     """99-1: GuidePauseVelocityCommand + 꺾인 계단 길잡이 + 바깥쪽 옆 비키기 (99B). 99A 는 아래 GuideScratchAVelocityCommand (옆 비키기 0)."""
     SHIFT_P = SHIFT_P
+    EDGE_P = 0.0          # 99-47: 단 끝 멈춤 — 0 이면 셈도 안 함 (옛 판과 같음)
 
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
+        n = self.num_envs
+        self.edge_left = torch.zeros(n, device=self.device)            # 99-47: 단 끝 멈춤이 남은 초
+        self.edge_prev = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self.edge_hold = torch.zeros(n, dtype=torch.bool, device=self.device)   # 이 명령 주기에 단 끝 멈춤을 한 개 → 멈춤 뒤 같은 걷는 명령으로
+        self.edge_pausing = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self.metrics["edge_pause_steps"] = torch.zeros(n, device=self.device)
+        self._edge_said = False
         self.shift_on = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.metrics["shift_steps"] = torch.zeros(self.num_envs, device=self.device)
         self._shift_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -170,9 +178,56 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
             ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).flatten()
         if ids.numel():
             self.shift_on[ids] = (torch.rand(ids.numel(), device=self.device) < self.SHIFT_P) & ~self.is_standing_env[ids]
+            self.edge_hold[ids] = False
+            self.edge_left[ids] = 0.0
+
+    def _edge_now(self):
+        """99-47: 단 끝 (오름) — 몸 앞 0.15~0.55 m 의 바닥이 평평 (3 cm 안) 하고 몸 뒤 0.15~0.30 m 의 바닥이 그보다 8 cm 넘게 낮음 (앞발은 참 · 뒷발은 아래 단)."""
+        env = self._env
+        sc = env.scene.sensors["see_scanner"]
+        h = sc.data.ray_hits_w
+        h = h.torch if hasattr(h, "torch") else h
+        rb = env.scene["robot"]
+        p = rb.data.root_pos_w
+        p = p.torch if hasattr(p, "torch") else p
+        yw = rb.data.heading_w
+        yw = yw.torch if hasattr(yw, "torch") else yw
+        dx, dy = h[..., 0] - p[:, None, 0], h[..., 1] - p[:, None, 1]
+        lx = torch.cos(yw)[:, None] * dx + torch.sin(yw)[:, None] * dy
+        z = h[..., 2]
+        ok = torch.isfinite(z) & (z.abs() < 1e3)
+        fr = ok & (lx >= 0.15) & (lx <= 0.55)
+        rr = ok & (lx >= -0.30) & (lx <= -0.15)
+        big = torch.tensor(1e6, device=z.device)
+        fmax = torch.where(fr, z, -big).max(1).values
+        fmin = torch.where(fr, z, big).min(1).values
+        rmax = torch.where(rr, z, -big).max(1).values
+        has = (fr.sum(1) >= 3) & (rr.sum(1) >= 2)
+        return has & (fmax - fmin < 0.03) & (fmin - rmax > 0.08)
+
+    def _edge_update(self):
+        if self.EDGE_P <= 0.0:
+            return
+        dt = float(self._env.step_dt)
+        self.edge_left = torch.clamp(self.edge_left - dt, min=0.0)
+        edge = self._edge_now()
+        walk = ~self.real_standing & ~self.edge_hold & (self.edge_left <= 0.0)
+        tp = self.pause_on & (self.time_left <= self.pause_hi) & (self.time_left > self.pause_lo)
+        start = edge & ~self.edge_prev & walk & ~tp & (torch.rand(self.num_envs, device=self.device) < self.EDGE_P)
+        if start.any():
+            k = int(start.sum())
+            self.edge_left[start] = torch.empty(k, device=self.device).uniform_(*PAUSE_DUR)
+            self.edge_hold[start] = True
+        self.edge_prev = edge
+        self.edge_pausing = self.edge_left > 0.0
+        if not self._edge_said:
+            self._edge_said = True
+            print(f"[단 끝 멈춤] {type(self).__name__} · 단 끝 (앞 참 · 뒤 단) 에 들어선 걷는 개의 {self.EDGE_P:.2f} 가 {PAUSE_DUR[0]:g}~{PAUSE_DUR[1]:g}초 섬 · "
+                  f"지금 단 끝인 개 {int(edge.sum())} / {edge.numel()} (README 99-47)", flush=True)
 
     def _update_command(self):
-        s = self.pause_on
+        self._edge_update()
+        s = self.pause_on | self.edge_hold
         self.vel_command_b[s] = self.saved_cmd[s]
         g = _switch_guide(self._env)
         vy_sw = None
@@ -187,7 +242,7 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
             self.is_heading_env[ids] = True
             vy_sw = torch.clamp(-SWITCH_K_LANE * (e_left - tgt), -SWITCH_VY_MAX, SWITCH_VY_MAX)
             self.vel_command_b[ids, 1] = vy_sw
-        self.pausing = s & (self.time_left <= self.pause_hi) & (self.time_left > self.pause_lo)
+        self.pausing = (self.pause_on & (self.time_left <= self.pause_hi) & (self.time_left > self.pause_lo)) | self.edge_pausing
         self.is_standing_env[:] = self.real_standing | self.pausing
         _UniformVelocityCommand._update_command(self)
         if vy_sw is not None:                                       # 멈춤 중이라도 옆 비키기 중이면 옆 명령만 살림
@@ -201,11 +256,17 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
     def _update_metrics(self):
         super()._update_metrics()
         self.metrics["shift_steps"] += self._shift_now.float()
+        self.metrics["edge_pause_steps"] += self.edge_pausing.float()
 
 
 class GuideScratchAVelocityCommand(GuideScratchVelocityCommand):
     """99-4 · 99A: 옆 비키기 없음 (멈췄다 가기 + 꺾인 계단 길잡이만)."""
     SHIFT_P = 0.0
+
+
+class GuideScratchAEdgeVelocityCommand(GuideScratchAVelocityCommand):
+    """99-47: 99A + 단 끝 멈춤 — 오르다 앞발이 참에 오르고 뒷발이 아래 단에 남은 때, 걷는 개의 절반이 1~3초 섰다가 같은 명령으로 다시 감."""
+    EDGE_P = 0.5
 
 
 _STUMBLE_SAID = [False]
