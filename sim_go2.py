@@ -363,6 +363,9 @@ ap.add_argument("--sb-edge-commit", action="store_true", dest="sb_edge_commit",
                 help="99-40: --sb-wait-onland 와 함께 — 단 끝에서 '참 + 0.6 m 까지 더 감' 을 정하는 자리 셈을 '그 자리에서 앞 막힘까지 0.7 m 남음' 으로 바꾸고, "
                      "한 번 정하면 앞 막힘이 몸 중심에서 0.7 m 안으로 들어오기 전에는 끝까지 감 (99-39: 다가오는 사람에게 곧 자리를 잃어 옛 그대로 섰음) · "
                      "끄면 99-38 과 글자 하나 안 다름. 기본 끔")
+ap.add_argument("--sb-edge-true", action="store_true", dest="sb_edge_true",
+                help="99-41: 길잡이의 '참 + 0.6 까지 더 가서 기다림' (76 · 99-38 · 99-40) 을 잴 때, 꺾는 곳 0.3 m 앞에서 다음 줄로 넘어가며 "
+                     "길 따라 자리가 꺾는 곳 (참 가운데) 으로 뛰는 것을 빼고 몸의 참 자리 (다음 줄 위의 음수 자리까지) 로 잼 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
 ap.add_argument("--sb-person-nopush", type=float, default=None, dest="sb_person_nopush",
                 help="99-38: 사람의 움직임 (길 따라 · 옆 비키기) 이 개와의 틈을 이 값 (m) 아래로 줄이면 그 움직임을 안 함 (사람이 개를 밀지 않음) · "
                      "그렇게 막힌 채 15초면 옛 '못 지나가 돌아감' 과 같이 돌아감 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
@@ -1868,17 +1871,18 @@ def sbx_react(now, t_run, s_r, e_r, rz):
         if s_q is not None and (s_o is None or s_q < s_o):
             s_o, why = s_q, SBX_PRE_WHY
     X["blocked"] = s_o is not None
+    s_t = X.get("s_true", s_r) if args.sb_edge_true else s_r     # 99-41: 더 가서 기다릴 자리를 잴 때만 씀
     here = "참" if X["isl"](s_r) else "단 위"
     X["shift"] = 0.0
     if args.sb_pass:                             # 엇갈리기 (README 76-9): 비켜 선 사람이 다 지나갈 때까지 앞으로 안 감 · 단 위에서는 개도 비킴
         pw = _sbx_passing(s_r, rz)
-        _eg = _sbx_edge(s_r, s_o) if (pw is not None and R["mode"] != "wait") else None
+        _eg = _sbx_edge(s_t, s_o) if (pw is not None and R["mode"] != "wait") else None
         if _eg is not None:                      # 99-38: 단 끝에서는 엇갈리기 기다림도 뒷발까지 참에 오른 뒤
             if not R.get("edge_said"):
                 R["edge_said"] = True
                 R["n_edge"] = R.get("n_edge", 0) + 1
                 X["log"].append(f"edge@{t_run:.1f}")
-                print(f" [길잡이] {t_run:.1f}초 · 단 끝 — 뒷발까지 참에 오를 때까지 {_eg - s_r:.2f} m 더 가서 기다립니다 (99-38 · 엇갈리기)")
+                print(f" [길잡이] {t_run:.1f}초 · 단 끝 — 뒷발까지 참에 오를 때까지 {_eg - s_t:.2f} m 더 가서 기다립니다 (99-38 · 엇갈리기)")
             pw = None
         else:
             R["edge_said"] = False
@@ -1933,20 +1937,20 @@ def sbx_react(now, t_run, s_r, e_r, rz):
             R["n_flight"] += 1
         print(f" [길잡이] {t_run:.1f}초 · 잠시만요 — 앞 {gap:.1f} m 에 {why} · {where}에서 기다립니다 (개는 {sb_where_now[0]})")
         return True
-    _eg = _sbx_edge(s_r, s_o)
-    if _eg is not None and not (R["mode"] == "go" and s_r >= R["target"]):   # 99-38: 단 끝에서는 뒷발까지 참에 오른 뒤 기다림
+    _eg = _sbx_edge(s_t, s_o)
+    if _eg is not None and not (R["mode"] == "go" and s_t >= R["target"]):   # 99-38: 단 끝에서는 뒷발까지 참에 오른 뒤 기다림
         if not (R["mode"] == "go" and abs(R["target"] - _eg) < 1e-6):
             R["mode"], R["target"], R["edge_broke"] = "go", _eg, False
             R["n_edge"] = R.get("n_edge", 0) + 1
             X["log"].append(f"edge@{t_run:.1f}")
-            print(f" [길잡이] {t_run:.1f}초 · 단 끝 — 뒷발까지 참에 오를 때까지 {_eg - s_r:.2f} m 더 가서 기다립니다 (99-38)")
+            print(f" [길잡이] {t_run:.1f}초 · 단 끝 — 뒷발까지 참에 오를 때까지 {_eg - s_t:.2f} m 더 가서 기다립니다 (99-38)")
         return False
-    if X["isl"](s_r) and (R["mode"] != "go" or s_r >= R["target"]):
+    if X["isl"](s_r) and (R["mode"] != "go" or s_t >= R["target"]):
         return wait("참")
     if gap < SBX_STOP:
         return wait(here)
     if R["mode"] == "go":
-        if s_r >= R["target"]:
+        if s_t >= R["target"]:
             return wait("참")
         return False
     nxt = [a for (a, b) in X["lands"] if a > s_r]
@@ -3100,6 +3104,7 @@ while simulation_app.is_running():
         _vx = args.speed if abs(_off) < SB_SLOW_ANG else min(args.speed, SB_SLOW)
         base_command = torch.tensor([_vx, _vy, _wz], device=args.device)
         if SBX is not None and args.sb_react and since >= args.warm and sb_goal_at is None:   # 사람 · 문짝 앞에서 (README 76)
+            SBX["s_true"] = SBX["cum"][sb_seg] + min(_L, _t)      # 99-41: 0 아래로 자르지 않은 길 따라 자리 (다음 줄로 막 넘어간 때는 음수 → 꺾는 곳보다 뒤)
             if sbx_react(now, now - began, SBX["cum"][sb_seg] + max(0.0, min(_L, _t)), _e, _pz):
                 _vx, _vy, _wz = 0.0, 0.0, 0.0
                 _sh = SBX.get("shift", 0.0)
