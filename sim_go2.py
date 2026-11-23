@@ -366,6 +366,9 @@ ap.add_argument("--sb-edge-commit", action="store_true", dest="sb_edge_commit",
 ap.add_argument("--sb-edge-true", action="store_true", dest="sb_edge_true",
                 help="99-41: 길잡이의 '참 + 0.6 까지 더 가서 기다림' (76 · 99-38 · 99-40) 을 잴 때, 꺾는 곳 0.3 m 앞에서 다음 줄로 넘어가며 "
                      "길 따라 자리가 꺾는 곳 (참 가운데) 으로 뛰는 것을 빼고 몸의 참 자리 (다음 줄 위의 음수 자리까지) 로 잼 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
+ap.add_argument("--sb-door-check", type=float, default=None, dest="sb_door_check",
+                help="99-43: 열 수 있는 문이 있는 층 계단참에 들어서기 전, 몸 중심이 참 들머리 0.5 m 앞 (네 발 모두 단 위 · 맨 위 단 두 칸 아래쯤) 에 오면 "
+                     "이 초만큼 서서 문을 봄 — 그동안 문이 열리면 그 자리 (단 위) 에서 기다림 · 참마다 한 번 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
 ap.add_argument("--sb-person-nopush", type=float, default=None, dest="sb_person_nopush",
                 help="99-38: 사람의 움직임 (길 따라 · 옆 비키기) 이 개와의 틈을 이 값 (m) 아래로 줄이면 그 움직임을 안 함 (사람이 개를 밀지 않음) · "
                      "그렇게 막힌 채 15초면 옛 '못 지나가 돌아감' 과 같이 돌아감 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
@@ -1872,6 +1875,37 @@ def sbx_react(now, t_run, s_r, e_r, rz):
             s_o, why = s_q, SBX_PRE_WHY
     X["blocked"] = s_o is not None
     s_t = X.get("s_true", s_r) if args.sb_edge_true else s_r     # 99-41: 더 가서 기다릴 자리를 잴 때만 씀
+    if args.sb_door_check is not None:           # 99-43: 문 있는 층 계단참 두 칸 아래에서 문 확인
+        if X.get("chk_lands") is None:             # 99-44: 길 따라 바닥이 그 층 높이에 처음 닿는 자리 (= 맨 위 단 끝) — 참 (isl) 의 들머리는 층 계단참에서 늦게 잡혀 (99-43 의 한 판) 쓰지 않음
+            X["chk_lands"] = []
+            for d in X["doors"].values():
+                if d["closed"]:
+                    continue
+                zf = d["z0"] - 0.01
+                s_ = 0.0
+                while s_ <= X["tot_s"] and abs(X["ground"](s_) - zf) >= 0.03:
+                    s_ += 0.02
+                if 0.8 < s_ <= X["tot_s"]:
+                    X["chk_lands"].append((s_, d["f"]))
+            def _xy(s_):
+                x_, y_, _h = X["pos"](s_)
+                return f"({x_:.2f}, {y_:.2f})"
+            print(" [길잡이] 문 확인 (99-43 · 99-44) — 들어서기 전에 볼 층 계단참 (길 따라 바닥이 그 층 높이에 닿는 자리): "
+                  + (" · ".join(f"{f}층 길 {a:.2f} m {_xy(a)} · 서는 자리 {_xy(a - 0.575)}" for a, f in X["chk_lands"]) or "없음"))
+        if R.get("chk_until") is not None:
+            if now < R["chk_until"]:
+                return True
+            R["chk_until"] = None
+            print(f" [길잡이] {t_run:.1f}초 · 문 확인 끝 — " + (f"앞 {s_o - s_r:.1f} m 에 {why}" if s_o is not None else "앞이 비었습니다"))
+        elif R["mode"] != "wait":
+            for a, f in X["chk_lands"]:
+                if a - 0.65 <= s_r < a - 0.50 and a not in R.setdefault("chk_done", []):
+                    R["chk_done"].append(a)
+                    R["chk_until"] = now + args.sb_door_check
+                    R["n_chk"] = R.get("n_chk", 0) + 1
+                    X["log"].append(f"doorchk@{t_run:.1f}")
+                    print(f" [길잡이] {t_run:.1f}초 · {f}층 문 앞 확인 — 참 들머리 {a - s_r:.2f} m 앞 (네 발 단 위) 에서 {args.sb_door_check:g}초 봅니다 (99-43 · 개는 {sb_where_now[0]})")
+                    return True
     here = "참" if X["isl"](s_r) else "단 위"
     X["shift"] = 0.0
     if args.sb_pass:                             # 엇갈리기 (README 76-9): 비켜 선 사람이 다 지나갈 때까지 앞으로 안 감 · 단 위에서는 개도 비킴
