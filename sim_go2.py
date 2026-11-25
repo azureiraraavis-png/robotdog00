@@ -369,6 +369,10 @@ ap.add_argument("--sb-edge-true", action="store_true", dest="sb_edge_true",
 ap.add_argument("--sb-door-check", type=float, default=None, dest="sb_door_check",
                 help="99-43: 열 수 있는 문이 있는 층 계단참에 들어서기 전, 몸 중심이 참 들머리 0.5 m 앞 (네 발 모두 단 위 · 맨 위 단 두 칸 아래쯤) 에 오면 "
                      "이 초만큼 서서 문을 봄 — 그동안 문이 열리면 그 자리 (단 위) 에서 기다림 · 참마다 한 번 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
+ap.add_argument("--sb-floor-land", action="store_true", dest="sb_floor_land",
+                help="99-52: 길잡이의 '참' (isl · 참 구간) 셈에서 1층 들머리 돌단 자리 (y 0.975~1.815 m · x ≤ 들머리) 를 빼는 규칙을 1층 높이 (길 바닥이 "
+                     "작은 참 + 한 층 높이의 반 아래) 에서만 씀 — 옛 셈은 2층 · 3층 계단참에서도 그 자리를 '단 위' 로 쳐서 참을 늦게 잡았음 (99-44) · "
+                     "판 처음에 옛 · 새 참 구간을 찍음 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
 ap.add_argument("--sb-person-nopush", type=float, default=None, dest="sb_person_nopush",
                 help="99-38: 사람의 움직임 (길 따라 · 옆 비키기) 이 개와의 틈을 이 값 (m) 아래로 줄이면 그 움직임을 안 함 (사람이 개를 밀지 않음) · "
                      "그렇게 막힌 채 15초면 옛 '못 지나가 돌아감' 과 같이 돌아감 · 끄면 옛 판과 글자 하나 안 다름. 기본 끔")
@@ -1446,17 +1450,33 @@ def sbx_make():
     def ground(s):
         return prof[max(0, min(len(prof) - 1, int(round(s / 0.02))))]
     # 길 위의 참 (가운데 참 · 층 계단참 · 1층 바닥) — 길잡이가 기다릴 자리 (README 76)
-    isl_arr = []
+    isl_arr, isl_old = [], []
     for i in range(n):
         x, y, _h = pos(i * 0.02)
-        isl_arr.append(x >= SB["xt"] - 0.02 or (x <= SB["at"] + 0.02 and (not SB["NE"] or y <= SB["ey0"] + 0.02 or y >= SB["ey1"] - 0.02)))   # 들머리 돌단은 참이 아님 (79)
-    lands, a0 = [], None
-    for i, v in enumerate(isl_arr + [False]):
-        if v and a0 is None:
-            a0 = i
-        if (not v) and a0 is not None:
-            lands.append((a0 * 0.02, (i - 1) * 0.02))
-            a0 = None
+        _band = SB["NE"] and SB["ey0"] + 0.02 < y < SB["ey1"] - 0.02                                         # 1층 들머리 돌단의 y 자리
+        isl_old.append(x >= SB["xt"] - 0.02 or (x <= SB["at"] + 0.02 and not _band))                          # 들머리 돌단은 참이 아님 (79)
+        _f1 = prof[i] < SB["Z0"] + SB["H"] / 2.0                                                             # 99-52: 1층 높이 (돌단 · 1층 바닥 · 작은 참)
+        isl_arr.append(x >= SB["xt"] - 0.02 or (x <= SB["at"] + 0.02 and not (_band and _f1)))
+    if not args.sb_floor_land:
+        isl_arr = isl_old
+
+    def _runs(arr):
+        out, a0 = [], None
+        for i, v in enumerate(arr + [False]):
+            if v and a0 is None:
+                a0 = i
+            if (not v) and a0 is not None:
+                out.append((a0 * 0.02, (i - 1) * 0.02))
+                a0 = None
+        return out
+    lands = _runs(isl_arr)
+    if args.sb_floor_land:
+        def _d(a, b):
+            xa, ya, _h = pos(a)
+            xb, yb, _h = pos(b)
+            return f"{a:.2f}~{b:.2f} m ({xa:.2f}, {ya:.2f}) → ({xb:.2f}, {yb:.2f}) · 바닥 {ground(a):.2f} m"
+        print(" [참] 99-52 · 옛 참 구간: " + " | ".join(_d(a, b) for a, b in _runs(isl_old)))
+        print(" [참] 99-52 · 새 참 구간: " + " | ".join(_d(a, b) for a, b in lands))
 
     def isl(s):
         return isl_arr[max(0, min(len(isl_arr) - 1, int(round(s / 0.02))))]
