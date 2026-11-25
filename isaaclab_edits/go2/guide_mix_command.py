@@ -398,6 +398,31 @@ def stand_still_feet_air(env, command_name: str, sensor_cfg: SceneEntityCfg, thr
 
 
 # ─────────────────────────────────────────────────────────────
+#  99-55: 서 있기 몸통 벌 — 명령이 거의 0 인 개의 몸통 수평 빠르기 (m/s · 몸 좌표 · 97-1 의 stand_still_speed 와 같은 셈 · 줄 이름만 다름).
+#  왜 (99-54): 99W5b 는 일곱 가운데 꼼지락 (4) 하나만 못 지남 (가운데 4.6 cm · 기준 3.0) — 멈추기까지 간 거리 2.9 · 멈춘 뒤 움직임 2.0 cm.
+#      꼼지락 자가 재는 것 (기다리는 동안 몸이 움직인 거리) 을 그대로 벌함 · 97 (무게 −1 · 판 전체 −0.01) 보다 훨씬 세게 (flat_env_cfg 의 STILL_V_W).
+#      줄 이름을 "[서기 몸통 벌]" 로 따로 둔 것은 train99.ps1 이 "[가만히 서기]" (97 · 2600 계보) 줄을 99 에서 없어야 할 줄로 보기 때문.
+# ─────────────────────────────────────────────────────────────
+_STILL_V_SAID = [False]
+
+
+def stand_still_body_speed(env, command_name: str, threshold: float = 0.05,
+                           asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """|명령 (앞 · 옆)| + |회전 명령| < threshold 인 개의 몸통 수평 빠르기 (몸 좌표 · m/s) · 나머지 개는 0 (99-55)."""
+    asset = env.scene[asset_cfg.name]
+    cmd = env.command_manager.get_command(command_name)
+    still = (torch.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])) < threshold
+    v = asset.data.root_lin_vel_b
+    v = v.torch if hasattr(v, "torch") else v
+    v = torch.norm(v[:, :2], dim=1)
+    if not _STILL_V_SAID[0]:
+        _STILL_V_SAID[0] = True
+        print(f"[서기 몸통 벌] stand_still_body_speed · 명령 {threshold:g} 아래인 개의 몸통 수평 빠르기 (m/s) · "
+              f"지금 그런 개 {int(still.sum())} / {still.numel()} (README 99-55)", flush=True)
+    return still.float() * v
+
+
+# ─────────────────────────────────────────────────────────────
 #  99-31: 걸음 고르기 벌 — 네 발의 "지난번 공중에 있던 시간" · "지난번 디뎌 있던 시간" 이 서로 다른 만큼 (분산 · 0.5초에서 자름).
 #  Isaac Lab 의 Spot 레시피 (air_time_variance_penalty) 와 같은 셈 + **걷는 개만** (명령이 threshold 넘는 개 · 서 있는 개는 발 디딤 벌이 맡음).
 #  왜 (99-28 · 99-30): 99U 의 세 씨앗 모두 7a (걸음 수의 쏠림) 에서 걸림 — 어느 다리만 잔걸음을 더 함 (a 앞 좌우 · c 뒤 좌우 · 셋 다 뒤 > 앞).
