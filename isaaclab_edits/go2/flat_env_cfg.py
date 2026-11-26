@@ -386,6 +386,7 @@ GUIDE_PAUSE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2
 GUIDE_SCRATCH_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchVelocityCommand"  # 99-1 · 99B
 GUIDE_SCRATCH_A_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAVelocityCommand"  # 99-4 · 99A
 GUIDE_SCRATCH_AE_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAEdgeVelocityCommand"  # 99-47 · 99A + 단 끝 멈춤
+GUIDE_SCRATCH_AED_CLASS = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:GuideScratchAEdgeDownVelocityCommand"  # 99-58 · + 내려가다 멈춤
 GUIDE_STUMBLE = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:feet_stumble_count"                # 99-1
 GUIDE_RAMP = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:ramp_reward_weight"                     # 99-8
 GUIDE_MIX_HOLD = "isaaclab_tasks.manager_based.locomotion.velocity.config.go2.guide_mix_command:terrain_levels_vel_hold_mix"   # 82-4
@@ -829,6 +830,12 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
         #     왜: 99W5b 는 일곱 가운데 꼼지락 (4) 하나만 못 지남 (99-54). 97 의 stand_still_speed (−1 · 판 전체 −0.01) 와 같은 셈 · 훨씬 세게.
         #     SCRATCH99 와 함께만 · 다른 새 벌처럼 SCRATCH99_RAMP 번째에 올림. 첫머리에 "[서기 몸통 벌] …" 줄 둘.
         STILL_V_W = 0.0
+        #   DOWN99            내려가다 멈춤 (README 99-58) — False = 끔(기본). 켜면 명령이 GuideScratchAEdgeDownVelocityCommand:
+        #     99W 의 단 끝 멈춤 + 내려가는 계단 위 (앞 바닥이 뒤보다 8 cm 넘게 낮음) 의 걷는 개가 초마다 0.25 몫으로 1~3초 섰다가 다시 감.
+        #     왜: 꼼지락은 주로 내려가기 기다림 · 거의 늘 아래쪽으로 (99-57). EDGE99 와 함께만. 첫머리에 "[내려가다 멈춤] …" 줄.
+        DOWN99 = False
+        if DOWN99 and not EDGE99:
+            raise ValueError("DOWN99 는 EDGE99 = True 와 함께만 씁니다 (README 99-58)")
         if STILL_V_W and not SCRATCH99:
             raise ValueError("STILL_V_W 는 SCRATCH99 = True 와 함께만 씁니다 (README 99-55)")
         if SYM99:
@@ -922,7 +929,7 @@ class UnitreeGo2GuideRoughEnvCfg(UnitreeGo2RoughEnvCfg):
                   + f" · 계단 높이 {SCRATCH99_H[0]:g}~{SCRATCH99_H[1]:g} · 기둥 {_pp:g} · 판 {'99B' if SCRATCH99_B else '99A'}", flush=True)
             if EDGE99 and SCRATCH99_B:
                 raise ValueError("EDGE99 는 99A (SCRATCH99_B = False) 와 함께만 씁니다 (README 99-47)")
-            self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS if SCRATCH99_B else (GUIDE_SCRATCH_AE_CLASS if EDGE99 else GUIDE_SCRATCH_A_CLASS))
+            self.commands.base_velocity.class_type = _RS99(GUIDE_SCRATCH_CLASS if SCRATCH99_B else ((GUIDE_SCRATCH_AED_CLASS if DOWN99 else GUIDE_SCRATCH_AE_CLASS) if EDGE99 else GUIDE_SCRATCH_A_CLASS))
             self.commands.base_velocity.ranges.lin_vel_y = (-0.2, 0.2)
             _scratch_goal = {"feet_stumble": STUMBLE_W, "ang_vel_xy_l2": -0.15,
                              "action_rate_l2": 2.0 * self.rewards.action_rate_l2.weight, "feet_slide": -0.25}       # 목표 무게 (99-1)

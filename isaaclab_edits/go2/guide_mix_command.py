@@ -155,6 +155,7 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
     """99-1: GuidePauseVelocityCommand + 꺾인 계단 길잡이 + 바깥쪽 옆 비키기 (99B). 99A 는 아래 GuideScratchAVelocityCommand (옆 비키기 0)."""
     SHIFT_P = SHIFT_P
     EDGE_P = 0.0          # 99-47: 단 끝 멈춤 — 0 이면 셈도 안 함 (옛 판과 같음)
+    DOWN_RATE = 0.0       # 99-58: 내려가다 멈춤 — 내려가는 계단 위의 걷는 개가 초마다 이 몫으로 섬 · 0 이면 셈도 안 함 (옛 판과 같음)
 
     def __init__(self, cfg, env):
         super().__init__(cfg, env)
@@ -165,6 +166,10 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
         self.edge_pausing = torch.zeros(n, dtype=torch.bool, device=self.device)
         self.metrics["edge_pause_steps"] = torch.zeros(n, device=self.device)
         self._edge_said = False
+        self.down_kind = torch.zeros(n, dtype=torch.bool, device=self.device)   # 99-58: 지금의 계단 멈춤이 "내려가다 멈춤" 인가
+        self.down_pausing = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self.metrics["down_pause_steps"] = torch.zeros(n, device=self.device)
+        self._down_said = False
         self.shift_on = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.metrics["shift_steps"] = torch.zeros(self.num_envs, device=self.device)
         self._shift_now = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -180,6 +185,7 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
             self.shift_on[ids] = (torch.rand(ids.numel(), device=self.device) < self.SHIFT_P) & ~self.is_standing_env[ids]
             self.edge_hold[ids] = False
             self.edge_left[ids] = 0.0
+            self.down_kind[ids] = False
 
     def _edge_now(self):
         """99-47: 단 끝 (오름) — 몸 앞 0.15~0.55 m 의 바닥이 평평 (3 cm 안) 하고 몸 뒤 0.15~0.30 m 의 바닥이 그보다 8 cm 넘게 낮음 (앞발은 참 · 뒷발은 아래 단)."""
@@ -205,25 +211,64 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
         has = (fr.sum(1) >= 3) & (rr.sum(1) >= 2)
         return has & (fmax - fmin < 0.03) & (fmin - rmax > 0.08)
 
+    def _down_now(self):
+        """99-58: 내려가는 계단 위 (또는 내려가기 바로 앞) — 몸 앞 0.15~0.55 m 의 바닥 (평균) 이 몸 뒤 0.15~0.30 m 의 바닥 (평균) 보다 8 cm 넘게 낮음."""
+        env = self._env
+        sc = env.scene.sensors["see_scanner"]
+        h = sc.data.ray_hits_w
+        h = h.torch if hasattr(h, "torch") else h
+        rb = env.scene["robot"]
+        p = rb.data.root_pos_w
+        p = p.torch if hasattr(p, "torch") else p
+        yw = rb.data.heading_w
+        yw = yw.torch if hasattr(yw, "torch") else yw
+        dx, dy = h[..., 0] - p[:, None, 0], h[..., 1] - p[:, None, 1]
+        lx = torch.cos(yw)[:, None] * dx + torch.sin(yw)[:, None] * dy
+        z = h[..., 2]
+        ok = torch.isfinite(z) & (z.abs() < 1e3)
+        fr = (ok & (lx >= 0.15) & (lx <= 0.55)).float()
+        rr = (ok & (lx >= -0.30) & (lx <= -0.15)).float()
+        z0 = torch.where(ok, z, torch.zeros_like(z))
+        fm = (z0 * fr).sum(1) / fr.sum(1).clamp(min=1.0)
+        rm = (z0 * rr).sum(1) / rr.sum(1).clamp(min=1.0)
+        has = (fr.sum(1) >= 3) & (rr.sum(1) >= 2)
+        return has & (rm - fm > 0.08)
+
     def _edge_update(self):
-        if self.EDGE_P <= 0.0:
+        if self.EDGE_P <= 0.0 and self.DOWN_RATE <= 0.0:
             return
         dt = float(self._env.step_dt)
         self.edge_left = torch.clamp(self.edge_left - dt, min=0.0)
-        edge = self._edge_now()
         walk = ~self.real_standing & ~self.edge_hold & (self.edge_left <= 0.0)
         tp = self.pause_on & (self.time_left <= self.pause_hi) & (self.time_left > self.pause_lo)
-        start = edge & ~self.edge_prev & walk & ~tp & (torch.rand(self.num_envs, device=self.device) < self.EDGE_P)
-        if start.any():
-            k = int(start.sum())
-            self.edge_left[start] = torch.empty(k, device=self.device).uniform_(*PAUSE_DUR)
-            self.edge_hold[start] = True
-        self.edge_prev = edge
+        start = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if self.EDGE_P > 0.0:
+            edge = self._edge_now()
+            start = edge & ~self.edge_prev & walk & ~tp & (torch.rand(self.num_envs, device=self.device) < self.EDGE_P)
+            if start.any():
+                k = int(start.sum())
+                self.edge_left[start] = torch.empty(k, device=self.device).uniform_(*PAUSE_DUR)
+                self.edge_hold[start] = True
+            self.edge_prev = edge
+            if not self._edge_said:
+                self._edge_said = True
+                print(f"[단 끝 멈춤] {type(self).__name__} · 단 끝 (앞 참 · 뒤 단) 에 들어선 걷는 개의 {self.EDGE_P:.2f} 가 {PAUSE_DUR[0]:g}~{PAUSE_DUR[1]:g}초 섬 · "
+                      f"지금 단 끝인 개 {int(edge.sum())} / {edge.numel()} (README 99-47)", flush=True)
+        if self.DOWN_RATE > 0.0:                                     # 99-58: 내려가다 멈춤 (명령 주기마다 계단 멈춤은 한 번 — 단 끝 멈춤과 함께 셈)
+            down = self._down_now()
+            sd = down & walk & ~start & ~tp & (torch.rand(self.num_envs, device=self.device) < self.DOWN_RATE * dt)
+            if sd.any():
+                k = int(sd.sum())
+                self.edge_left[sd] = torch.empty(k, device=self.device).uniform_(*PAUSE_DUR)
+                self.edge_hold[sd] = True
+                self.down_kind[sd] = True
+            if not self._down_said:
+                self._down_said = True
+                print(f"[내려가다 멈춤] {type(self).__name__} · 내려가는 계단 위 (앞 바닥이 뒤보다 8 cm 넘게 낮음) 의 걷는 개가 초마다 {self.DOWN_RATE:.2f} 몫으로 "
+                      f"{PAUSE_DUR[0]:g}~{PAUSE_DUR[1]:g}초 섬 · 지금 내려가는 개 {int(down.sum())} / {down.numel()} (README 99-58)", flush=True)
         self.edge_pausing = self.edge_left > 0.0
-        if not self._edge_said:
-            self._edge_said = True
-            print(f"[단 끝 멈춤] {type(self).__name__} · 단 끝 (앞 참 · 뒤 단) 에 들어선 걷는 개의 {self.EDGE_P:.2f} 가 {PAUSE_DUR[0]:g}~{PAUSE_DUR[1]:g}초 섬 · "
-                  f"지금 단 끝인 개 {int(edge.sum())} / {edge.numel()} (README 99-47)", flush=True)
+        self.down_kind &= self.edge_pausing | self.edge_hold
+        self.down_pausing = self.edge_pausing & self.down_kind
 
     def _update_command(self):
         self._edge_update()
@@ -256,7 +301,8 @@ class GuideScratchVelocityCommand(GuidePauseVelocityCommand):
     def _update_metrics(self):
         super()._update_metrics()
         self.metrics["shift_steps"] += self._shift_now.float()
-        self.metrics["edge_pause_steps"] += self.edge_pausing.float()
+        self.metrics["edge_pause_steps"] += (self.edge_pausing & ~self.down_pausing).float()
+        self.metrics["down_pause_steps"] += self.down_pausing.float()
 
 
 class GuideScratchAVelocityCommand(GuideScratchVelocityCommand):
@@ -267,6 +313,11 @@ class GuideScratchAVelocityCommand(GuideScratchVelocityCommand):
 class GuideScratchAEdgeVelocityCommand(GuideScratchAVelocityCommand):
     """99-47: 99A + 단 끝 멈춤 — 오르다 앞발이 참에 오르고 뒷발이 아래 단에 남은 때, 걷는 개의 절반이 1~3초 섰다가 같은 명령으로 다시 감."""
     EDGE_P = 0.5
+
+
+class GuideScratchAEdgeDownVelocityCommand(GuideScratchAEdgeVelocityCommand):
+    """99-58: 99W 의 명령 + 내려가다 멈춤 — 내려가는 계단 위의 걷는 개가 초마다 0.25 몫으로 1~3초 섰다가 같은 명령으로 다시 감 (명령 주기마다 계단 멈춤 한 번)."""
+    DOWN_RATE = 0.25
 
 
 _STUMBLE_SAID = [False]
